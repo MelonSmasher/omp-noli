@@ -235,6 +235,16 @@ describe("authentication", () => {
 		await client.closedPromise;
 	});
 
+	test.each([["a number", "42"], ["an array", "[1,2]"], ["null", "null"], ["a string", '"hello"']])(
+		"%s before hello is rejected and the connection is closed",
+		async (_label, json) => {
+			const client = await Client.connect(bridge.socketPath);
+			client.raw(`${json}\n`);
+			expect((await client.next()).error?.code).toBe("bad_frame");
+			await client.closedPromise;
+		},
+	);
+
 	test("socket and directory are private to the owner", () => {
 		expect(statSync(bridge.socketPath).mode & 0o077).toBe(0);
 		expect(statSync(dir).mode & 0o077).toBe(0);

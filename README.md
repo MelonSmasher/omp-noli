@@ -77,7 +77,7 @@ Each disabled capability is listed with its reason code and detail.
 
 UTF-8 newline-delimited JSON over a Unix domain socket. `protocol/noli-bridge.schema.json` is the authoritative definition of every frame the bridge sends; this section summarizes it.
 
-Requests have `id`, `method`, and optional `params`. The first request must be `hello`, with the shared token in `params.token`. A successful `hello` returns `{ protocol: 1, sessionId, pid, capabilities }`. A failed `hello` closes the connection.
+Requests have `id`, `method`, and optional `params`. The first request must be `hello`, with the shared token in `params.token`. A successful `hello` returns `{ protocol: 1, sessionId, pid, capabilities }`. A failed `hello` closes the connection, and so does any malformed frame (invalid JSON, or JSON that isn't an object) sent before a successful `hello`.
 
 Every later request must carry the current `sessionId`. Replies look like:
 

@@ -211,19 +211,29 @@ export function startBridge(options: BridgeOptions): Bridge {
 
 	const handleFrame = async (socket: Socket<ConnectionState>, line: string): Promise<void> => {
 		if (socket.data.closed) return;
+		/** Before authentication, any malformed frame ends the connection, same as a failed hello. */
+		const closeIfUnauthed = (): void => {
+			if (socket.data.authed) return;
+			socket.data.closed = true;
+			socket.end();
+		};
 		let frame: unknown;
 		try {
 			frame = JSON.parse(line);
 		} catch {
 			send(socket, { type: "response", id: null, ok: false, error: { code: "bad_frame", message: "frame is not valid JSON" } });
-			if (!socket.data.authed) { socket.data.closed = true; socket.end(); }
+			closeIfUnauthed();
 			return;
 		}
 		const record = frame && typeof frame === "object" && !Array.isArray(frame) ? (frame as Params) : undefined;
 		const id = typeof record?.id === "string" || typeof record?.id === "number" ? record.id : null;
 		const fail = (error: ErrorBody): void => send(socket, { type: "response", id, ok: false, error });
 
-		if (!record) return fail({ code: "bad_frame", message: "frame must be an object" });
+		if (!record) {
+			fail({ code: "bad_frame", message: "frame must be an object" });
+			closeIfUnauthed();
+			return;
+		}
 
 		if (!socket.data.authed) {
 			const helloParams = record.params && typeof record.params === "object" && "token" in record.params ? record.params : undefined;

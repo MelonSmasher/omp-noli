@@ -36,6 +36,24 @@ function report(name: string, ok: boolean, detail: string): void {
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/**
+ * Stream reads don't preserve message boundaries: the echo can arrive split across several
+ * `data` callbacks. Buffer bytes until the newline, then hand back the whole frame once.
+ */
+function frameCollector(done: (frame: string) => void): (chunk: Uint8Array | string) => void {
+	let buffered = "";
+	let delivered = false;
+	const decoder = new TextDecoder();
+	return chunk => {
+		if (delivered) return;
+		buffered += typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true });
+		const end = buffered.indexOf("\n");
+		if (end === -1) return;
+		delivered = true;
+		done(buffered.slice(0, end + 1));
+	};
+}
+
 /** Bun.listen / Bun.connect with the `unix` option, which the bridge uses today. */
 async function probeBunListen(name: string, path: string): Promise<void> {
 	let listener: SocketListener<undefined> | undefined;
@@ -44,6 +62,7 @@ async function probeBunListen(name: string, path: string): Promise<void> {
 	let pendingConnect: Promise<Socket<undefined>> | undefined;
 	try {
 		const echoed = Promise.withResolvers<string>();
+		const collect = frameCollector(echoed.resolve);
 		listener = Bun.listen<undefined>({
 			unix: path,
 			socket: {
@@ -51,7 +70,7 @@ async function probeBunListen(name: string, path: string): Promise<void> {
 				data: (socket, chunk) => void socket.write(chunk),
 			},
 		});
-		pendingConnect = Bun.connect<undefined>({ unix: path, socket: { data: (_s, chunk) => echoed.resolve(chunk.toString()) } });
+		pendingConnect = Bun.connect<undefined>({ unix: path, socket: { data: (_s, chunk) => collect(chunk) } });
 		pendingConnect.then(client => opened.push(client), () => {});
 		const client = await withTimeout(pendingConnect, "Bun.connect");
 		client.write(PAYLOAD);
@@ -82,9 +101,10 @@ async function probeNodeNet(name: string, path: string): Promise<void> {
 		server.listen(path, () => listening.resolve());
 		await withTimeout(listening.promise, "listen");
 		const echoed = Promise.withResolvers<string>();
+		const collect = frameCollector(echoed.resolve);
 		client = connect(path);
 		client.once("error", echoed.reject);
-		client.on("data", chunk => echoed.resolve(chunk.toString()));
+		client.on("data", chunk => collect(chunk));
 		client.write(PAYLOAD);
 		const got = await withTimeout(echoed.promise, "echo");
 		report(name, got === PAYLOAD, got === PAYLOAD ? "round-trip ok" : `wrong echo: ${JSON.stringify(got)}`);
