@@ -1,0 +1,26 @@
+{
+  "name": "omp-noli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Session-scoped Noli control bridge for Oh My Pi",
+  "license": "MIT",
+  "author": "Alex Markessinis <alex@markessinis.me>",
+  "repository": { "type": "git", "url": "git+https://github.com/MelonSmasher/omp-noli.git" },
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": "18.4.5",
+    "@types/bun": "latest",
+    "ajv": "^8",
+    "typescript": "^5.9.3"
+  },
+  "omp": {
+    "extensions": ["./src/index.ts"]
+  }
+}

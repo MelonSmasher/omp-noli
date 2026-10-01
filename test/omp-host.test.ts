@@ -1,0 +1,390 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ListResult } from "../src/protocol";
+import { createOmpHost, type OmpHost } from "../src/omp-host";
+
+/**
+ * Fake OMP host. Mirrors the upstream behaviors the adapter depends on:
+ * - the read tool's history:// lookup runs a per-root roster scan that registers
+ *   only complete transcripts (header-only stubs are skipped, persisted-agents.ts),
+ * - the scan tags the registry with a per-root latch map keyed by root session file,
+ * - the task tool's ToolSession exposes agentLifecycle().
+ */
+interface FakeRef {
+	id: string;
+	displayName: string;
+	kind: string;
+	parentId?: string;
+	status: string;
+	session: unknown;
+	sessionFile: string | null;
+	createdAt: number;
+	lastActivity: number;
+	history?: { agent?: string };
+}
+
+const LATCHES = Symbol("persistedRosterLatches");
+
+class FakeRegistry {
+	refs = new Map<string, FakeRef>();
+	[LATCHES]?: Map<string, unknown>;
+	get(id: string) {
+		return this.refs.get(id);
+	}
+	list() {
+		return [...this.refs.values()];
+	}
+	onChange() {
+		return () => {};
+	}
+}
+
+let dir: string;
+let rootFile: string;
+let artifactDir: string;
+let registry: FakeRegistry;
+let readCalls: number;
+let scanBehavior: "real" | "noop" | "throws";
+let notices: string[];
+let omp: OmpHost;
+
+const header = '{"type":"session","id":"x"}\n';
+const complete = `${header}{"type":"session_init","task":"t"}\n{"type":"message","message":{}}\n`;
+
+function writeChild(id: string, body: string) {
+	writeFileSync(join(artifactDir, `${id}.jsonl`), body);
+}
+
+/**
+ * Upstream ensurePersistedRoster + registerPersistedSubagents, one directory level:
+ * scans once per root (settled latch), skips header-only stubs.
+ */
+function realScan() {
+	registry[LATCHES] ??= new Map();
+	if (registry[LATCHES].has(rootFile)) return;
+	registry[LATCHES].set(rootFile, { settled: true });
+	for (const name of readdirSync(artifactDir)) {
+		if (!name.endsWith(".jsonl")) continue;
+		const id = name.slice(0, -6);
+		if (registry.refs.has(id)) continue;
+		const text = readFileSync(join(artifactDir, name), "utf8");
+		const incomplete = !text.includes('"session_init"') && !text.includes('"message"');
+		if (incomplete) continue;
+		registry.refs.set(id, { id, displayName: id, kind: "sub", parentId: "Main", status: "parked", session: null, sessionFile: join(artifactDir, name), createdAt: 1, lastActivity: 1 });
+	}
+}
+
+/** A new OMP process resuming the same root: fresh registry, no latches. */
+function restartProcess() {
+	const main = registry.refs.get("Main");
+	registry = new FakeRegistry();
+	if (main) registry.refs.set("Main", main);
+	omp = makeOmp();
+	omp.adopt(ctx);
+}
+
+const mainSession = {
+	sessionManager: { getSessionId: () => "sess-1" },
+	isStreaming: false,
+	getToolByName: (name: string): unknown => {
+		if (name === "read") {
+			return {
+				execute: async () => {
+					readCalls++;
+					if (scanBehavior === "throws") throw new Error("Unknown agent");
+					if (scanBehavior === "real") realScan();
+					return { content: [] };
+				},
+			};
+		}
+		if (name === "task") return { session: { agentLifecycle: () => ({ release: async () => true }) } };
+		return undefined;
+	},
+};
+
+/** Minimal stand-in for OMP's EventBus (utils/event-bus.ts): synchronous emit to channel listeners. */
+class FakeEventBus {
+	#listeners = new Map<string, Set<(data: unknown) => void>>();
+	on(channel: string, handler: (data: unknown) => void): () => void {
+		const set = this.#listeners.get(channel) ?? new Set();
+		set.add(handler);
+		this.#listeners.set(channel, set);
+		return () => set.delete(handler);
+	}
+	emit(channel: string, data: unknown): void {
+		for (const handler of this.#listeners.get(channel) ?? []) handler(data);
+	}
+}
+let events: FakeEventBus;
+
+function makeOmp(): OmpHost {
+	events = new FakeEventBus();
+	const pi = {
+		pi: {
+			AgentRegistry: { global: () => registry },
+			discoverAgents: async () => ({ agents: definitions }),
+			finalizeSubagentLifecycle: async () => {},
+			runSubagentFollowUpTurn: async () => ({}),
+			USER_INTERRUPT_LABEL: "interrupt",
+			VERSION: "test",
+		},
+		events,
+		logger: { warn: () => {} },
+	} as unknown as ExtensionAPI; // Test seam: only the members the adapter reads are provided.
+	return createOmpHost(pi);
+}
+
+const ctx = {
+	agent: { kind: "main", id: "Main", name: "main", depth: 0 },
+	sessionManager: { getSessionId: () => "sess-1", getSessionFile: () => rootFile },
+	ui: { notify: (message: string) => notices.push(message) },
+	cwd: "/",
+} as unknown as ExtensionContext; // Test seam: minimal context the adapter reads.
+
+let definitions: Array<{ name: string; description: string; source: string; systemPrompt: string }> = [];
+
+let stderrWrite: typeof process.stderr.write;
+
+beforeEach(() => {
+	dir = mkdtempSync(join(tmpdir(), "noli-host-"));
+	rootFile = join(dir, "root.jsonl");
+	artifactDir = join(dir, "root");
+	mkdirSync(artifactDir);
+	writeFileSync(rootFile, header);
+	registry = new FakeRegistry();
+	registry.refs.set("Main", { id: "Main", displayName: "main", kind: "main", status: "running", session: mainSession, sessionFile: rootFile, createdAt: 1, lastActivity: 1 });
+	readCalls = 0;
+	scanBehavior = "real";
+	notices = [];
+	stderrWrite = process.stderr.write;
+	process.stderr.write = (() => true) as typeof process.stderr.write;
+	omp = makeOmp();
+	omp.adopt(ctx);
+});
+
+afterEach(() => {
+	process.stderr.write = stderrWrite;
+	rmSync(dir, { recursive: true, force: true });
+});
+
+const list = () => omp.host.list({ includePersisted: true });
+const listLive = () => omp.host.list({ includePersisted: false });
+const ids = (r: ListResult) => r.agents.map(a => a.id);
+
+describe("persisted discovery", () => {
+	test("a stub-only root keeps discovery available and still returns live rows", async () => {
+		writeChild("Fresh", header);
+		const first = await list();
+		expect(ids(first)).toEqual(["Main"]);
+		expect(first.discovery).toMatchObject({ status: "skipped", pending: ["Fresh"] });
+		expect(omp.host.capabilities()["agents.list.persisted"].available).toBe(true);
+		expect(notices).toEqual([]);
+	});
+
+	test("stub later completed by its live spawn: discovery stays on and the child is listed", async () => {
+		writeChild("Fresh", header);
+		await list();
+		await list();
+		expect(readCalls).toBe(1);
+		// The spawn claims the id and writes its transcript in this same process.
+		writeChild("Fresh", complete);
+		registry.refs.set("Fresh", { id: "Fresh", displayName: "Fresh", kind: "sub", parentId: "Main", status: "running", session: {}, sessionFile: join(artifactDir, "Fresh.jsonl"), createdAt: 1, lastActivity: 1 });
+		const later = await list();
+		expect(ids(later)).toEqual(["Main", "Fresh"]);
+		expect(later.discovery.status).toBe("none");
+		expect(omp.host.capabilities()["agents.list.persisted"].available).toBe(true);
+	});
+
+	test("stub later completed, then process restart: the child is restored", async () => {
+		writeChild("Fresh", header);
+		expect((await list()).discovery.status).toBe("skipped");
+		writeChild("Fresh", complete);
+		restartProcess();
+		const after = await list();
+		expect(ids(after)).toEqual(["Main", "Fresh"]);
+		expect(after.discovery).toMatchObject({ status: "complete", restored: ["Fresh"] });
+	});
+
+	test("a changed declined transcript is looked up again (cheap) without disabling anything", async () => {
+		writeChild("Fresh", header);
+		await list();
+		writeChild("Fresh", complete);
+		const again = await list();
+		expect(readCalls).toBe(2);
+		// OMP's settled latch means no rescan in this process; that is skipped, not broken.
+		expect(again.discovery).toMatchObject({ status: "skipped", pending: ["Fresh"] });
+		expect(omp.host.capabilities()["agents.list.persisted"].available).toBe(true);
+	});
+
+	test("a mixed root restores complete children and reports the stub as pending", async () => {
+		writeChild("Done", complete);
+		writeChild("Stub", header);
+		const result = await list();
+		expect(ids(result)).toEqual(["Main", "Done"]);
+		expect(result.discovery).toMatchObject({ status: "skipped", restored: ["Done"], pending: ["Stub"] });
+	});
+
+	test("no evidence the scan ran is inconclusive: no disable, retried next call", async () => {
+		writeChild("Done", complete);
+		scanBehavior = "noop";
+		const first = await list();
+		expect(first.discovery.status).toBe("inconclusive");
+		expect(ids(first)).toEqual(["Main"]);
+		expect(omp.host.capabilities()["agents.list.persisted"].available).toBe(true);
+		scanBehavior = "real";
+		const second = await list();
+		expect(readCalls).toBe(2);
+		expect(ids(second)).toEqual(["Main", "Done"]);
+	});
+
+	test("a throwing lookup does not fail the listing", async () => {
+		writeChild("Done", complete);
+		scanBehavior = "throws";
+		const result = await list();
+		expect(result.discovery.status).toBe("inconclusive");
+		expect(result.discovery.detail).toContain("Unknown agent");
+		expect(ids(result)).toEqual(["Main"]);
+	});
+
+	test("a missing read tool reports unavailable, closes the capability, and warns", async () => {
+		writeChild("Done", complete);
+		const original = mainSession.getToolByName;
+		mainSession.getToolByName = (name: string) => (name === "read" ? undefined : original(name));
+		try {
+			const result = await list();
+			expect(result.discovery.status).toBe("unavailable");
+			expect(ids(result)).toEqual(["Main"]);
+			expect(omp.host.capabilities()["agents.list.persisted"].available).toBe(false);
+			expect(notices.some(n => n.includes("agents.list.persisted"))).toBe(true);
+			mainSession.getToolByName = original;
+			// Recovers as soon as the shape is back; no session switch needed.
+			expect(omp.host.refreshCapabilities()["agents.list.persisted"].available).toBe(true);
+		} finally {
+			mainSession.getToolByName = original;
+		}
+	});
+
+	test("session adoption clears declined transcripts", async () => {
+		writeChild("Fresh", header);
+		await list();
+		omp.adopt(ctx);
+		await list();
+		expect(readCalls).toBe(2);
+	});
+});
+
+describe("mapping OMP data onto the protocol", () => {
+	const child = (over: Partial<FakeRef>): FakeRef => ({
+		id: "C",
+		displayName: "C",
+		kind: "sub",
+		parentId: "Main",
+		status: "idle",
+		session: null,
+		sessionFile: join(artifactDir, "C.jsonl"),
+		createdAt: 1,
+		lastActivity: 1,
+		...over,
+	});
+
+	test("OMP statuses map to protocol states, with no session paths exposed", async () => {
+		for (const [omp, state] of [["running", "running"], ["idle", "idle"], ["parked", "parked"], ["aborted", "terminated"]] as const) {
+			registry.refs.set("C", child({ status: omp }));
+			const view = (await listLive()).agents.find(a => a.id === "C");
+			expect(view?.state).toBe(state);
+			expect(view && "sessionFile" in view).toBe(false);
+		}
+	});
+
+	test("an unrecognized OMP status or kind becomes unknown instead of passing through", async () => {
+		registry.refs.set("C", child({ status: "hibernating" }));
+		expect((await listLive()).agents.find(a => a.id === "C")?.state).toBe("unknown");
+		registry.refs.set("C", child({ kind: "daemon" }));
+		expect((await listLive()).agents.find(a => a.id === "C")?.kind).toBe("unknown");
+	});
+
+	test("the recorded agent definition is exposed", async () => {
+		registry.refs.set("C", child({ history: { agent: "explore" } }));
+		registry.refs.set("D", child({ id: "D", sessionFile: join(artifactDir, "D.jsonl") }));
+		const agents = (await listLive()).agents;
+		expect(agents.find(a => a.id === "C")?.definition).toBe("explore");
+		expect(agents.find(a => a.id === "D")?.definition).toBeNull();
+	});
+
+	test("a live child's definition comes from OMP's spawn lifecycle event", async () => {
+		registry.refs.set("L", child({ id: "L", sessionFile: join(artifactDir, "L.jsonl") }));
+		expect((await listLive()).agents.find(a => a.id === "L")?.definition).toBeNull();
+		events.emit("task:subagent:lifecycle", { id: "L", agent: "scout", agentSource: "bundled", status: "started", index: 0 });
+		expect((await listLive()).agents.find(a => a.id === "L")?.definition).toBe("scout");
+		// Malformed payloads are ignored rather than trusted.
+		events.emit("task:subagent:lifecycle", { id: "L", agent: 42 });
+		expect((await listLive()).agents.find(a => a.id === "L")?.definition).toBe("scout");
+	});
+
+	test("a session switch keeps definitions of children that are still running", async () => {
+		const file = join(artifactDir, "L.jsonl");
+		registry.refs.set("L", child({ id: "L", sessionFile: file }));
+		events.emit("task:subagent:lifecycle", { id: "L", agent: "scout", status: "started", sessionFile: file, index: 0 });
+		omp.adopt(ctx); // e.g. a branch or tree navigation: same root, same live children.
+		expect((await listLive()).agents.find(a => a.id === "L")?.definition).toBe("scout");
+	});
+
+	test("a ref replaced under the same id does not inherit the old definition, with or without a path", async () => {
+		const file = join(artifactDir, "L.jsonl");
+		for (const sessionFile of [undefined, file]) {
+			registry.refs.set("L", child({ id: "L", sessionFile: file }));
+			events.emit("task:subagent:lifecycle", { id: "L", agent: "scout", status: "started", index: 0, ...(sessionFile ? { sessionFile } : {}) });
+			expect((await listLive()).agents.find(a => a.id === "L")?.definition).toBe("scout");
+			// Same id, same transcript path, new ref: OMP reused the id for a new spawn.
+			registry.refs.set("L", child({ id: "L", sessionFile: file }));
+			expect((await listLive()).agents.find(a => a.id === "L")?.definition).toBeNull();
+		}
+	});
+
+	test("a start event with no registered ref is ignored rather than cached by id", async () => {
+		events.emit("task:subagent:lifecycle", { id: "L", agent: "scout", status: "started", index: 0 });
+		registry.refs.set("L", child({ id: "L", sessionFile: join(artifactDir, "L.jsonl") }));
+		expect((await listLive()).agents.find(a => a.id === "L")?.definition).toBeNull();
+	});
+
+	test("the spawn event pushes a corrected agent row once", async () => {
+		const pushed: Array<{ id: string; definition: string | null }> = [];
+		const unsubscribe = omp.host.subscribe(agent => pushed.push({ id: agent.id, definition: agent.definition }));
+		const file = join(artifactDir, "L.jsonl");
+		registry.refs.set("L", child({ id: "L", sessionFile: file }));
+		const started = { id: "L", agent: "scout", status: "started", sessionFile: file, index: 0 };
+		events.emit("task:subagent:lifecycle", started);
+		events.emit("task:subagent:lifecycle", { ...started, status: "completed" });
+		expect(pushed).toEqual([{ id: "L", definition: "scout" }]);
+		unsubscribe();
+		events.emit("task:subagent:lifecycle", { ...started, agent: "explore" });
+		expect(pushed).toHaveLength(1);
+	});
+
+	test("definitions map to name, description and a closed source", async () => {
+		definitions = [
+			{ name: "task", description: "General", source: "bundled", systemPrompt: "secret" },
+			{ name: "mine", description: "Mine", source: "plugin-v9", systemPrompt: "secret" },
+		];
+		expect(await omp.host.definitions()).toEqual([
+			{ name: "task", description: "General", source: "bundled" },
+			{ name: "mine", description: "Mine", source: "unknown" },
+		]);
+	});
+
+	test("capability probes report reason codes", () => {
+		const original = mainSession.getToolByName;
+		mainSession.getToolByName = (name: string) => (name === "task" ? { session: {} } : original(name));
+		try {
+			const caps = omp.host.refreshCapabilities();
+			expect(caps["agents.kill.parked"]).toMatchObject({ available: false, reason: "hook_changed" });
+			mainSession.getToolByName = (name: string) => (name === "read" ? undefined : original(name));
+			expect(omp.host.refreshCapabilities()["agents.list.persisted"]).toMatchObject({ available: false, reason: "tool_missing" });
+		} finally {
+			mainSession.getToolByName = original;
+		}
+	});
+});

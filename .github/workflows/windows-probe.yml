@@ -1,0 +1,44 @@
+---
+# -- Windows feasibility probe, run by hand. Not part of required CI: the bridge is Unix-only today
+# -- (README "Known boundaries"), so `bun test` is expected to fail on Windows until a Windows
+# -- transport exists. This job reports which IPC APIs work under Bun on Windows, and what breaks
+# -- in typecheck and the suite, without blocking anything.
+name: windows-probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - run: bun install --frozen-lockfile
+
+      # -- The answer this workflow exists for: Bun.listen vs node:net, named pipe vs AF_UNIX file.
+      - name: Transport probe
+        run: bun scripts/probe-transport.ts
+
+      # -- Informational: typecheck and tests on Windows. Failures here are expected until the transport is ported.
+      - name: Typecheck
+        continue-on-error: true
+        run: bun run typecheck
+
+      - name: Test suite
+        continue-on-error: true
+        run: bun test
