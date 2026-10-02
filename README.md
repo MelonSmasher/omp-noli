@@ -6,6 +6,8 @@ An OMP extension that gives Noli a private local control channel. It runs next t
 
 Works with official OMP releases; no custom build is needed. Developed and verified against OMP 18.4.5, with Bun. Install development dependencies with `bun install`. Load `src/index.ts` with `omp -e /path/to/omp-noli/src/index.ts --mode rpc-ui`, or through the package's `omp.extensions` declaration.
 
+Install release v0.2.0 with `omp plugin install github:MelonSmasher/omp-noli#v0.2.0`. Restart OMP sessions to load the updated extension. The package manifest reports `0.2.0`; protocol version 1 is unchanged.
+
 The launcher passes `NOLI_BRIDGE_DIR` and `NOLI_BRIDGE_TOKEN` in the child process environment. If either is missing, the extension does nothing. Use a fresh private directory for each OMP process and a cryptographically random token. Don't log the token or put it on the command line. The extension never writes the token to disk or sends it over RPC.
 
 The directory is created with mode 0700. It is rejected if it is a symlink, isn't owned by the current user, or is accessible to group/other. The socket is `<dir>/omp-<pid>.sock`, mode 0600. The bridge never removes an existing endpoint at that path. On shutdown it closes clients, removes the socket and unsubscribes its listeners.
