@@ -8,7 +8,7 @@ import { readdirSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { AgentRef, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { type BridgeHost, BridgeError } from "./bridge";
-import { type Probe, available, probeLifecycle, probeRosterReader, unavailable } from "./capabilities";
+import { type Probe, available, probeJobCanceller, probeLifecycle, probeRosterReader, probeWork, unavailable } from "./capabilities";
 import {
 	type AgentKind,
 	type AgentState,
@@ -19,6 +19,8 @@ import {
 	type CapabilityState,
 	type DefinitionSource,
 	type DiscoveryReport,
+	type JobKind,
+	type WorkResult,
 } from "./protocol";
 
 /** OMP's subagent lifecycle channel (pi-tui session-observer-registry); carries the spawning definition name. */
@@ -34,6 +36,24 @@ const ROSTER_LATCH_SYMBOL = "persistedRosterLatches";
 const STATE_BY_OMP_STATUS: Record<string, AgentState> = { running: "running", idle: "idle", parked: "parked", aborted: "terminated" };
 const KIND_BY_OMP_KIND: Record<string, AgentKind> = { main: "main", sub: "sub", advisor: "advisor" };
 const SOURCE_BY_OMP_SOURCE: Record<string, DefinitionSource> = { bundled: "bundled", user: "user", project: "project" };
+const JOB_KIND_BY_OMP_TYPE: Record<string, JobKind> = { bash: "bash", task: "task", eval: "eval" };
+
+/**
+ * A live session with queued messages (including hidden next-turn messages) is
+ * still running work even between turns; otherwise OMP's registry status wins.
+ * A main ref is never reported `running` from a stale registry status alone:
+ * without streaming or queued input it is idle.
+ */
+function stateOf(ref: AgentRef): AgentState {
+	if (ref.status === "aborted") return "terminated";
+	const session = ref.session;
+	if (session) {
+		const queued = "queuedMessageCount" in session && typeof session.queuedMessageCount === "number" ? session.queuedMessageCount : 0;
+		if (session.isStreaming || queued > 0) return "running";
+		if (ref.kind === "main" && ref.status === "running") return "idle";
+	}
+	return STATE_BY_OMP_STATUS[ref.status] ?? "unknown";
+}
 
 interface Transcript {
 	id: string;
@@ -47,7 +67,7 @@ function toView(ref: AgentRef, definition: string | null): AgentView {
 		name: ref.displayName,
 		kind: KIND_BY_OMP_KIND[ref.kind] ?? "unknown",
 		parentId: ref.parentId ?? null,
-		state: STATE_BY_OMP_STATUS[ref.status] ?? "unknown",
+		state: stateOf(ref),
 		live: ref.session !== null,
 		streaming: ref.session?.isStreaming ?? false,
 		activity: ref.activity ?? null,
@@ -134,11 +154,58 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 	 * Kept across session changes: a branch or tree navigation leaves the same children running.
 	 */
 	const spawnedDefinitions = new WeakMap<AgentRef, string>();
+	/** Bridge-owned turns must share cancellation with terminal kill, including idle ownership waits. */
+	const activeTurns = new Map<AgentRef, AbortController>();
+	/** Native cancellation changes status before the body/finally drains. Keep that ownership visible. */
+	const cancellingJobs = new Map<object, { session: unknown; job: WorkResult["jobs"][number]; completion: Promise<unknown> }>();
 	const agentListeners = new Set<(agent: AgentView) => void>();
 	const definitionOf = (ref: AgentRef): string | null => ref.history?.agent ?? spawnedDefinitions.get(ref) ?? null;
 
 	const registry = () => AgentRegistry.global();
 	const mainSession = (): unknown => (current && registryOk ? registry().get(current.agent.id)?.session : undefined);
+	let telemetryTimer: ReturnType<typeof setInterval> | undefined;
+	const telemetry = (): void => {
+		const session = mainSession();
+		if (!current || !session || typeof session !== "object") return;
+		if ("getPrewalkState" in session && typeof session.getPrewalkState === "function") {
+			const state = session.getPrewalkState();
+			current.ui.setStatus("noli.prewalk", state ? `Prewalk armed → ${state.target?.name ?? state.target?.id ?? "implementation"}` : undefined);
+		}
+		if ("getSessionStats" in session && typeof session.getSessionStats === "function") {
+			const stats = session.getSessionStats();
+			current.ui.setStatus("noli.cost", typeof stats.cost === "number" && Number.isFinite(stats.cost) ? String(stats.cost) : undefined);
+			for (const key of ["input", "output"] as const) {
+				const value = stats.tokens?.[key];
+				current.ui.setStatus(`noli.${key}`, typeof value === "number" && Number.isFinite(value) ? String(value) : undefined);
+			}
+		}
+		// Read effective session layers, including project/CLI/runtime overrides, not global config.
+		if ("settings" in session && session.settings && typeof session.settings === "object" && "rawValue" in session.settings && typeof session.settings.rawValue === "function") {
+			const rawValue = session.settings.rawValue.bind(session.settings);
+			const value = (id: string): unknown => rawValue({ id, segments: id.split("."), definition: { type: "number" } });
+			const window = current.getContextUsage()?.contextWindow;
+			const fixed = value("compaction.thresholdTokens");
+			const percent = value("compaction.thresholdPercent");
+			const reserve = value("compaction.reserveTokens");
+			let threshold: number | undefined;
+			if (window && "autoCompactionEnabled" in session && session.autoCompactionEnabled === true) {
+				if (typeof fixed === "number" && Number.isFinite(fixed) && fixed > 0) threshold = Math.min(window - 1, Math.max(1, fixed));
+				else if (typeof percent === "number" && Number.isFinite(percent) && percent > 0) threshold = Math.floor(window * Math.min(99, Math.max(1, percent)) / 100);
+				else {
+					const proportional = Math.max(1, Math.floor(window * .15));
+					const configured = typeof reserve === "number" && Number.isFinite(reserve) ? reserve : undefined;
+					const effective = Math.max(Math.floor(window * .15), configured ?? 16384);
+					const budget = effective >= window || (configured === undefined && effective >= window - proportional) ? proportional : effective;
+					threshold = Math.max(0, Math.min(window - 1, window - budget));
+				}
+			}
+			current.ui.setStatus("noli.context-threshold", threshold === undefined || !window ? undefined : String(threshold / window * 100));
+		}
+		if ("tokenRate" in session && session.tokenRate && typeof session.tokenRate === "object" && "rate" in session.tokenRate && typeof session.tokenRate.rate === "function") {
+			const rate = session.tokenRate.rate();
+			current.ui.setStatus("noli.throughput", typeof rate === "number" && Number.isFinite(rate) ? String(rate) : undefined);
+		}
+	};
 
 	pi.events.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, payload => {
 		if (!registryOk || !payload || typeof payload !== "object" || !("id" in payload) || !("agent" in payload)) return;
@@ -163,6 +230,14 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 				? available("public", detail)
 				: unavailable("public", "export_missing", `pi.pi export(s) missing: ${absent.join(", ")}`);
 		};
+		const queuedControlCap = (detail: string): CapabilityState => {
+			const base = publicCap([], detail);
+			if (!base.available) return base;
+			if (!session || typeof session !== "object" || !("queuedMessageCount" in session) || typeof session.queuedMessageCount !== "number") {
+				return unavailable("public", "hook_changed", "AgentSession.queuedMessageCount is required for safe queued child admission");
+			}
+			return base;
+		};
 		const internalCap = (name: CapabilityName, probe: (session: unknown) => Probe<unknown>): CapabilityState => {
 			if (!registryOk) return noRegistry;
 			const failure = runtimeFailures[name];
@@ -174,12 +249,18 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		return {
 			"agents.list": publicCap([], "pi.pi.AgentRegistry"),
 			"agents.list.persisted": internalCap("agents.list.persisted", probeRosterReader),
-			"agents.steer": publicCap([], "AgentSession.steer"),
-			"agents.followUp": publicCap([], "AgentSession.followUp"),
+			"agents.steer": queuedControlCap("AgentSession.steer + queuedMessageCount"),
+			"agents.followUp": queuedControlCap("AgentSession.followUp + queuedMessageCount"),
 			"agents.turn": publicCap(["runSubagentFollowUpTurn", "discoverAgents"], "pi.pi.runSubagentFollowUpTurn"),
 			"agents.kill.live": publicCap(["finalizeSubagentLifecycle", "USER_INTERRUPT_LABEL"], "AgentSession.abort + pi.pi.finalizeSubagentLifecycle"),
 			"agents.kill.parked": internalCap("agents.kill.parked", probeLifecycle),
 			"definitions.list": publicCap(["discoverAgents"], "pi.pi.discoverAgents"),
+			"work.get": (() => {
+				if (session === undefined) return unavailable("public", "not_ready", "main session not established");
+				const probe = probeWork(session);
+				return probe.ok ? available("public", probe.detail) : unavailable("public", probe.reason, probe.detail);
+			})(),
+			"work.cancel": internalCap("work.cancel", probeJobCanceller),
 		};
 	};
 	let capabilities = probeAll();
@@ -326,10 +407,39 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		subscribe: listener => {
 			if (!registryOk) return () => {};
 			agentListeners.add(listener);
+			const sessions = new Map<AgentRef, { session: NonNullable<AgentRef["session"]>; unsubscribe: () => void }>();
+			let closed = false;
+			const publish = (ref: AgentRef): void => {
+				if (!closed && scopedRef(ref.id) === ref) listener(toView(ref, definitionOf(ref)));
+			};
+			const watch = (ref: AgentRef): void => {
+				const prior = sessions.get(ref);
+				if (prior?.session === ref.session) return;
+				prior?.unsubscribe();
+				sessions.delete(ref);
+				if (ref.kind !== "sub" || !ref.session) return;
+				const session = ref.session;
+				const unsubscribe = session.subscribe(event => {
+					if (event.type !== "agent_end") return;
+					// The agent_end callback can precede native streaming/queue cleanup.
+					// Publish only after the host's idle barrier, then inspect current queues.
+					void session.waitForIdle().then(() => publish(ref), error => {
+						pi.logger.warn("Noli child idle observation failed", { id: ref.id, error: String(error) });
+					});
+				});
+				sessions.set(ref, { session, unsubscribe });
+			};
+			for (const ref of scopedRefs()) watch(ref);
 			const unsubscribeRegistry = registry().onChange(event => {
-				if ("ref" in event && scopedRef(event.ref.id) === event.ref) listener(toView(event.ref, definitionOf(event.ref)));
+				if ("ref" in event && scopedRef(event.ref.id) === event.ref) {
+					watch(event.ref);
+					publish(event.ref);
+				}
 			});
 			return () => {
+				closed = true;
+				for (const { unsubscribe } of sessions.values()) unsubscribe();
+				sessions.clear();
 				agentListeners.delete(listener);
 				unsubscribeRegistry();
 			};
@@ -340,9 +450,13 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		},
 		steer: async (id, text) => {
 			await liveSession(id).steer(text);
+			const ref = scopedRef(id);
+			if (ref) for (const listener of agentListeners) listener(toView(ref, definitionOf(ref)));
 		},
 		followUp: async (id, text) => {
 			await liveSession(id).followUp(text);
+			const ref = scopedRef(id);
+			if (ref) for (const listener of agentListeners) listener(toView(ref, definitionOf(ref)));
 		},
 		turn: async (id, text, definitionName) => {
 			const ref = scopedRef(id);
@@ -351,13 +465,20 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			const definition = agents.find(a => a.name === definitionName);
 			if (!definition) throw new BridgeError("unknown_definition", `agent definition "${definitionName}" not found (see definitions.list)`);
 			if (scopedRef(id) !== ref) throw new BridgeError("stale_session", "agent ownership changed during definition lookup");
-			const result = await runSubagentFollowUpTurn({ id, agent: definition, message: text });
-			return { output: result.output, exitCode: result.exitCode, aborted: result.aborted === true };
+			const controller = new AbortController();
+			activeTurns.set(ref, controller);
+			try {
+				const result = await runSubagentFollowUpTurn({ id, agent: definition, message: text, signal: controller.signal });
+				return { output: result.output, exitCode: result.exitCode, aborted: result.aborted === true };
+			} finally {
+				activeTurns.delete(ref);
+			}
 		},
 		killLive: async id => {
 			const ref = scopedRef(id);
 			const session = ref?.session;
 			if (!ref || !session) return false;
+			activeTurns.get(ref)?.abort(USER_INTERRUPT_LABEL);
 			await session.abort({ reason: USER_INTERRUPT_LABEL });
 			await finalizeSubagentLifecycle({
 				id,
@@ -393,6 +514,86 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			}
 			return true;
 		},
+		work: () => {
+			const probe = probeWork(mainSession());
+			if (!probe.ok) throw new BridgeError("capability_unavailable", `work.get is unavailable: ${probe.detail}`, { capability: "work.get", reason: probe.reason });
+			const session = probe.value;
+			// getQueuedMessages includes live-steered chips already removed from queuedMessageCount.
+			// Count only user-authored messages still in the actual queues, matching OMP's predicate.
+			let visibleQueued = 0;
+			for (const queue of [session.agent.peekSteeringQueue(), session.agent.peekFollowUpQueue()]) {
+				for (const message of queue) {
+					if ((message.role === "user" && message.attribution !== "agent") || (message.role === "custom" && message.attribution === "user" && message.display !== false)) visibleQueued++;
+				}
+			}
+			const snapshot = session.getAsyncJobSnapshot();
+			const streaming = session.isStreaming;
+			const admittedSubmission = session.hasAdmittedSubmission;
+			const queued = session.queuedMessageCount;
+			const draining = [...cancellingJobs.values()].filter(entry => entry.session === session);
+			const pendingAsyncWork = session.hasPendingAsyncWork() || draining.length > 0;
+			const result: WorkResult = {
+				// OMP's own predicate, extended through native cancelled-job body/cleanup completion.
+				settled: !streaming && !admittedSubmission && queued === 0 && !pendingAsyncWork,
+				streaming,
+				admittedSubmission,
+				queued,
+				hiddenQueued: Math.max(0, queued - visibleQueued),
+				pendingAsyncWork,
+				jobs: (snapshot?.running ?? []).map(job => ({
+					id: job.id,
+					kind: JOB_KIND_BY_OMP_TYPE[job.type] ?? "unknown",
+					label: job.label,
+					startedAt: job.startTime,
+					agentId: job.agentId ?? null,
+				})),
+				undeliveredResults: snapshot?.delivery.queued ?? 0,
+			};
+			for (const { job } of draining) {
+				if (!result.jobs.some(running => running.id === job.id)) result.jobs.push(job);
+			}
+			return result;
+		},
+		cancelJob: async id => {
+			const session = mainSession();
+			const probe = probeJobCanceller(session);
+			if (!probe.ok) {
+				refresh();
+				throw new BridgeError("capability_unavailable", `work.cancel is unavailable: ${probe.detail}`, { capability: "work.cancel", reason: probe.reason });
+			}
+			const { manager, ownerId } = probe.value;
+			const job = manager.getJob(id);
+			if (!job || typeof job !== "object" || !("ownerId" in job) || job.ownerId !== ownerId) return false;
+			const pending = cancellingJobs.get(job);
+			if (pending) {
+				await pending.completion;
+				return true;
+			}
+			if (!("status" in job) || (job.status !== "running" && job.status !== "cancelled")) return false;
+			if (!("promise" in job) || !job.promise || typeof job.promise !== "object" || !("then" in job.promise) || typeof job.promise.then !== "function" || !("type" in job) || typeof job.type !== "string" || !("label" in job) || typeof job.label !== "string" || !("startTime" in job) || typeof job.startTime !== "number") {
+				fail("work.cancel", "getJob() exposes no observable job completion or job metadata; refusing cancellation");
+				throw new BridgeError("capability_unavailable", "work.cancel cannot observe job termination", { capability: "work.cancel", reason: "hook_changed" });
+			}
+			const completion = Promise.resolve(job.promise as PromiseLike<unknown>);
+			cancellingJobs.set(job, { session, completion, job: {
+				id,
+				kind: JOB_KIND_BY_OMP_TYPE[job.type] ?? "unknown",
+				label: job.label,
+				startedAt: job.startTime,
+				agentId: "agentId" in job && typeof job.agentId === "string" ? job.agentId : null,
+			} });
+			try {
+				// Native cancel returns false for an already-cancelled owned job,
+				// whose body may still be draining; no await permits an owner race here.
+				return manager.cancel(id, { ownerId });
+			} finally {
+				try {
+					await completion;
+				} finally {
+					cancellingJobs.delete(job);
+				}
+			}
+		},
 	};
 
 	return {
@@ -404,8 +605,14 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			runtimeFailures = {};
 			declined.clear();
 			refresh();
+			clearInterval(telemetryTimer);
+			telemetry();
+			telemetryTimer = setInterval(telemetry, 1000);
 		},
 		release: () => {
+			clearInterval(telemetryTimer);
+			telemetryTimer = undefined;
+			for (const key of ["prewalk", "cost", "input", "output", "context-threshold", "throughput"]) current?.ui.setStatus(`noli.${key}`, undefined);
 			current = undefined;
 		},
 	};

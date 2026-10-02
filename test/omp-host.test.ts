@@ -86,9 +86,48 @@ function restartProcess() {
 	omp.adopt(ctx);
 }
 
+/** Mirrors the AgentSession members the work view and queued-control capabilities read. */
+const work = {
+	streaming: false,
+	admitted: false,
+	queued: 0,
+	visible: { steering: [] as unknown[], followUp: [] as unknown[] },
+	queues: { steering: [] as Array<{ role: string; attribution?: string; display?: boolean }>, followUp: [] as Array<{ role: string; attribution?: string; display?: boolean }> },
+	pending: false,
+	jobs: [] as Array<{ id: string; type: string; label: string; startTime: number; agentId?: string }>,
+	undelivered: 0,
+	cancelled: [] as Array<{ id: string; filter: unknown }>,
+};
+
 const mainSession = {
 	sessionManager: { getSessionId: () => "sess-1" },
-	isStreaming: false,
+	get isStreaming() {
+		return work.streaming;
+	},
+	get hasAdmittedSubmission() {
+		return work.admitted;
+	},
+	get queuedMessageCount() {
+		return work.queued;
+	},
+	hasPendingAsyncWork: () => work.pending,
+	getQueuedMessages: () => work.visible,
+	agent: {
+		peekSteeringQueue: () => work.queues.steering,
+		peekFollowUpQueue: () => work.queues.followUp,
+	},
+	getAsyncJobSnapshot: () => ({ running: work.jobs, recent: [], delivery: { queued: work.undelivered, delivering: false } }),
+	getAgentId: () => "Main",
+	asyncJobManager: {
+		getJob: (id: string): unknown => {
+			const job = work.jobs.find(job => job.id === id);
+			return job ? { ...job, ownerId: "Main", status: "running", promise: Promise.resolve() } : undefined;
+		},
+		cancel: (id: string, filter: unknown) => {
+			work.cancelled.push({ id, filter });
+			return work.jobs.some(job => job.id === id);
+		},
+	},
 	getToolByName: (name: string): unknown => {
 		if (name === "read") {
 			return {
@@ -140,13 +179,15 @@ function makeOmp(): OmpHost {
 const ctx = {
 	agent: { kind: "main", id: "Main", name: "main", depth: 0 },
 	sessionManager: { getSessionId: () => "sess-1", getSessionFile: () => rootFile },
-	ui: { notify: (message: string) => notices.push(message) },
+	ui: { notify: (message: string) => notices.push(message), setStatus: (key: string, value: string | undefined) => { statuses[key] = value; } },
 	cwd: "/",
+	getContextUsage: () => ({ contextWindow: 1000 }),
 } as unknown as ExtensionContext; // Test seam: minimal context the adapter reads.
 
 let definitions: Array<{ name: string; description: string; source: string; systemPrompt: string }> = [];
 
 let stderrWrite: typeof process.stderr.write;
+let statuses: Record<string, string | undefined>;
 
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "noli-host-"));
@@ -156,6 +197,8 @@ beforeEach(() => {
 	writeFileSync(rootFile, header);
 	registry = new FakeRegistry();
 	registry.refs.set("Main", { id: "Main", displayName: "main", kind: "main", status: "running", session: mainSession, sessionFile: rootFile, createdAt: 1, lastActivity: 1 });
+	Object.assign(work, { streaming: false, admitted: false, queued: 0, visible: { steering: [], followUp: [] }, queues: { steering: [], followUp: [] }, pending: false, jobs: [], undelivered: 0, cancelled: [] });
+	statuses = {};
 	readCalls = 0;
 	scanBehavior = "real";
 	notices = [];
@@ -166,6 +209,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	omp.release();
 	process.stderr.write = stderrWrite;
 	rmSync(dir, { recursive: true, force: true });
 });
@@ -386,5 +430,120 @@ describe("mapping OMP data onto the protocol", () => {
 		} finally {
 			mainSession.getToolByName = original;
 		}
+	});
+
+	test("main is idle when its registry status is stale but nothing streams or is queued; hidden queued input keeps it running", async () => {
+		const main = async () => (await listLive()).agents.find(a => a.id === "Main")?.state;
+		expect(await main()).toBe("idle");
+		work.queued = 1;
+		expect(await main()).toBe("running");
+		work.queued = 0;
+		work.streaming = true;
+		expect(await main()).toBe("running");
+	});
+});
+
+describe("work", () => {
+	test("reports OMP's settlement fields, counts hidden queued messages and maps running jobs", () => {
+		expect(omp.host.work()).toEqual({ settled: true, streaming: false, admittedSubmission: false, queued: 0, hiddenQueued: 0, pendingAsyncWork: false, jobs: [], undeliveredResults: 0 });
+		work.queued = 2;
+		work.visible = { steering: ["visible"], followUp: [] };
+		work.queues.steering = [{ role: "user" }];
+		work.pending = true;
+		work.undelivered = 1;
+		work.jobs = [{ id: "bg_1", type: "bash", label: "cargo test", startTime: 5 }, { id: "T", type: "vibe", label: "x", startTime: 6, agentId: "Child" }];
+		expect(omp.host.work()).toEqual({
+			settled: false,
+			streaming: false,
+			admittedSubmission: false,
+			queued: 2,
+			hiddenQueued: 1,
+			pendingAsyncWork: true,
+			jobs: [
+				{ id: "bg_1", kind: "bash", label: "cargo test", startedAt: 5, agentId: null },
+				{ id: "T", kind: "unknown", label: "x", startedAt: 6, agentId: "Child" },
+			],
+			undeliveredResults: 1,
+		});
+	});
+
+	test("live-steered chips cannot hide a pending next-turn message", () => {
+		work.queued = 2; // One real queued user message and one hidden next-turn message.
+		work.visible = { steering: ["live-steered", "queued user"], followUp: [] };
+		work.queues.steering = [{ role: "user" }];
+		expect(omp.host.work()).toMatchObject({ queued: 2, hiddenQueued: 1, settled: false });
+	});
+
+	test("queue visibility excludes agent-authored prompts and hidden custom companions", () => {
+		work.queued = 4; // Two user chips, an advisor, and an agent-authored prompt.
+		work.queues.steering = [{ role: "user" }, { role: "custom", attribution: "user" }, { role: "user", attribution: "agent" }, { role: "custom" }, { role: "custom", attribution: "user", display: false }];
+		expect(omp.host.work().hiddenQueued).toBe(2);
+	});
+
+	test("an admitted submission alone keeps the session unsettled", () => {
+		work.admitted = true;
+		expect(omp.host.work().settled).toBe(false);
+	});
+
+	test("cancelJob is scoped to the root session's agent id", async () => {
+		work.jobs = [{ id: "bg_1", type: "bash", label: "x", startTime: 1 }];
+		expect(await omp.host.cancelJob("bg_1")).toBe(true);
+		expect(await omp.host.cancelJob("other")).toBe(false);
+		expect(work.cancelled).toEqual([{ id: "bg_1", filter: { ownerId: "Main" } }]);
+	});
+
+	test("without an owner id, cancellation is refused and never reaches the job manager unscoped", async () => {
+		const original = mainSession.getAgentId;
+		for (const missing of [() => undefined, () => ""]) {
+			mainSession.getAgentId = missing as () => string;
+			try {
+				expect(omp.host.refreshCapabilities()["work.cancel"]).toMatchObject({ available: false, reason: "hook_changed" });
+				await expect(omp.host.cancelJob("bg_1")).rejects.toThrow(/work.cancel is unavailable/);
+			} finally {
+				mainSession.getAgentId = original;
+			}
+		}
+		expect(work.cancelled).toEqual([]);
+		expect(omp.host.refreshCapabilities()["work.cancel"].available).toBe(true);
+	});
+
+	test("cancellation fails closed when the native job completion is unobservable", async () => {
+		const original = mainSession.asyncJobManager.getJob;
+		mainSession.asyncJobManager.getJob = () => ({ ownerId: "Main", status: "running" });
+		try {
+			await expect(omp.host.cancelJob("bg_1")).rejects.toThrow(/cannot observe job termination/);
+			expect(work.cancelled).toEqual([]);
+		} finally {
+			mainSession.asyncJobManager.getJob = original;
+		}
+	});
+});
+
+describe("telemetry lifecycle", () => {
+	test("an invalid cost clears a previously published value", () => {
+		let cost = 1.25;
+		registry.refs.get("Main")!.session = { ...mainSession, getSessionStats: () => ({ cost, tokens: {} }) };
+		omp.adopt(ctx);
+		expect(statuses["noli.cost"]).toBe("1.25");
+		for (const invalid of [NaN, Infinity, undefined]) {
+			cost = invalid as number;
+			omp.adopt(ctx);
+			expect(statuses["noli.cost"]).toBeUndefined();
+		}
+	});
+
+	test("release clears every published bridge telemetry value", () => {
+		registry.refs.get("Main")!.session = {
+			...mainSession,
+			getPrewalkState: () => ({ target: { name: "implementation" } }),
+			getSessionStats: () => ({ cost: 1.25, tokens: { input: 10, output: 20 } }),
+			settings: { rawValue: ({ id }: { id: string }) => id === "compaction.thresholdPercent" ? 80 : undefined },
+			autoCompactionEnabled: true,
+			tokenRate: { rate: () => 12 },
+		};
+		omp.adopt(ctx);
+		expect(statuses).toMatchObject({ "noli.prewalk": "Prewalk armed → implementation", "noli.cost": "1.25", "noli.input": "10", "noli.output": "20", "noli.context-threshold": "80", "noli.throughput": "12" });
+		omp.release();
+		expect(statuses).toEqual({ "noli.prewalk": undefined, "noli.cost": undefined, "noli.input": undefined, "noli.output": undefined, "noli.context-threshold": undefined, "noli.throughput": undefined });
 	});
 });

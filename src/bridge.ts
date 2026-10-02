@@ -5,6 +5,7 @@ import type { Socket, SocketListener } from "bun";
 import {
 	type AgentView,
 	type Capabilities,
+	type CancelWorkResult,
 	type CapabilityName,
 	type CapabilityReason,
 	type DefinitionView,
@@ -16,6 +17,7 @@ import {
 	PROTOCOL_VERSION,
 	type ServerFrame,
 	type TurnResult,
+	type WorkResult,
 } from "./protocol";
 
 /** Transport: newline-delimited JSON over a private Unix socket. Wire types live in ./protocol. */
@@ -47,6 +49,10 @@ export interface BridgeHost {
 	killLive(id: string): Promise<boolean>;
 	/** Terminally release a PARKED agent without executing a turn; persists the host's tombstone. */
 	killParked(id: string): Promise<boolean>;
+	/** The root session's observed settlement state and running background jobs. */
+	work(): WorkResult;
+	/** Cancel an owned job and await its body/cleanup. False if already finished or not owned. */
+	cancelJob(id: string): Promise<boolean>;
 }
 
 export class BridgeError extends Error {
@@ -203,6 +209,14 @@ export function startBridge(options: BridgeOptions): Bridge {
 				}
 				requireCapability("agents.kill.parked");
 				return { killed: await host.killParked(view.id), mode: "parked" } satisfies KillResult;
+			}
+			case "work.get": {
+				requireCapability("work.get");
+				return host.work() satisfies WorkResult;
+			}
+			case "work.cancel": {
+				requireCapability("work.cancel");
+				return { cancelled: await host.cancelJob(paramString(params, "jobId")) } satisfies CancelWorkResult;
 			}
 			default:
 				throw new BridgeError("unknown_method", `unknown method "${method}"`);

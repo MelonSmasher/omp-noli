@@ -103,6 +103,20 @@ const h: Harness = {
 			h.calls.push(`killParked:${id}`);
 			return true;
 		},
+		work: () => ({
+			settled: false,
+			streaming: false,
+			admittedSubmission: false,
+			queued: 1,
+			hiddenQueued: 1,
+			pendingAsyncWork: true,
+			jobs: [{ id: "bg_1", kind: "bash", label: "cargo test", startedAt: 1, agentId: null }],
+			undeliveredResults: 0,
+		}),
+		cancelJob: async id => {
+			h.calls.push(`cancelJob:${id}`);
+			return id === "bg_1";
+		},
 	},
 };
 
@@ -438,6 +452,19 @@ describe("capabilities", () => {
 		disable("definitions.list", "export_missing");
 		expect((await call(client, "definitions.list")).error).toMatchObject({ code: "capability_unavailable", reason: "export_missing" });
 		expect(h.calls).toEqual(["definitions"]);
+	});
+
+	test("work.get reports settlement state and work.cancel cancels by job id, each gated", async () => {
+		const client = await authed();
+		expect((await call(client, "work.get")).result).toMatchObject({ settled: false, hiddenQueued: 1, jobs: [{ id: "bg_1", kind: "bash" }] });
+		expect((await call(client, "work.cancel", { jobId: "bg_1" })).result).toEqual({ cancelled: true });
+		expect((await call(client, "work.cancel", { jobId: "gone" })).result).toEqual({ cancelled: false });
+		expect((await call(client, "work.cancel", {})).error).toMatchObject({ code: "bad_request" });
+		disable("work.cancel", "hook_changed");
+		expect((await call(client, "work.cancel", { jobId: "bg_1" })).error).toMatchObject({ code: "capability_unavailable", capability: "work.cancel" });
+		disable("work.get", "not_ready");
+		expect((await call(client, "work.get")).error).toMatchObject({ code: "capability_unavailable", capability: "work.get" });
+		expect(h.calls).toEqual(["cancelJob:bg_1", "cancelJob:gone"]);
 	});
 
 	test("agents.list includes persisted children by default when discovery is available", async () => {

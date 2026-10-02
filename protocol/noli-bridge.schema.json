@@ -35,7 +35,9 @@
         { "$ref": "#/$defs/ListResult" },
         { "$ref": "#/$defs/QueuedResult" },
         { "$ref": "#/$defs/TurnResult" },
-        { "$ref": "#/$defs/KillResult" }
+        { "$ref": "#/$defs/KillResult" },
+        { "$ref": "#/$defs/WorkResult" },
+        { "$ref": "#/$defs/CancelWorkResult" }
       ]
     },
 
@@ -86,9 +88,44 @@
       "required": ["killed", "mode"],
       "properties": { "killed": { "type": "boolean" }, "mode": { "enum": ["live", "parked"] } }
     },
+    "WorkResult": {
+      "description": "Observed settlement state of the root session. Cancellation-draining job bodies remain pending until completion.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["settled", "streaming", "admittedSubmission", "queued", "hiddenQueued", "pendingAsyncWork", "jobs", "undeliveredResults"],
+      "properties": {
+        "settled": { "type": "boolean" },
+        "streaming": { "type": "boolean" },
+        "admittedSubmission": { "type": "boolean" },
+        "queued": { "type": "integer", "minimum": 0 },
+        "hiddenQueued": { "type": "integer", "minimum": 0 },
+        "pendingAsyncWork": { "type": "boolean" },
+        "jobs": { "type": "array", "items": { "$ref": "#/$defs/JobView" } },
+        "undeliveredResults": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "CancelWorkResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cancelled"],
+      "properties": { "cancelled": { "type": "boolean" } }
+    },
+    "JobKind": { "enum": ["bash", "task", "eval", "unknown"] },
+    "JobView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "label", "startedAt", "agentId"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "$ref": "#/$defs/JobKind" },
+        "label": { "type": "string" },
+        "startedAt": { "type": "number", "description": "Milliseconds since the Unix epoch." },
+        "agentId": { "type": ["string", "null"] }
+      }
+    },
 
     "CapabilityName": {
-      "enum": ["agents.list", "agents.list.persisted", "agents.steer", "agents.followUp", "agents.turn", "agents.kill.live", "agents.kill.parked", "definitions.list"]
+      "enum": ["agents.list", "agents.list.persisted", "agents.steer", "agents.followUp", "agents.turn", "agents.kill.live", "agents.kill.parked", "definitions.list", "work.get", "work.cancel"]
     },
     "CapabilityReason": { "enum": ["export_missing", "tool_missing", "hook_changed", "runtime_failure", "not_ready"] },
     "CapabilityApi": { "enum": ["public", "internal"] },
@@ -116,7 +153,7 @@
     "Capabilities": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["agents.list", "agents.list.persisted", "agents.steer", "agents.followUp", "agents.turn", "agents.kill.live", "agents.kill.parked", "definitions.list"],
+      "required": ["agents.list", "agents.list.persisted", "agents.steer", "agents.followUp", "agents.turn", "agents.kill.live", "agents.kill.parked", "definitions.list", "work.get", "work.cancel"],
       "properties": {
         "agents.list": { "$ref": "#/$defs/CapabilityState" },
         "agents.list.persisted": { "$ref": "#/$defs/CapabilityState" },
@@ -125,7 +162,9 @@
         "agents.turn": { "$ref": "#/$defs/CapabilityState" },
         "agents.kill.live": { "$ref": "#/$defs/CapabilityState" },
         "agents.kill.parked": { "$ref": "#/$defs/CapabilityState" },
-        "definitions.list": { "$ref": "#/$defs/CapabilityState" }
+        "definitions.list": { "$ref": "#/$defs/CapabilityState" },
+        "work.get": { "$ref": "#/$defs/CapabilityState" },
+        "work.cancel": { "$ref": "#/$defs/CapabilityState" }
       }
     },
 
