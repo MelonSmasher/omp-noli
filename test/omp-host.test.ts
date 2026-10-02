@@ -86,9 +86,39 @@ function restartProcess() {
 	omp.adopt(ctx);
 }
 
+/** Mirrors the AgentSession members the work view and queued-control capabilities read. */
+const work = {
+	streaming: false,
+	admitted: false,
+	queued: 0,
+	visible: { steering: [] as unknown[], followUp: [] as unknown[] },
+	pending: false,
+	jobs: [] as Array<{ id: string; type: string; label: string; startTime: number; agentId?: string }>,
+	undelivered: 0,
+	cancelled: [] as Array<{ id: string; filter: unknown }>,
+};
+
 const mainSession = {
 	sessionManager: { getSessionId: () => "sess-1" },
-	isStreaming: false,
+	get isStreaming() {
+		return work.streaming;
+	},
+	get hasAdmittedSubmission() {
+		return work.admitted;
+	},
+	get queuedMessageCount() {
+		return work.queued;
+	},
+	hasPendingAsyncWork: () => work.pending,
+	getQueuedMessages: () => work.visible,
+	getAsyncJobSnapshot: () => ({ running: work.jobs, recent: [], delivery: { queued: work.undelivered, delivering: false } }),
+	getAgentId: () => "Main",
+	asyncJobManager: {
+		cancel: (id: string, filter: unknown) => {
+			work.cancelled.push({ id, filter });
+			return work.jobs.some(job => job.id === id);
+		},
+	},
 	getToolByName: (name: string): unknown => {
 		if (name === "read") {
 			return {
@@ -156,6 +186,7 @@ beforeEach(() => {
 	writeFileSync(rootFile, header);
 	registry = new FakeRegistry();
 	registry.refs.set("Main", { id: "Main", displayName: "main", kind: "main", status: "running", session: mainSession, sessionFile: rootFile, createdAt: 1, lastActivity: 1 });
+	Object.assign(work, { streaming: false, admitted: false, queued: 0, visible: { steering: [], followUp: [] }, pending: false, jobs: [], undelivered: 0, cancelled: [] });
 	readCalls = 0;
 	scanBehavior = "real";
 	notices = [];
@@ -386,5 +417,66 @@ describe("mapping OMP data onto the protocol", () => {
 		} finally {
 			mainSession.getToolByName = original;
 		}
+	});
+
+	test("main is idle when its registry status is stale but nothing streams or is queued; hidden queued input keeps it running", async () => {
+		const main = async () => (await listLive()).agents.find(a => a.id === "Main")?.state;
+		expect(await main()).toBe("idle");
+		work.queued = 1;
+		expect(await main()).toBe("running");
+		work.queued = 0;
+		work.streaming = true;
+		expect(await main()).toBe("running");
+	});
+});
+
+describe("work", () => {
+	test("reports OMP's settlement fields, counts hidden queued messages and maps running jobs", () => {
+		expect(omp.host.work()).toEqual({ settled: true, streaming: false, admittedSubmission: false, queued: 0, hiddenQueued: 0, pendingAsyncWork: false, jobs: [], undeliveredResults: 0 });
+		work.queued = 2;
+		work.visible = { steering: ["visible"], followUp: [] };
+		work.pending = true;
+		work.undelivered = 1;
+		work.jobs = [{ id: "bg_1", type: "bash", label: "cargo test", startTime: 5 }, { id: "T", type: "vibe", label: "x", startTime: 6, agentId: "Child" }];
+		expect(omp.host.work()).toEqual({
+			settled: false,
+			streaming: false,
+			admittedSubmission: false,
+			queued: 2,
+			hiddenQueued: 1,
+			pendingAsyncWork: true,
+			jobs: [
+				{ id: "bg_1", kind: "bash", label: "cargo test", startedAt: 5, agentId: null },
+				{ id: "T", kind: "unknown", label: "x", startedAt: 6, agentId: "Child" },
+			],
+			undeliveredResults: 1,
+		});
+	});
+
+	test("an admitted submission alone keeps the session unsettled", () => {
+		work.admitted = true;
+		expect(omp.host.work().settled).toBe(false);
+	});
+
+	test("cancelJob is scoped to the root session's agent id", () => {
+		work.jobs = [{ id: "bg_1", type: "bash", label: "x", startTime: 1 }];
+		expect(omp.host.cancelJob("bg_1")).toBe(true);
+		expect(omp.host.cancelJob("other")).toBe(false);
+		expect(work.cancelled).toEqual([{ id: "bg_1", filter: { ownerId: "Main" } }, { id: "other", filter: { ownerId: "Main" } }]);
+	});
+
+	test("without an owner id, cancellation is refused and never reaches the job manager unscoped", () => {
+		const original = mainSession.getAgentId;
+		for (const missing of [() => undefined, () => ""]) {
+			mainSession.getAgentId = missing as () => string;
+			try {
+				expect(omp.host.refreshCapabilities()["work.cancel"]).toMatchObject({ available: false, reason: "hook_changed" });
+				expect(() => omp.host.cancelJob("bg_1")).toThrow(/work.cancel is unavailable/);
+			} finally {
+				mainSession.getAgentId = original;
+			}
+		}
+		expect(work.cancelled).toEqual([]);
+		expect(omp.host.refreshCapabilities()["work.cancel"].available).toBe(true);
 	});
 });

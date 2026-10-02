@@ -8,6 +8,7 @@ import {
 	DISCOVERY_REASONS,
 	DISCOVERY_STATUSES,
 	ERROR_CODES,
+	JOB_KINDS,
 } from "../src/protocol";
 import { assertValidFrame, schema } from "./schema";
 
@@ -21,6 +22,7 @@ describe("schema matches src/protocol.ts", () => {
 		["DiscoveryReason", DISCOVERY_REASONS],
 		["DefinitionSource", DEFINITION_SOURCES],
 		["ErrorCode", ERROR_CODES],
+		["JobKind", JOB_KINDS],
 	] as const)("%s enum", (def, values) => {
 		expect([...(schema.$defs[def]?.enum ?? [])].sort()).toEqual([...values].sort());
 	});

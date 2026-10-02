@@ -75,6 +75,55 @@ export function probeLifecycle(session: unknown): Probe<LifecycleHandle> {
 	return { ok: true, value: manager, detail: "task ToolSession.agentLifecycle().release(..., { tombstone: true })" };
 }
 
+/** Session members the settlement view reads; all are public AgentSession API. */
+export interface WorkSession {
+	isStreaming: boolean;
+	hasAdmittedSubmission: boolean;
+	queuedMessageCount: number;
+	hasPendingAsyncWork(): boolean;
+	getQueuedMessages(): { steering: readonly unknown[]; followUp: readonly unknown[] };
+	getAsyncJobSnapshot(): {
+		running: Array<{ id: string; type: string; label: string; startTime: number; agentId?: string }>;
+		delivery: { queued: number };
+	} | null;
+}
+
+/** Async job manager members `work.cancel` needs. The filter is mandatory: without it OMP's manager cancels any owner's job. */
+export interface JobCanceller {
+	cancel(id: string, filter: { ownerId: string }): boolean;
+}
+
+export function probeWork(session: unknown): Probe<WorkSession> {
+	if (!session || typeof session !== "object") return { ok: false, reason: "not_ready", detail: "main session not established" };
+	const s = session as Record<string, unknown>;
+	for (const key of ["isStreaming", "hasAdmittedSubmission"]) {
+		if (typeof s[key] !== "boolean") return { ok: false, reason: "hook_changed", detail: `AgentSession.${key} is missing` };
+	}
+	if (typeof s.queuedMessageCount !== "number") return { ok: false, reason: "hook_changed", detail: "AgentSession.queuedMessageCount is missing" };
+	for (const key of ["hasPendingAsyncWork", "getQueuedMessages", "getAsyncJobSnapshot"]) {
+		if (typeof s[key] !== "function") return { ok: false, reason: "hook_changed", detail: `AgentSession.${key}() is missing` };
+	}
+	return { ok: true, value: session as WorkSession, detail: "AgentSession settlement state + getAsyncJobSnapshot" };
+}
+
+/**
+ * Cancelling a job reaches the session's async job manager, which may be the
+ * process-global one. OMP enforces ownership only when given an owner filter,
+ * so this fails closed unless the session reports a non-empty agent id.
+ */
+export function probeJobCanceller(session: unknown): Probe<{ manager: JobCanceller; ownerId: string }> {
+	if (!session || typeof session !== "object") return { ok: false, reason: "not_ready", detail: "main session not established" };
+	const manager = "asyncJobManager" in session ? session.asyncJobManager : undefined;
+	if (!manager || typeof manager !== "object" || !("cancel" in manager) || typeof manager.cancel !== "function") {
+		return { ok: false, reason: "hook_changed", detail: "AgentSession.asyncJobManager has no cancel()" };
+	}
+	const ownerId = "getAgentId" in session && typeof session.getAgentId === "function" ? session.getAgentId() : undefined;
+	if (typeof ownerId !== "string" || ownerId.length === 0) {
+		return { ok: false, reason: "hook_changed", detail: "AgentSession.getAgentId() returned no owner id; refusing unscoped job cancellation" };
+	}
+	return { ok: true, value: { manager: manager as JobCanceller, ownerId }, detail: "AgentSession.asyncJobManager.cancel scoped to the session's agent id" };
+}
+
 export function unavailable(api: CapabilityState["api"], reason: CapabilityReason, detail: string): CapabilityState {
 	return { available: false, api, reason, detail };
 }

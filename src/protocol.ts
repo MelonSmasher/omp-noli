@@ -25,6 +25,8 @@ export const CAPABILITY_NAMES = [
 	"agents.kill.live",
 	"agents.kill.parked",
 	"definitions.list",
+	"work.get",
+	"work.cancel",
 ] as const;
 export type CapabilityName = (typeof CAPABILITY_NAMES)[number];
 
@@ -145,6 +147,50 @@ export interface TurnResult {
 export interface KillResult {
 	killed: boolean;
 	mode: "live" | "parked";
+}
+
+// ------------------------------------------------------------------------ work
+
+/** Kind of background job, independent of the host's own names. */
+export const JOB_KINDS = ["bash", "task", "eval", "unknown"] as const;
+export type JobKind = (typeof JOB_KINDS)[number];
+
+export interface JobView {
+	id: string;
+	kind: JobKind;
+	/** Short display-only description of the job. */
+	label: string;
+	/** Milliseconds since the Unix epoch. */
+	startedAt: number;
+	/** The child agent the job runs, when it runs one. */
+	agentId: string | null;
+}
+
+/**
+ * Why the root session is or isn't settled. The host is settled only when it
+ * is not streaming, has no admitted submission, nothing queued (`queued`
+ * includes hidden next-turn messages the visible queues omit) and no pending
+ * background work. Every field is observed, never inferred.
+ */
+export interface WorkResult {
+	settled: boolean;
+	streaming: boolean;
+	admittedSubmission: boolean;
+	/** Queued messages, including hidden next-turn messages. */
+	queued: number;
+	/** Of `queued`, messages hidden from the visible steering/follow-up queues. */
+	hiddenQueued: number;
+	/** Background work can still wake the session (running jobs, undelivered results). */
+	pendingAsyncWork: boolean;
+	/** Running background jobs owned by the root session. */
+	jobs: JobView[];
+	/** Finished job results waiting to be delivered into the conversation. */
+	undeliveredResults: number;
+}
+
+export interface CancelWorkResult {
+	/** True when a running job was cancelled; false when it had already finished. */
+	cancelled: boolean;
 }
 
 export interface HelloResult {

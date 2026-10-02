@@ -36,12 +36,14 @@ Every feature maps to a named capability. Each capability has a source:
 | --- | --- | --- |
 | `agents.list` | public | `pi.pi.AgentRegistry` |
 | `agents.list.persisted` | internal | The built-in `read` tool's `history://<id>` lookup runs OMP's persisted-roster scan for the current root session. |
-| `agents.steer` | public | `AgentSession.steer` |
-| `agents.followUp` | public | `AgentSession.followUp` |
+| `agents.steer` | public | `AgentSession.steer` + `queuedMessageCount` |
+| `agents.followUp` | public | `AgentSession.followUp` + `queuedMessageCount` |
 | `agents.turn` | public | `pi.pi.runSubagentFollowUpTurn`, `pi.pi.discoverAgents` |
 | `agents.kill.live` | public | `AgentSession.abort` + `pi.pi.finalizeSubagentLifecycle` |
 | `agents.kill.parked` | internal | The built-in `task` tool's `session.agentLifecycle()` returns OMP's `AgentLifecycleManager`; the bridge calls `release(id, ref, { tombstone: true })`. |
 | `definitions.list` | public | `pi.pi.discoverAgents` |
+| `work.get` | public | `AgentSession` settlement state (`isStreaming`, `hasAdmittedSubmission`, `queuedMessageCount`, `hasPendingAsyncWork()`, `getQueuedMessages()`) and `getAsyncJobSnapshot()` |
+| `work.cancel` | internal | `AgentSession.asyncJobManager.cancel(id, { ownerId })`, scoped to the root session's agent id. Off (`hook_changed`) when the session reports no agent id: OMP's manager only enforces ownership when given an owner filter, so the bridge never cancels unscoped. |
 
 A capability is either `{ available: true, api, detail }` or `{ available: false, api, reason, detail }`. Act on `reason`; `detail` is human-readable text for logs and tooltips and may change between releases.
 
@@ -99,7 +101,7 @@ Replies can arrive out of order; match them by `id`. Two kinds of event arrive b
 | Field | Values |
 | --- | --- |
 | `kind` | `main`, `sub`, `advisor`, `unknown` |
-| `state` | `running` (executing a turn), `idle` (live, waiting), `parked` (not in memory, revivable), `terminated` (killed, not revivable), `unknown` |
+| `state` | `running` (streaming, or a live session with queued input, including hidden next-turn messages), `idle` (live, waiting), `parked` (not in memory, revivable), `terminated` (killed, not revivable), `unknown`. A live main row whose registry status still says running but which is neither streaming nor holding queued input is `idle`. |
 | `live` / `streaming` | A live in-memory session is attached / it's producing output now. |
 | `definition` | Name of the agent definition the child runs (see `definitions.list`), or `null` when OMP didn't record one. |
 | `createdAt`, `lastActivity` | Milliseconds since the Unix epoch. |
@@ -116,6 +118,8 @@ Rows don't include file paths or other host storage details.
 | `agents.steer` | `agentId`, `text` | `agents.steer` | Queues an interrupting user message on a live child. Returns `{ queued: true }` once queued, not when the turn completes. |
 | `agents.followUp` | `agentId`, `text` | `agents.followUp` | Queues a follow-up user message on a live child. Returns `{ queued: true }` once queued. |
 | `agents.turn` | `agentId`, `text`, optional `agent` | `agents.turn` | Runs one turn through OMP's monitored follow-up driver, reviving the child first if it is parked. Uses `params.agent` if given, otherwise the row's `definition`. Returns `{ output, exitCode, aborted }`. Only one bridge turn per child at a time. |
+| `work.get` | none | `work.get` | Returns the root session's observed settlement state: `{ settled, streaming, admittedSubmission, queued, hiddenQueued, pendingAsyncWork, jobs, undeliveredResults }`. `settled` is OMP's own RPC settle predicate over the other fields. `queued` includes hidden next-turn messages; `hiddenQueued` is the part the visible steering/follow-up queues omit. `jobs` are running background jobs `{ id, kind, label, startedAt, agentId }`, with `kind` one of `bash`, `task`, `eval`, `unknown`. |
+| `work.cancel` | `jobId` | `work.cancel` | Cancels one running background job owned by the root session. Returns `{ cancelled }`; `false` when it already finished or belongs to another owner. |
 | `agents.kill` | `agentId` | `agents.kill.live` or `agents.kill.parked`, depending on the child | Live child: abort, then terminal release. Parked child: terminal release with no revival and no turn. OMP writes the tombstone, so the child stays terminated after a restart. Returns `{ killed, mode: "live" \| "parked" }`. |
 
 **Error codes.** `capability_unavailable` errors also carry `capability` and `reason`; no other error does.
