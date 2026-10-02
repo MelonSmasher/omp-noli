@@ -81,16 +81,27 @@ export interface WorkSession {
 	hasAdmittedSubmission: boolean;
 	queuedMessageCount: number;
 	hasPendingAsyncWork(): boolean;
-	getQueuedMessages(): { steering: readonly unknown[]; followUp: readonly unknown[] };
+	agent: {
+		peekSteeringQueue(): readonly QueuedMessage[];
+		peekFollowUpQueue(): readonly QueuedMessage[];
+	};
 	getAsyncJobSnapshot(): {
 		running: Array<{ id: string; type: string; label: string; startTime: number; agentId?: string }>;
 		delivery: { queued: number };
 	} | null;
 }
 
+/** Queue fields used by OMP's isUserAuthoredQueuedMessage predicate. */
+interface QueuedMessage {
+	role: string;
+	attribution?: string;
+	display?: boolean;
+}
+
 /** Async job manager members `work.cancel` needs. The filter is mandatory: without it OMP's manager cancels any owner's job. */
 export interface JobCanceller {
 	cancel(id: string, filter: { ownerId: string }): boolean;
+	getJob(id: string): unknown;
 }
 
 export function probeWork(session: unknown): Probe<WorkSession> {
@@ -100,10 +111,14 @@ export function probeWork(session: unknown): Probe<WorkSession> {
 		if (typeof s[key] !== "boolean") return { ok: false, reason: "hook_changed", detail: `AgentSession.${key} is missing` };
 	}
 	if (typeof s.queuedMessageCount !== "number") return { ok: false, reason: "hook_changed", detail: "AgentSession.queuedMessageCount is missing" };
-	for (const key of ["hasPendingAsyncWork", "getQueuedMessages", "getAsyncJobSnapshot"]) {
+	for (const key of ["hasPendingAsyncWork", "getAsyncJobSnapshot"]) {
 		if (typeof s[key] !== "function") return { ok: false, reason: "hook_changed", detail: `AgentSession.${key}() is missing` };
 	}
-	return { ok: true, value: session as WorkSession, detail: "AgentSession settlement state + getAsyncJobSnapshot" };
+	const agent = s.agent;
+	if (!agent || typeof agent !== "object" || !("peekSteeringQueue" in agent) || typeof agent.peekSteeringQueue !== "function" || !("peekFollowUpQueue" in agent) || typeof agent.peekFollowUpQueue !== "function") {
+		return { ok: false, reason: "hook_changed", detail: "AgentSession.agent queued-only peek APIs are missing" };
+	}
+	return { ok: true, value: session as WorkSession, detail: "AgentSession settlement + agent queued-only peeks (OMP 18.4.5 user-authored visibility) + getAsyncJobSnapshot" };
 }
 
 /**
@@ -117,11 +132,14 @@ export function probeJobCanceller(session: unknown): Probe<{ manager: JobCancell
 	if (!manager || typeof manager !== "object" || !("cancel" in manager) || typeof manager.cancel !== "function") {
 		return { ok: false, reason: "hook_changed", detail: "AgentSession.asyncJobManager has no cancel()" };
 	}
+	if (!("getJob" in manager) || typeof manager.getJob !== "function") {
+		return { ok: false, reason: "hook_changed", detail: "AgentSession.asyncJobManager has no getJob(); cannot observe cancellation drain" };
+	}
 	const ownerId = "getAgentId" in session && typeof session.getAgentId === "function" ? session.getAgentId() : undefined;
 	if (typeof ownerId !== "string" || ownerId.length === 0) {
 		return { ok: false, reason: "hook_changed", detail: "AgentSession.getAgentId() returned no owner id; refusing unscoped job cancellation" };
 	}
-	return { ok: true, value: { manager: manager as JobCanceller, ownerId }, detail: "AgentSession.asyncJobManager.cancel scoped to the session's agent id" };
+	return { ok: true, value: { manager: manager as JobCanceller, ownerId }, detail: "AgentSession.asyncJobManager.cancel scoped to the session's agent id, awaiting getJob().promise" };
 }
 
 export function unavailable(api: CapabilityState["api"], reason: CapabilityReason, detail: string): CapabilityState {

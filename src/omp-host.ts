@@ -156,6 +156,8 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 	const spawnedDefinitions = new WeakMap<AgentRef, string>();
 	/** Bridge-owned turns must share cancellation with terminal kill, including idle ownership waits. */
 	const activeTurns = new Map<AgentRef, AbortController>();
+	/** Native cancellation changes status before the body/finally drains. Keep that ownership visible. */
+	const cancellingJobs = new Map<object, { session: unknown; job: WorkResult["jobs"][number]; completion: Promise<unknown> }>();
 	const agentListeners = new Set<(agent: AgentView) => void>();
 	const definitionOf = (ref: AgentRef): string | null => ref.history?.agent ?? spawnedDefinitions.get(ref) ?? null;
 
@@ -171,7 +173,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		}
 		if ("getSessionStats" in session && typeof session.getSessionStats === "function") {
 			const stats = session.getSessionStats();
-			if (typeof stats.cost === "number" && Number.isFinite(stats.cost)) current.ui.setStatus("noli.cost", String(stats.cost));
+			current.ui.setStatus("noli.cost", typeof stats.cost === "number" && Number.isFinite(stats.cost) ? String(stats.cost) : undefined);
 			for (const key of ["input", "output"] as const) {
 				const value = stats.tokens?.[key];
 				current.ui.setStatus(`noli.${key}`, typeof value === "number" && Number.isFinite(value) ? String(value) : undefined);
@@ -516,19 +518,27 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			const probe = probeWork(mainSession());
 			if (!probe.ok) throw new BridgeError("capability_unavailable", `work.get is unavailable: ${probe.detail}`, { capability: "work.get", reason: probe.reason });
 			const session = probe.value;
-			const visible = session.getQueuedMessages();
+			// getQueuedMessages includes live-steered chips already removed from queuedMessageCount.
+			// Count only user-authored messages still in the actual queues, matching OMP's predicate.
+			let visibleQueued = 0;
+			for (const queue of [session.agent.peekSteeringQueue(), session.agent.peekFollowUpQueue()]) {
+				for (const message of queue) {
+					if ((message.role === "user" && message.attribution !== "agent") || (message.role === "custom" && message.attribution === "user" && message.display !== false)) visibleQueued++;
+				}
+			}
 			const snapshot = session.getAsyncJobSnapshot();
 			const streaming = session.isStreaming;
 			const admittedSubmission = session.hasAdmittedSubmission;
 			const queued = session.queuedMessageCount;
-			const pendingAsyncWork = session.hasPendingAsyncWork();
+			const draining = [...cancellingJobs.values()].filter(entry => entry.session === session);
+			const pendingAsyncWork = session.hasPendingAsyncWork() || draining.length > 0;
 			const result: WorkResult = {
-				// OMP's own isRpcSessionSettled predicate, from the same fields.
+				// OMP's own predicate, extended through native cancelled-job body/cleanup completion.
 				settled: !streaming && !admittedSubmission && queued === 0 && !pendingAsyncWork,
 				streaming,
 				admittedSubmission,
 				queued,
-				hiddenQueued: Math.max(0, queued - visible.steering.length - visible.followUp.length),
+				hiddenQueued: Math.max(0, queued - visibleQueued),
 				pendingAsyncWork,
 				jobs: (snapshot?.running ?? []).map(job => ({
 					id: job.id,
@@ -539,16 +549,48 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 				})),
 				undeliveredResults: snapshot?.delivery.queued ?? 0,
 			};
+			for (const { job } of draining) {
+				if (!result.jobs.some(running => running.id === job.id)) result.jobs.push(job);
+			}
 			return result;
 		},
-		cancelJob: id => {
-			const probe = probeJobCanceller(mainSession());
+		cancelJob: async id => {
+			const session = mainSession();
+			const probe = probeJobCanceller(session);
 			if (!probe.ok) {
 				refresh();
 				throw new BridgeError("capability_unavailable", `work.cancel is unavailable: ${probe.detail}`, { capability: "work.cancel", reason: probe.reason });
 			}
 			const { manager, ownerId } = probe.value;
-			return manager.cancel(id, { ownerId });
+			const job = manager.getJob(id);
+			if (!job || typeof job !== "object" || !("ownerId" in job) || job.ownerId !== ownerId) return false;
+			const pending = cancellingJobs.get(job);
+			if (pending) {
+				await pending.completion;
+				return true;
+			}
+			if (!("status" in job) || (job.status !== "running" && job.status !== "cancelled")) return false;
+			if (!("promise" in job) || !job.promise || typeof job.promise !== "object" || !("then" in job.promise) || typeof job.promise.then !== "function" || !("type" in job) || typeof job.type !== "string" || !("label" in job) || typeof job.label !== "string" || !("startTime" in job) || typeof job.startTime !== "number") {
+				fail("work.cancel", "getJob() exposes no observable job completion or job metadata; refusing cancellation");
+				throw new BridgeError("capability_unavailable", "work.cancel cannot observe job termination", { capability: "work.cancel", reason: "hook_changed" });
+			}
+			const completion = Promise.resolve(job.promise as PromiseLike<unknown>);
+			cancellingJobs.set(job, { session, completion, job: {
+				id,
+				kind: JOB_KIND_BY_OMP_TYPE[job.type] ?? "unknown",
+				label: job.label,
+				startedAt: job.startTime,
+				agentId: "agentId" in job && typeof job.agentId === "string" ? job.agentId : null,
+			} });
+			try {
+				return manager.cancel(id, { ownerId });
+			} finally {
+				try {
+					await completion;
+				} finally {
+					cancellingJobs.delete(job);
+				}
+			}
 		},
 	};
 
@@ -566,9 +608,10 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			telemetryTimer = setInterval(telemetry, 1000);
 		},
 		release: () => {
-			current = undefined;
 			clearInterval(telemetryTimer);
 			telemetryTimer = undefined;
+			for (const key of ["prewalk", "cost", "input", "output", "context-threshold", "throughput"]) current?.ui.setStatus(`noli.${key}`, undefined);
+			current = undefined;
 		},
 	};
 }

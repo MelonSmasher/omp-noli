@@ -113,7 +113,7 @@ const h: Harness = {
 			jobs: [{ id: "bg_1", kind: "bash", label: "cargo test", startedAt: 1, agentId: null }],
 			undeliveredResults: 0,
 		}),
-		cancelJob: id => {
+		cancelJob: async id => {
 			h.calls.push(`cancelJob:${id}`);
 			return id === "bg_1";
 		},

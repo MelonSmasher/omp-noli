@@ -51,8 +51,8 @@ export interface BridgeHost {
 	killParked(id: string): Promise<boolean>;
 	/** The root session's observed settlement state and running background jobs. */
 	work(): WorkResult;
-	/** Cancel one running background job owned by the root session. False if it already finished or isn't owned. */
-	cancelJob(id: string): boolean;
+	/** Cancel an owned job and await its body/cleanup. False if already finished or not owned. */
+	cancelJob(id: string): Promise<boolean>;
 }
 
 export class BridgeError extends Error {
@@ -216,7 +216,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 			}
 			case "work.cancel": {
 				requireCapability("work.cancel");
-				return { cancelled: host.cancelJob(paramString(params, "jobId")) } satisfies CancelWorkResult;
+				return { cancelled: await host.cancelJob(paramString(params, "jobId")) } satisfies CancelWorkResult;
 			}
 			default:
 				throw new BridgeError("unknown_method", `unknown method "${method}"`);

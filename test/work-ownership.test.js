@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 // Runtime-only JS avoids typechecking the pinned dependency's implementation sources.
 import { AsyncJobManager } from "../node_modules/@oh-my-pi/pi-coding-agent/src/async/job-manager.ts";
 import { probeJobCanceller } from "../src/capabilities";
+import { createOmpHost } from "../src/omp-host";
 
 test("native job cancellation aborts only jobs owned by the root session", async () => {
 	const manager = new AsyncJobManager({ onJobComplete: () => {} });
@@ -33,6 +34,68 @@ test("native job cancellation aborts only jobs owned by the root session", async
 	} finally {
 		manager.cancel(own, { ownerId: "root" });
 		manager.cancel(foreign, { ownerId: "other" });
+		manager.dispose();
+	}
+});
+
+test("bridge cancellation waits for the native owned body cleanup, not foreign jobs", async () => {
+	const manager = new AsyncJobManager({ onJobComplete: () => {} });
+	const cleanupEntered = Promise.withResolvers();
+	const releaseCleanup = Promise.withResolvers();
+	const foreignFinished = Promise.withResolvers();
+	const aborted = [];
+	const own = manager.register("bash", "owned cleanup", async ({ signal }) => {
+		try {
+			await new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));
+			aborted.push("root");
+			return "cancelled";
+		} finally {
+			cleanupEntered.resolve();
+			await releaseCleanup.promise;
+		}
+	}, { ownerId: "root" });
+	const foreign = manager.register("bash", "foreign negative control", async ({ signal }) => {
+		signal.addEventListener("abort", () => aborted.push("foreign"), { once: true });
+		return foreignFinished.promise;
+	}, { ownerId: "foreign" });
+	const session = {
+		isStreaming: false,
+		hasAdmittedSubmission: false,
+		queuedMessageCount: 0,
+		agent: { peekSteeringQueue: () => [], peekFollowUpQueue: () => [] },
+		asyncJobManager: manager,
+		getAgentId: () => "root",
+		hasPendingAsyncWork: () => manager.getRunningJobs({ ownerId: "root" }).length > 0,
+		getAsyncJobSnapshot: () => ({ running: manager.getRunningJobs({ ownerId: "root" }), delivery: { queued: 0 } }),
+	};
+	const omp = createOmpHost({
+		pi: { AgentRegistry: { global: () => ({ get: () => ({ session }) }) }, VERSION: "native-regression" },
+		events: { on: () => {} },
+		logger: { warn: () => {} },
+	});
+	omp.adopt({ agent: { kind: "main", id: "root" }, ui: { notify: () => {}, setStatus: () => {} } });
+	try {
+		expect(await omp.host.cancelJob(foreign)).toBe(false);
+		let acknowledged = false;
+		const cancellation = omp.host.cancelJob(own).then(result => { acknowledged = true; return result; });
+		await cleanupEntered.promise;
+		expect(manager.getJob(own).status).toBe("cancelled");
+		expect(session.hasPendingAsyncWork()).toBe(false); // Native status alone loses the cleanup.
+		expect(acknowledged).toBe(false);
+		expect(omp.host.work()).toMatchObject({ settled: false, pendingAsyncWork: true, jobs: [{ id: own, label: "owned cleanup" }] });
+		const duplicate = omp.host.cancelJob(own);
+		releaseCleanup.resolve();
+		expect(await cancellation).toBe(true);
+		expect(await duplicate).toBe(true);
+		expect(omp.host.work()).toMatchObject({ settled: true, pendingAsyncWork: false, jobs: [] });
+		expect(manager.getJob(foreign).status).toBe("running");
+		expect(aborted).toEqual(["root"]);
+	} finally {
+		releaseCleanup.resolve();
+		foreignFinished.resolve("foreign complete");
+		manager.cancel(own, { ownerId: "root" });
+		await Promise.all([manager.getJob(own).promise, manager.getJob(foreign).promise]);
+		omp.release();
 		manager.dispose();
 	}
 });

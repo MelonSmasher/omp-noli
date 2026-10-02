@@ -89,7 +89,7 @@
       "properties": { "killed": { "type": "boolean" }, "mode": { "enum": ["live", "parked"] } }
     },
     "WorkResult": {
-      "description": "Observed settlement state of the root session. settled is OMP's own predicate over the other fields.",
+      "description": "Observed settlement state of the root session. Cancellation-draining job bodies remain pending until completion.",
       "type": "object",
       "additionalProperties": false,
       "required": ["settled", "streaming", "admittedSubmission", "queued", "hiddenQueued", "pendingAsyncWork", "jobs", "undeliveredResults"],

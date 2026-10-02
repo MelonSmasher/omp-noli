@@ -178,18 +178,18 @@ export interface WorkResult {
 	admittedSubmission: boolean;
 	/** Queued messages, including hidden next-turn messages. */
 	queued: number;
-	/** Of `queued`, messages hidden from the visible steering/follow-up queues. */
+	/** Of `queued`, messages hidden from queued-only user steering/follow-up chips; excludes live-steered chips. */
 	hiddenQueued: number;
-	/** Background work can still wake the session (running jobs, undelivered results). */
+	/** Background work is pending: running jobs, undelivered results, or cancellation body/cleanup drain. */
 	pendingAsyncWork: boolean;
-	/** Running background jobs owned by the root session. */
+	/** Running or cancellation-draining background jobs owned by the root session. */
 	jobs: JobView[];
 	/** Finished job results waiting to be delivered into the conversation. */
 	undeliveredResults: number;
 }
 
 export interface CancelWorkResult {
-	/** True when a running job was cancelled; false when it had already finished. */
+	/** True only after an owned job was cancelled and its body/cleanup finished; false if finished or not owned. */
 	cancelled: boolean;
 }
 
