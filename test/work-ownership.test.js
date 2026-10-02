@@ -46,7 +46,9 @@ test("bridge cancellation waits for the native owned body cleanup, not foreign j
 	const aborted = [];
 	const own = manager.register("bash", "owned cleanup", async ({ signal }) => {
 		try {
-			await new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }));
+			const abortedSignal = Promise.withResolvers();
+			signal.addEventListener("abort", abortedSignal.resolve, { once: true });
+			await abortedSignal.promise;
 			aborted.push("root");
 			return "cancelled";
 		} finally {
