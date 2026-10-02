@@ -583,6 +583,8 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 				agentId: "agentId" in job && typeof job.agentId === "string" ? job.agentId : null,
 			} });
 			try {
+				// Native cancel returns false for an already-cancelled owned job,
+				// whose body may still be draining; no await permits an owner race here.
 				return manager.cancel(id, { ownerId });
 			} finally {
 				try {

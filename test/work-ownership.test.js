@@ -38,7 +38,7 @@ test("native job cancellation aborts only jobs owned by the root session", async
 	}
 });
 
-test("bridge cancellation waits for the native owned body cleanup, not foreign jobs", async () => {
+test.each([false, true])("bridge cancellation drains owned cleanup (already cancelled: %s), not foreign jobs", async alreadyCancelled => {
 	const manager = new AsyncJobManager({ onJobComplete: () => {} });
 	const cleanupEntered = Promise.withResolvers();
 	const releaseCleanup = Promise.withResolvers();
@@ -78,6 +78,7 @@ test("bridge cancellation waits for the native owned body cleanup, not foreign j
 	omp.adopt({ agent: { kind: "main", id: "root" }, ui: { notify: () => {}, setStatus: () => {} } });
 	try {
 		expect(await omp.host.cancelJob(foreign)).toBe(false);
+		if (alreadyCancelled) expect(manager.cancel(own, { ownerId: "root" })).toBe(true);
 		let acknowledged = false;
 		const cancellation = omp.host.cancelJob(own).then(result => { acknowledged = true; return result; });
 		await cleanupEntered.promise;
@@ -87,7 +88,7 @@ test("bridge cancellation waits for the native owned body cleanup, not foreign j
 		expect(omp.host.work()).toMatchObject({ settled: false, pendingAsyncWork: true, jobs: [{ id: own, label: "owned cleanup" }] });
 		const duplicate = omp.host.cancelJob(own);
 		releaseCleanup.resolve();
-		expect(await cancellation).toBe(true);
+		expect(await cancellation).toBe(!alreadyCancelled);
 		expect(await duplicate).toBe(true);
 		expect(omp.host.work()).toMatchObject({ settled: true, pendingAsyncWork: false, jobs: [] });
 		expect(manager.getJob(foreign).status).toBe("running");
