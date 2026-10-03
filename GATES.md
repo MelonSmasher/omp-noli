@@ -18,3 +18,10 @@ Scope: One authenticated host-tool surface, main-agent enforcement, deferred lif
   EVIDENCE: Isolated HOME plugin link plus omp read skill://noli succeeded; RPC catalog lacked skill:noli for file-only -e, contained it for package-root -e and file-only plus customDirectories overlay.
 - [x] G5: Skill and README specify deferred closure and exact companion Noli changes without implementing backend lifecycle
   EVIDENCE: README contract documents native registration, authenticated session derivation, durable scheduling acknowledgement, cancellation/generation ownership, final-history drain and four packaging inventories. Skill matches inspected existing Noli settle/archive semantics. End-to-end requires companion backend implementation; explicitly unverified.
+
+## Agent image publishing 0.3.1
+
+- [x] IM1: Authenticated main agents submit bounded local/HTTP(S) images without duplicating image bytes in tool results.
+  EVIDENCE: Full Bun suite passes with new image coverage for four formats, invalid/truncated/corrupt/oversized inputs, HTTP failures, cancellation, authentication loss and session replacement. Frozen install and strict SDK typecheck pass.
+- [x] IM2: Native OMP image history survives process restart.
+  EVIDENCE: Compiled OMP 18.5.0 real registered tool/native sendMessage published and flushed displayed noli.image with caption and screenshot. A separate resumed process hydrated identical image bytes through get_entries. No model request; streaming aside drain not exercised. README documents required companion Noli rendering and packaging support.

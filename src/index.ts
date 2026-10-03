@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { type Bridge, startBridge } from "./bridge";
+import { installImagePublisher } from "./images";
 import { createOmpHost } from "./omp-host";
 import { installThreadControl } from "./thread-control";
 
@@ -13,6 +14,7 @@ export default function noli(pi: ExtensionAPI): void {
 	const dir = process.env[ENV_DIR];
 	const token = process.env[ENV_TOKEN];
 	if (!dir || !token) return;
+	installImagePublisher(pi, sessionId => bridge?.hasAuthenticatedSession(sessionId) ?? false);
 
 	const omp = createOmpHost(pi);
 
