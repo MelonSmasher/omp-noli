@@ -71,11 +71,11 @@ test.each([false, true])("bridge cancellation drains owned cleanup (already canc
 		getAsyncJobSnapshot: () => ({ running: manager.getRunningJobs({ ownerId: "root" }), delivery: { queued: 0 } }),
 	};
 	const omp = createOmpHost({
-		pi: { AgentRegistry: { global: () => ({ get: () => ({ session }) }) }, VERSION: "native-regression" },
-		events: { on: () => {} },
+		pi: { AgentRegistry: { global: () => ({ get: () => ({ session }), list: () => [], onChange: () => () => {} }) }, VERSION: "native-regression" },
+		events: { on: () => () => {} },
 		logger: { warn: () => {} },
 	});
-	omp.adopt({ agent: { kind: "main", id: "root" }, ui: { notify: () => {}, setStatus: () => {} } });
+	omp.adopt({ agent: { kind: "main", id: "root" }, sessionManager: { getSessionFile: () => undefined }, ui: { notify: () => {}, setStatus: () => {} } });
 	try {
 		expect(await omp.host.cancelJob(foreign)).toBe(false);
 		if (alreadyCancelled) expect(manager.cancel(own, { ownerId: "root" })).toBe(true);

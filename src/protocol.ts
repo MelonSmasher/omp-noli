@@ -19,6 +19,7 @@ export const PROTOCOL_VERSION = 1;
 export const CAPABILITY_NAMES = [
 	"agents.list",
 	"agents.list.persisted",
+	"agents.output",
 	"agents.steer",
 	"agents.followUp",
 	"agents.turn",
@@ -81,6 +82,16 @@ export interface AgentView {
 	activity: string | null;
 	/** Name of the agent definition this agent runs, when the host recorded it (see `definitions.list`). */
 	definition: string | null;
+	/** Independently observed session telemetry; unavailable values stay null. */
+	model: string | null;
+	effort: string | null;
+	requests: number | null;
+	contextTokens: number | null;
+	contextWindow: number | null;
+	inputTokens: number | null;
+	outputTokens: number | null;
+	sessionCost: number | null;
+	tokensPerSecond: number | null;
 	/** Milliseconds since the Unix epoch. */
 	createdAt: number;
 	/** Milliseconds since the Unix epoch. */
@@ -137,6 +148,32 @@ export interface DefinitionView {
 }
 
 // ------------------------------------------------------------- method results
+
+export interface AgentOutputParams {
+	agentId: string;
+	/** Exclusive upper line bound; omitted selects the newest page. */
+	offset?: number;
+	limit?: number;
+}
+
+export interface AgentOutputResult {
+	agentId: string;
+	text: string;
+	/** Offsets into text are UTF-16 code units, not UTF-8 bytes. */
+	spans: {
+		id: string;
+		role: string;
+		tool: string | null;
+		created_ms: number;
+		start: number;
+		end: number;
+	}[];
+	nextOffset: number | null;
+}
+
+export type AgentTelemetryView = Pick<AgentView,
+	"model" | "effort" | "requests" | "contextTokens" | "contextWindow" |
+	"inputTokens" | "outputTokens" | "sessionCost" | "tokensPerSecond">;
 
 export interface TurnResult {
 	output: string;

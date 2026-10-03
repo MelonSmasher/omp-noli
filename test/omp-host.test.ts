@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, symlinkSync, unlinkSync, truncateSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -31,14 +31,19 @@ const LATCHES = Symbol("persistedRosterLatches");
 class FakeRegistry {
 	refs = new Map<string, FakeRef>();
 	[LATCHES]?: Map<string, unknown>;
+	listeners = new Set<(event: { type: string; ref: FakeRef }) => void>();
 	get(id: string) {
 		return this.refs.get(id);
 	}
 	list() {
 		return [...this.refs.values()];
 	}
-	onChange() {
-		return () => {};
+	onChange(listener: (event: { type: string; ref: FakeRef }) => void) {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
+	}
+	emit(type: string, ref: FakeRef) {
+		for (const listener of this.listeners) listener({ type, ref });
 	}
 }
 
@@ -147,6 +152,7 @@ const mainSession = {
 /** Minimal stand-in for OMP's EventBus (utils/event-bus.ts): synchronous emit to channel listeners. */
 class FakeEventBus {
 	#listeners = new Map<string, Set<(data: unknown) => void>>();
+	get size() { return [...this.#listeners.values()].reduce((sum, listeners) => sum + listeners.size, 0); }
 	on(channel: string, handler: (data: unknown) => void): () => void {
 		const set = this.#listeners.get(channel) ?? new Set();
 		set.add(handler);
@@ -158,6 +164,8 @@ class FakeEventBus {
 	}
 }
 let events: FakeEventBus;
+let runtimeExports: Record<string, unknown>;
+let transcriptLoader: (path: string) => Promise<unknown[]> = async () => [];
 
 function makeOmp(): OmpHost {
 	events = new FakeEventBus();
@@ -169,10 +177,13 @@ function makeOmp(): OmpHost {
 			runSubagentFollowUpTurn: async () => ({}),
 			USER_INTERRUPT_LABEL: "interrupt",
 			VERSION: "test",
+			loadSessionMessagesReadOnly: (path: string) => transcriptLoader(path),
+			loadEntriesFromFile: async () => [],
 		},
 		events,
 		logger: { warn: () => {} },
 	} as unknown as ExtensionAPI; // Test seam: only the members the adapter reads are provided.
+	runtimeExports = pi.pi;
 	return createOmpHost(pi);
 }
 
@@ -201,6 +212,7 @@ beforeEach(() => {
 	statuses = {};
 	readCalls = 0;
 	scanBehavior = "real";
+	transcriptLoader = async () => [{ role: "user", content: "child prompt", timestamp: 10 }];
 	notices = [];
 	stderrWrite = process.stderr.write;
 	process.stderr.write = (() => true) as typeof process.stderr.write;
@@ -210,6 +222,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	omp.release();
+	vi.useRealTimers();
 	process.stderr.write = stderrWrite;
 	rmSync(dir, { recursive: true, force: true });
 });
@@ -545,5 +558,125 @@ describe("telemetry lifecycle", () => {
 		expect(statuses).toMatchObject({ "noli.prewalk": "Prewalk armed → implementation", "noli.cost": "1.25", "noli.input": "10", "noli.output": "20", "noli.context-threshold": "80", "noli.throughput": "12" });
 		omp.release();
 		expect(statuses).toEqual({ "noli.prewalk": undefined, "noli.cost": undefined, "noli.input": undefined, "noli.output": undefined, "noli.context-threshold": undefined, "noli.throughput": undefined });
+	});
+});
+
+describe("read-only child output isolation", () => {
+	function child(id = "C", over: Partial<FakeRef> = {}) {
+		writeChild(id, complete);
+		const ref: FakeRef = { id, displayName: id, kind: "sub", parentId: "Main", status: "parked", session: null, sessionFile: join(artifactDir, `${id}.jsonl`), createdAt: 1, lastActivity: 1, ...over };
+		registry.refs.set(id, ref);
+		return ref;
+	}
+	test("live and parked output use native messages without invoking control", async () => {
+		const ref = child();
+		const calls: string[] = [];
+		transcriptLoader = async path => { calls.push(path); return [{ role: "user", content: "parked prompt", timestamp: 10 }]; };
+		expect((await omp.host.output({ agentId: "C" })).text).toContain("parked prompt");
+		expect(ref.session).toBeNull();
+		ref.session = { messages: [{ role: "user", content: "live prompt", timestamp: 20 }], agent: { state: { streamMessage: { role: "assistant", content: [{ type: "text", text: "streaming text" }], timestamp: 30 } } } };
+		const live = await omp.host.output({ agentId: "C" });
+		expect(live.text).toContain("live prompt");
+		expect(live.text).toContain("streaming text");
+		expect(calls).toEqual([realpathSync(ref.sessionFile!)]);
+	});
+	test("rejects root, advisor, unknown and foreign children", async () => {
+		child("Advisor", { kind: "advisor" });
+		child("Foreign", { parentId: "DifferentRoot" });
+		child("Outside", { sessionFile: join(dir, "outside.jsonl") });
+		for (const agentId of ["Main", "Advisor"]) await expect(omp.host.output({ agentId })).rejects.toMatchObject({ body: { code: "forbidden_kind" } });
+		for (const agentId of ["ghost", "Foreign", "Outside"]) await expect(omp.host.output({ agentId })).rejects.toMatchObject({ body: { code: "unknown_agent" } });
+	});
+	test("canonical symlink escape never reaches the loader", async () => {
+		const ref = child();
+		const outside = join(dir, "outside.jsonl");
+		writeFileSync(outside, complete);
+		unlinkSync(ref.sessionFile!);
+		symlinkSync(outside, ref.sessionFile!);
+		let loaded = false;
+		transcriptLoader = async () => { loaded = true; return []; };
+		await expect(omp.host.output({ agentId: "C" })).rejects.toMatchObject({ body: { code: "unknown_agent" } });
+		expect(loaded).toBe(false);
+	});
+	test("persisted input above 64 MiB is rejected before loading", async () => {
+		const ref = child();
+		truncateSync(ref.sessionFile!, 64 * 1024 * 1024 + 1);
+		let loaded = false;
+		transcriptLoader = async () => { loaded = true; return []; };
+		await expect(omp.host.output({ agentId: "C" })).rejects.toMatchObject({ body: { code: "bad_request" } });
+		expect(loaded).toBe(false);
+	});
+	test.each(["adoption", "ref", "path", "symlink", "parent"])("rechecks %s after asynchronous loading", async kind => {
+		const ref = child();
+		const gate = Promise.withResolvers<void>();
+		const entered = Promise.withResolvers<void>();
+		transcriptLoader = async () => { entered.resolve(); await gate.promise; return [{ role: "user", content: "private stale output", timestamp: 10 }]; };
+		const reading = omp.host.output({ agentId: "C" });
+		await entered.promise;
+		if (kind === "adoption") omp.adopt(ctx);
+		if (kind === "ref") registry.refs.set("C", { ...ref });
+		if (kind === "parent") ref.parentId = "DifferentRoot";
+		if (kind === "path") ref.sessionFile = join(artifactDir, "replacement.jsonl");
+		if (kind === "symlink") {
+			const outside = join(dir, "outside.jsonl");
+			writeFileSync(outside, complete);
+			unlinkSync(ref.sessionFile!);
+			symlinkSync(outside, ref.sessionFile!);
+		}
+		gate.resolve();
+		await expect(reading).rejects.toMatchObject({ body: { code: "stale_session" } });
+	});
+	test("missing read-only export explicitly disables output", () => {
+		delete runtimeExports.loadSessionMessagesReadOnly;
+		expect(omp.host.refreshCapabilities()["agents.output"]).toMatchObject({ available: false, reason: "export_missing" });
+	});
+});
+
+describe("agent telemetry observer lifetime", () => {
+	test("publishes active usage changes and retains final telemetry on the actual parked ref", async () => {
+		vi.useFakeTimers();
+		omp.adopt(ctx);
+		let input = 11;
+		const listeners = new Set<(event: { type: string }) => void>();
+		const session = {
+			isStreaming: true, queuedMessageCount: 0,
+			servingModel: { modelIdentity: "child/model", thinkingLevel: "high" },
+			getSessionStats: () => ({ assistantMessages: 1, tokens: { input, output: 7 }, cost: 0, contextUsage: { tokens: 50, contextWindow: 100 } }),
+			tokenRate: { rate: () => 3 },
+			subscribe: (listener: (event: { type: string }) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+			waitForIdle: async () => {},
+		};
+		writeChild("C", complete);
+		const ref: FakeRef = { id: "C", displayName: "C", kind: "sub", parentId: "Main", status: "running", session, sessionFile: join(artifactDir, "C.jsonl"), createdAt: 1, lastActivity: 1 };
+		registry.refs.set("C", ref);
+		const changed: Array<{ inputTokens: number | null }> = [];
+		const off = omp.host.subscribe(agent => { if (agent.id === "C") changed.push(agent); });
+		registry.emit("registered", ref);
+		input = 25;
+		vi.advanceTimersByTime(300);
+		expect(changed.map(agent => agent.inputTokens)).toContain(25);
+		input = 31;
+		for (const listener of listeners) listener({ type: "message_end" });
+		ref.session = null;
+		ref.status = "parked";
+		registry.emit("status_changed", ref);
+		const parked = (await listLive()).agents.find(agent => agent.id === "C")!;
+		expect(parked).toMatchObject({ model: "child/model", effort: "high", inputTokens: 31, outputTokens: 7, sessionCost: 0, contextWindow: 100, tokensPerSecond: null });
+		expect(listeners.size).toBe(0);
+		omp.release();
+		expect(registry.listeners.size).toBe(0);
+		expect(events.size).toBe(0);
+		const length = changed.length;
+		vi.advanceTimersByTime(300);
+		expect(changed).toHaveLength(length);
+		off();
+		vi.useRealTimers();
+	});
+	test("optional telemetry exceptions never break listing or root work", async () => {
+		registry.refs.get("Main")!.session = { ...mainSession, getSessionStats: () => { throw new Error("optional stats unavailable"); } };
+		omp.adopt(ctx);
+		const main = (await listLive()).agents.find(agent => agent.id === "Main")!;
+		expect(main.sessionCost).toBeNull();
+		expect(omp.host.work().settled).toBe(true);
 	});
 });

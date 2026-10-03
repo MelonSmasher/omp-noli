@@ -31,6 +31,15 @@ function view(over: Partial<AgentView>): AgentView {
 		streaming: true,
 		definition: "task",
 		activity: null,
+		model: null,
+		effort: null,
+		requests: null,
+		contextTokens: null,
+		contextWindow: null,
+		inputTokens: null,
+		outputTokens: null,
+		sessionCost: null,
+		tokensPerSecond: null,
 		createdAt: 1,
 		lastActivity: 1,
 		...over,
@@ -78,6 +87,10 @@ const h: Harness = {
 			h.agents.push(...h.persisted);
 			h.persisted = [];
 			return { agents: h.agents, discovery: { status: restored.length ? "complete" : "none", reason: null, detail: "", restored, pending: [] } };
+		},
+		output: async ({ agentId }) => {
+			h.calls.push(`output:${agentId}`);
+			return { agentId, text: "prompt", spans: [{ id: "u1", role: "user", tool: null, created_ms: 1, start: 0, end: 6 }], nextOffset: null };
 		},
 		subscribe: listener => {
 			h.listeners.push(listener);
@@ -555,7 +568,7 @@ describe("events and shutdown", () => {
 		// The reply is a stream ordering barrier: leaked events would precede it.
 		const barrier = await call(old, "capabilities.get");
 		expect(barrier.event).toBeUndefined();
-		expect(barrier.ok).toBe(true);
+		expect(barrier.error?.code).toBe("stale_session");
 	});
 
 	test("close removes the socket and unsubscribes", () => {
@@ -565,5 +578,29 @@ describe("events and shutdown", () => {
 		expect(h.listeners.length).toBe(0);
 		expect(h.capabilityListeners.length).toBe(0);
 		bridge = startBridge({ dir, token: TOKEN, host: h.host });
+	});
+});
+
+describe("child output requests", () => {
+	test("revoked connections cannot read a newly adopted session even with its ID", async () => {
+		const client = await authed();
+		h.session = "sess-2";
+		bridge.invalidateAuthentication();
+		const reply = await call(client, "agents.output", { agentId: "C" });
+		expect(reply.error?.code).toBe("stale_session");
+		expect(h.calls).toEqual([]);
+	});
+	test.each([{ offset: -1 }, { offset: 1.5 }, { offset: null }, { offset: "2" }, { offset: Number.MAX_SAFE_INTEGER + 1 }, { limit: 0 }, { limit: 501 }, { limit: 1.5 }, { limit: null }, { limit: "2" }])("rejects malformed pagination %j before any host read", async params => {
+		const client = await authed();
+		const reply = await call(client, "agents.output", { agentId: "C", ...params });
+		expect(reply.error?.code).toBe("bad_request");
+		expect(h.calls).toEqual([]);
+	});
+	test("output is explicitly gated when native API is missing", async () => {
+		const client = await authed();
+		disable("agents.output", "export_missing");
+		const reply = await call(client, "agents.output", { agentId: "C" });
+		expect(reply.error).toMatchObject({ code: "capability_unavailable", capability: "agents.output", reason: "export_missing" });
+		expect(h.calls).toEqual([]);
 	});
 });
