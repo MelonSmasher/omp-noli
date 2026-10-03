@@ -22,6 +22,8 @@ The selected transport is **native RPC host tools**, not reverse bridge requests
 
 Availability requires **both** a live socket client that completed authenticated `hello` for the current session adoption and both native host tools (`sourceInfo.source === "sdk"`). Environment variables or plugin installation alone do not enable control. Switch, branch and tree adoption revoke authentication, including returning to an old session ID; Noli must reconnect and complete `hello` again. Disconnect revokes availability. Instructions are request-local `before_agent_start` system policy, not persistent conversation entries, so startup/resume/branch/switch cannot duplicate them. The hidden bundled skill is reachable as `skill://noli` but is not advertised to ordinary terminal sessions.
 
+Agent and capability broadcasts also require a matching authenticated session. A revoked or previous-session socket receives no new events; a freshly authenticated connection restores both subscriptions. Already queued replies remain subject to the existing request/session checks.
+
 ### Backend contract (requires companion Noli implementation)
 
 Noli must register exactly these schemas, with `additionalProperties: false`:

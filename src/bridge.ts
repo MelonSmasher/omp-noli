@@ -283,8 +283,9 @@ export function startBridge(options: BridgeOptions): Bridge {
 	};
 
 	const broadcast = (frame: (sessionId: string) => ServerFrame): void => {
+		const sessionId = host.sessionId();
 		for (const socket of sockets) {
-			if (socket.data.authed) send(socket, frame(host.sessionId()));
+			if (socket.data.authed && socket.data.authenticatedSession === sessionId) send(socket, frame(sessionId));
 		}
 	};
 	const unsubscribeAgents = host.subscribe(agent => broadcast(sessionId => ({ type: "event", event: "agent.changed", sessionId, agent })));

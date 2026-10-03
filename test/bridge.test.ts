@@ -543,6 +543,21 @@ describe("events and shutdown", () => {
 		expect(first.error?.code).toBe("unauthorized");
 	});
 
+	test.each(["session switch", "same-session adoption"])("%s revokes both event streams until a fresh hello", async reason => {
+		const old = await authed();
+		if (reason === "session switch") h.session = "sess-2";
+		bridge.invalidateAuthentication();
+		const current = await authed();
+		for (const listener of h.listeners) listener(view({ id: "new-session-child", state: "idle" }));
+		for (const listener of h.capabilityListeners) listener(h.caps);
+		expect((await current.next()).event).toBe("agent.changed");
+		expect((await current.next()).event).toBe("capabilities.changed");
+		// The reply is a stream ordering barrier: leaked events would precede it.
+		const barrier = await call(old, "capabilities.get");
+		expect(barrier.event).toBeUndefined();
+		expect(barrier.ok).toBe(true);
+	});
+
 	test("close removes the socket and unsubscribes", () => {
 		const path = bridge.socketPath;
 		bridge.close();
