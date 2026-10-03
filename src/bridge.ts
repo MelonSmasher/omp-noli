@@ -3,6 +3,8 @@ import { chmodSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { Socket, SocketListener } from "bun";
 import {
+	type AgentOutputParams,
+	type AgentOutputResult,
 	type AgentView,
 	type Capabilities,
 	type CancelWorkResult,
@@ -36,6 +38,8 @@ export interface BridgeHost {
 	onCapabilitiesChanged(listener: (capabilities: Capabilities) => void): () => void;
 	/** Agents of the current root session. When `includePersisted`, first ask the host to restore children left by earlier processes. */
 	list(options: { includePersisted: boolean }): Promise<ListResult>;
+	/** Read visible child transcript pages without reviving the child. */
+	output(params: AgentOutputParams): Promise<AgentOutputResult>;
 	subscribe(listener: (agent: AgentView) => void): () => void;
 	/** Agent definitions `agents.turn` accepts. */
 	definitions(): Promise<DefinitionView[]>;
@@ -175,6 +179,18 @@ export function startBridge(options: BridgeOptions): Bridge {
 				const includePersisted = persisted ?? host.capabilities()["agents.list.persisted"].available;
 				return host.list({ includePersisted }) satisfies Promise<ListResult>;
 			}
+			case "agents.output": {
+				requireCapability("agents.output");
+				const agentId = paramString(params, "agentId");
+				const { offset, limit } = params;
+				if (offset !== undefined && (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0)) {
+					throw new BridgeError("bad_request", "params.offset must be a non-negative safe integer");
+				}
+				if (limit !== undefined && (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1 || limit > 500)) {
+					throw new BridgeError("bad_request", "params.limit must be an integer from 1 to 500");
+				}
+				return host.output({ agentId, offset: offset as number | undefined, limit: limit as number | undefined });
+			}
 			case "agents.steer":
 			case "agents.followUp": {
 				requireCapability(method);
@@ -269,12 +285,15 @@ export function startBridge(options: BridgeOptions): Bridge {
 		}
 
 		if (typeof record.method !== "string") return fail({ code: "bad_request", message: "method must be a string" });
-		if (record.sessionId !== host.sessionId()) {
-			return fail({ code: "stale_session", message: `request targets session ${String(record.sessionId)} but the active session is ${host.sessionId()}` });
+		if (socket.data.authenticatedSession !== host.sessionId() || record.sessionId !== host.sessionId()) {
+			return fail({ code: "stale_session", message: "connection or request targets a different session; authenticate again" });
 		}
 		try {
 			const params = record.params && typeof record.params === "object" && !Array.isArray(record.params) ? (record.params as Params) : {};
 			const result = await dispatch(record.method, params);
+			if (socket.data.authenticatedSession !== host.sessionId() || record.sessionId !== host.sessionId()) {
+				throw new BridgeError("stale_session", "session changed while the request was running");
+			}
 			send(socket, { type: "response", id, ok: true, result });
 		} catch (error) {
 			if (error instanceof BridgeError) fail(error.body);

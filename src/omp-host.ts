@@ -5,14 +5,18 @@
  * into a protocol value except as human-readable `detail` text.
  */
 import { readdirSync, statSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { realpath, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AgentRef, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { type BridgeHost, BridgeError } from "./bridge";
 import { type Probe, available, probeJobCanceller, probeLifecycle, probeRosterReader, probeWork, unavailable } from "./capabilities";
+import { readAgentOutput } from "./agent-output";
+import { AgentTelemetry } from "./agent-telemetry";
 import {
 	type AgentKind,
 	type AgentState,
 	type AgentView,
+	type AgentTelemetryView,
 	type Capabilities,
 	type CapabilityName,
 	CAPABILITY_NAMES,
@@ -61,7 +65,7 @@ interface Transcript {
 	stamp: string;
 }
 
-function toView(ref: AgentRef, definition: string | null): AgentView {
+function toView(ref: AgentRef, definition: string | null, telemetry: AgentTelemetryView): AgentView {
 	return {
 		id: ref.id,
 		name: ref.displayName,
@@ -72,6 +76,7 @@ function toView(ref: AgentRef, definition: string | null): AgentView {
 		streaming: ref.session?.isStreaming ?? false,
 		activity: ref.activity ?? null,
 		definition,
+		...telemetry,
 		createdAt: ref.createdAt,
 		lastActivity: ref.lastActivity,
 	};
@@ -138,6 +143,8 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 	const registryOk = hasExport("AgentRegistry") && typeof AgentRegistry.global === "function";
 
 	let current: ExtensionContext | undefined;
+	let adoption = 0;
+	let stopObservers: (() => void) | undefined;
 	let warned = "";
 	const capabilityListeners = new Set<(c: Capabilities) => void>();
 	/** Verified behavioral failures; they override shape probes until the next session adoption. */
@@ -165,6 +172,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 	const mainSession = (): unknown => (current && registryOk ? registry().get(current.agent.id)?.session : undefined);
 	let telemetryTimer: ReturnType<typeof setInterval> | undefined;
 	const telemetry = (): void => {
+		try {
 		const session = mainSession();
 		if (!current || !session || typeof session !== "object") return;
 		if ("getPrewalkState" in session && typeof session.getPrewalkState === "function") {
@@ -205,9 +213,13 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			const rate = session.tokenRate.rate();
 			current.ui.setStatus("noli.throughput", typeof rate === "number" && Number.isFinite(rate) ? String(rate) : undefined);
 		}
+		} catch (error) {
+			// Optional status-line instrumentation must never interrupt root chat.
+			pi.logger.warn("Noli root telemetry unavailable", { error: String(error) });
+		}
 	};
 
-	pi.events.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, payload => {
+	const observeSpawn = (payload: unknown): void => {
 		if (!registryOk || !payload || typeof payload !== "object" || !("id" in payload) || !("agent" in payload)) return;
 		const { id, agent } = payload;
 		if (typeof id !== "string" || typeof agent !== "string") return;
@@ -217,8 +229,8 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		if (spawnedDefinitions.get(ref) === agent) return;
 		spawnedDefinitions.set(ref, agent);
 		// The "registered" change went out before this event, without a definition. Push the corrected row once.
-		if (scopedRef(id) === ref) for (const listener of agentListeners) listener(toView(ref, definitionOf(ref)));
-	});
+		if (scopedRef(id) === ref) publishAgent(ref);
+	};
 
 	const probeAll = (): Capabilities => {
 		const session = mainSession();
@@ -249,6 +261,12 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		return {
 			"agents.list": publicCap([], "pi.pi.AgentRegistry"),
 			"agents.list.persisted": internalCap("agents.list.persisted", probeRosterReader),
+			"agents.output": (() => {
+				const base = publicCap(["loadSessionMessagesReadOnly", "loadEntriesFromFile"], "AgentSession.messages + streamMessage; native read-only transcript and entry loaders (no writer or revival)");
+				if (!base.available) return base;
+				if (typeof exportsRecord.loadSessionMessagesReadOnly !== "function" || typeof exportsRecord.loadEntriesFromFile !== "function") return unavailable("public", "hook_changed", "loadSessionMessagesReadOnly and loadEntriesFromFile must be functions");
+				return base;
+			})(),
 			"agents.steer": queuedControlCap("AgentSession.steer + queuedMessageCount"),
 			"agents.followUp": queuedControlCap("AgentSession.followUp + queuedMessageCount"),
 			"agents.turn": publicCap(["runSubagentFollowUpTurn", "discoverAgents"], "pi.pi.runSubagentFollowUpTurn"),
@@ -313,7 +331,136 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		return resolve(ref.sessionFile).startsWith(root + sep) ? ref : undefined;
 	};
 
-	const scopedRefs = (): AgentRef[] => registry().list().filter(ref => scopedRef(ref.id) === ref);
+	const scopedRefs = (): AgentRef[] => registry().list().filter(ref => scopedRef(ref.id) === ref && (ref.kind !== "sub" || ownedChild(ref)));
+
+	const within = (root: string, path: string): boolean => {
+		const delta = relative(root, path);
+		return delta !== "" && delta !== ".." && !delta.startsWith(`..${sep}`) && !isAbsolute(delta);
+	};
+	const ownedChild = (ref: AgentRef): boolean => {
+		if (!current || ref.kind !== "sub" || scopedRef(ref.id) !== ref) return false;
+		const seen = new Set<AgentRef>();
+		let ancestor: AgentRef | undefined = ref;
+		while (ancestor?.kind === "sub" && !seen.has(ancestor)) {
+			if (scopedRef(ancestor.id) !== ancestor) return false;
+			seen.add(ancestor);
+			ancestor = ancestor.parentId ? registry().get(ancestor.parentId) : undefined;
+		}
+		return ancestor?.kind === "main" && ancestor.id === current.agent.id && scopedRef(ancestor.id) === ancestor;
+	};
+	/** Native loaders get only canonical owned files, bounded before and after every asynchronous read. */
+	const readChild = async <T>(ref: AgentRef, loader: (file: string) => Promise<T>): Promise<T> => {
+		const ctx = current;
+		const generation = adoption;
+		const root = artifactRoot();
+		const rootSession = ctx?.sessionManager.getSessionId();
+		const file = ref.sessionFile;
+		const session = ref.session;
+		const check = (): void => {
+			if (!ctx || current !== ctx || adoption !== generation || artifactRoot() !== root || current.sessionManager.getSessionId() !== rootSession || ref.sessionFile !== file || ref.session !== session || !ownedChild(ref)) {
+				throw new BridgeError("stale_session", "child session, ownership or transcript changed during read");
+			}
+		};
+		check();
+		if (!root || !file) throw new BridgeError("unknown_agent", "child has no owned transcript");
+		const [canonicalRoot, canonicalFile] = await Promise.all([realpath(root), realpath(file)]);
+		check();
+		if (!within(canonicalRoot, canonicalFile)) throw new BridgeError("unknown_agent", "child transcript escapes the root artifact directory");
+		const before = await stat(canonicalFile);
+		check();
+		if (!before.isFile() || before.size > 64 * 1024 * 1024) throw new BridgeError("bad_request", "child transcript must be a regular file of at most 64 MiB");
+		let result: T;
+		try {
+			result = await loader(canonicalFile);
+		} catch (error) {
+			check();
+			throw error;
+		}
+		check();
+		const [afterRoot, afterFile, after] = await Promise.all([realpath(root), realpath(file), stat(canonicalFile)]);
+		check();
+		if (afterRoot !== canonicalRoot || afterFile !== canonicalFile || !within(afterRoot, afterFile) || before.dev !== after.dev || before.ino !== after.ino) {
+			throw new BridgeError("stale_session", "canonical child transcript changed during read");
+		}
+		if (!after.isFile() || after.size > 64 * 1024 * 1024) throw new BridgeError("bad_request", "child transcript exceeds the 64 MiB persisted-input limit");
+		return result;
+	};
+	const agentTelemetry = new AgentTelemetry(exportsRecord, readChild);
+	const viewOf = (ref: AgentRef): AgentView => toView(ref, definitionOf(ref), agentTelemetry.sample(ref));
+	const publishAgent = (ref: AgentRef): void => {
+		if (!current || scopedRef(ref.id) !== ref || (ref.kind === "sub" && !ownedChild(ref))) return;
+		const view = viewOf(ref);
+		for (const listener of agentListeners) listener(view);
+	};
+	const startObservers = (): (() => void) => {
+		const sessions = new Map<AgentRef, { session: NonNullable<AgentRef["session"]>; unsubscribe: () => void }>();
+		const snapshots = new Map<AgentRef, string>();
+		let closed = false;
+		const publish = (ref: AgentRef): void => {
+			if (closed || scopedRef(ref.id) !== ref || (ref.kind === "sub" && !ownedChild(ref))) return;
+			const view = viewOf(ref);
+			const signature = JSON.stringify(view);
+			if (snapshots.get(ref) === signature) return;
+			snapshots.set(ref, signature);
+			for (const listener of agentListeners) listener(view);
+		};
+		const watch = (ref: AgentRef): void => {
+			const prior = sessions.get(ref);
+			if (prior?.session === ref.session) return;
+			prior?.unsubscribe();
+			sessions.delete(ref);
+			if (ref.kind !== "sub" || !ownedChild(ref) || !ref.session || typeof ref.session.subscribe !== "function") return;
+			const session = ref.session;
+			const unsubscribe = session.subscribe(event => {
+				if (closed || scopedRef(ref.id) !== ref || ref.session !== session || !ownedChild(ref)) return;
+				// Snapshot completion boundaries before native parking drops the session.
+				if (event.type === "message_end" || event.type === "agent_end" || event.type === "tool_execution_end") agentTelemetry.sample(ref);
+				if (event.type !== "agent_end") return;
+				void session.waitForIdle().then(() => publish(ref), error => {
+					pi.logger.warn("Noli child idle observation failed", { id: ref.id, error: String(error) });
+				});
+			});
+			sessions.set(ref, { session, unsubscribe });
+		};
+		const tick = (): void => {
+			if (closed) return;
+			try {
+				for (const [ref, observed] of sessions) {
+					if (scopedRef(ref.id) === ref && ownedChild(ref)) continue;
+					observed.unsubscribe();
+					sessions.delete(ref);
+					snapshots.delete(ref);
+				}
+				for (const ref of scopedRefs()) { watch(ref); publish(ref); }
+			} catch (error) {
+				pi.logger.warn("Noli agent telemetry observation failed", { error: String(error) });
+			}
+		};
+		const unsubscribeRegistry = registry().onChange(event => {
+			if (!("ref" in event)) return;
+			const ref = event.ref;
+			if (event.type === "removed" || scopedRef(ref.id) !== ref || (ref.kind === "sub" && !ownedChild(ref))) {
+				sessions.get(ref)?.unsubscribe();
+				sessions.delete(ref);
+				snapshots.delete(ref);
+				return;
+			}
+			watch(ref);
+			publish(ref);
+		});
+		const unsubscribeSpawn = pi.events.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, observeSpawn);
+		tick();
+		const timer = setInterval(tick, 250);
+		return () => {
+			closed = true;
+			clearInterval(timer);
+			unsubscribeRegistry();
+			unsubscribeSpawn();
+			for (const { unsubscribe } of sessions.values()) unsubscribe();
+			sessions.clear();
+			snapshots.clear();
+		};
+	};
 
 	/**
 	 * Have OMP restore this root's persisted children via the read tool's
@@ -393,6 +540,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		},
 		refreshCapabilities: refresh,
 		list: async ({ includePersisted }) => {
+			const generation = adoption;
 			if (!registryOk) {
 				return {
 					agents: [],
@@ -402,47 +550,24 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			const discovery: DiscoveryReport = includePersisted
 				? await discoverPersisted()
 				: { status: "not_requested", reason: null, detail: "persisted discovery not requested", restored: [], pending: [] };
-			return { agents: scopedRefs().map(ref => toView(ref, definitionOf(ref))), discovery };
+			if (generation !== adoption) throw new BridgeError("stale_session", "session changed during persisted discovery");
+			const refs = scopedRefs();
+			await Promise.all(refs.filter(ref => ref.kind === "sub" && !ref.session).map(ref => agentTelemetry.restore(ref)));
+			if (generation !== adoption) throw new BridgeError("stale_session", "session changed during agent listing");
+			return { agents: scopedRefs().map(viewOf), discovery };
+		},
+		output: async params => {
+			const capability = refresh()["agents.output"];
+			if (!capability.available) throw new BridgeError("capability_unavailable", capability.detail, { capability: "agents.output", reason: capability.reason });
+			const ref = scopedRef(params.agentId);
+			if (!ref) throw new BridgeError("unknown_agent", `no agent "${params.agentId}" in this session`);
+			if (ref.kind !== "sub") throw new BridgeError("forbidden_kind", "only subagent transcripts can be read");
+			if (!ownedChild(ref)) throw new BridgeError("unknown_agent", "child does not belong to this root session");
+			return readChild(ref, () => readAgentOutput(ref, params, exportsRecord, readChild));
 		},
 		subscribe: listener => {
-			if (!registryOk) return () => {};
 			agentListeners.add(listener);
-			const sessions = new Map<AgentRef, { session: NonNullable<AgentRef["session"]>; unsubscribe: () => void }>();
-			let closed = false;
-			const publish = (ref: AgentRef): void => {
-				if (!closed && scopedRef(ref.id) === ref) listener(toView(ref, definitionOf(ref)));
-			};
-			const watch = (ref: AgentRef): void => {
-				const prior = sessions.get(ref);
-				if (prior?.session === ref.session) return;
-				prior?.unsubscribe();
-				sessions.delete(ref);
-				if (ref.kind !== "sub" || !ref.session) return;
-				const session = ref.session;
-				const unsubscribe = session.subscribe(event => {
-					if (event.type !== "agent_end") return;
-					// The agent_end callback can precede native streaming/queue cleanup.
-					// Publish only after the host's idle barrier, then inspect current queues.
-					void session.waitForIdle().then(() => publish(ref), error => {
-						pi.logger.warn("Noli child idle observation failed", { id: ref.id, error: String(error) });
-					});
-				});
-				sessions.set(ref, { session, unsubscribe });
-			};
-			for (const ref of scopedRefs()) watch(ref);
-			const unsubscribeRegistry = registry().onChange(event => {
-				if ("ref" in event && scopedRef(event.ref.id) === event.ref) {
-					watch(event.ref);
-					publish(event.ref);
-				}
-			});
-			return () => {
-				closed = true;
-				for (const { unsubscribe } of sessions.values()) unsubscribe();
-				sessions.clear();
-				agentListeners.delete(listener);
-				unsubscribeRegistry();
-			};
+			return () => agentListeners.delete(listener);
 		},
 		definitions: async () => {
 			const { agents } = await discoverAgents(current?.cwd ?? process.cwd());
@@ -451,12 +576,12 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		steer: async (id, text) => {
 			await liveSession(id).steer(text);
 			const ref = scopedRef(id);
-			if (ref) for (const listener of agentListeners) listener(toView(ref, definitionOf(ref)));
+			if (ref) publishAgent(ref);
 		},
 		followUp: async (id, text) => {
 			await liveSession(id).followUp(text);
 			const ref = scopedRef(id);
-			if (ref) for (const listener of agentListeners) listener(toView(ref, definitionOf(ref)));
+			if (ref) publishAgent(ref);
 		},
 		turn: async (id, text, definitionName) => {
 			const ref = scopedRef(id);
@@ -601,6 +726,11 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		adopt: ctx => {
 			// Subagent sessions re-run session_start when revived; only the top-level session owns the bridge.
 			if (ctx.agent.kind !== "main") return;
+			adoption++;
+			stopObservers?.();
+			stopObservers = undefined;
+			// Same-root branch/tree adoption keeps observed data on the actual refs.
+			if (current?.sessionManager.getSessionFile() !== ctx.sessionManager.getSessionFile()) agentTelemetry.clear();
 			current = ctx;
 			runtimeFailures = {};
 			declined.clear();
@@ -608,8 +738,13 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			clearInterval(telemetryTimer);
 			telemetry();
 			telemetryTimer = setInterval(telemetry, 1000);
+			if (registryOk) stopObservers = startObservers();
 		},
 		release: () => {
+			adoption++;
+			stopObservers?.();
+			stopObservers = undefined;
+			agentTelemetry.clear();
 			clearInterval(telemetryTimer);
 			telemetryTimer = undefined;
 			for (const key of ["prewalk", "cost", "input", "output", "context-threshold", "throughput"]) current?.ui.setStatus(`noli.${key}`, undefined);

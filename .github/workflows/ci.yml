@@ -1,5 +1,5 @@
 ---
-# -- CI for the omp-noli bridge plugin: typecheck against the pinned OMP types, then the test suite.
+# -- CI checks generated wire contracts, supported OMP extension loading, types and behavior on both Unix platforms.
 # -- The real-binary smoke (official `omp` + scripted model endpoint) is not run here; see README "Verification".
 name: ci
 
@@ -40,5 +40,9 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - run: bun run typecheck
+
+      - run: bun run schema:check
+
+      - run: bun run extension:check
 
       - run: bun test

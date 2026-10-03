@@ -4,9 +4,9 @@ An OMP extension that gives Noli a private local control channel. It runs next t
 
 ## Runtime and loading
 
-Works with official OMP releases; no custom build is needed. Developed and verified against OMP 18.4.5, with Bun. Install development dependencies with `bun install`. Load `src/index.ts` with `omp -e /path/to/omp-noli/src/index.ts --mode rpc-ui`, or through the package's `omp.extensions` declaration.
+Requires official OMP **18.5.1 or newer** and **Bun 1.4.2 or newer in the OMP runtime**; verified against OMP 18.5.1. No custom build is needed. Missing host APIs disable the affected capability with an explicit reason. Install development dependencies with `bun install`. Load the package root with `omp -e /path/to/omp-noli --mode rpc-ui`, or through the package's `omp.extensions` declaration.
 
-Install release v0.3.1 with `omp plugin install github:MelonSmasher/omp-noli#v0.3.1`. Restart OMP sessions to load the updated extension. The package manifest reports `0.3.1`; protocol version 1 is unchanged.
+Install release v0.3.2 with `omp plugin install github:MelonSmasher/omp-noli#v0.3.2`. Restart OMP sessions to load the updated extension. The package manifest reports `0.3.2`; protocol version 1 is unchanged. This release adds `agents.output` and nullable telemetry fields; clients with strict row/capability decoders must update to the bundled schema.
 
 The launcher passes `NOLI_BRIDGE_DIR` and `NOLI_BRIDGE_TOKEN` in the child process environment. If either is missing, the extension does nothing. Use a fresh private directory for each OMP process and a cryptographically random token. Don't log the token or put it on the command line. The extension never writes the token to disk or sends it over RPC.
 
@@ -93,7 +93,9 @@ Skill discovery was exercised in isolated temporary HOME/agent directories: regi
 | `protocol/noli-bridge.schema.json` | The same contract as JSON Schema (draft 2020-12), for clients in other languages. | No |
 | `src/bridge.ts` | Socket, authentication, framing, method dispatch and capability gating, written against the `BridgeHost` interface. | No |
 | `src/capabilities.ts` | Shape checks for the internal OMP hooks, reported as protocol reason codes. | By shape only |
-| `src/omp-host.ts` | The only OMP adapter. Maps OMP's registry, tools, events and transcript layout onto protocol values. | Yes |
+| `src/omp-host.ts` | Main OMP adapter: registry, tools, ownership checks, events and observer lifecycle. | Yes |
+| `src/agent-output.ts` | Bounded visible native live/parked child transcripts and UTF-16 span pagination. | Native session shape |
+| `src/agent-telemetry.ts` | Independent live, retained and cold-restored per-agent telemetry. | Native session/entry shape |
 | `src/thread-control.ts` | Native host-tool caller guard, scheduling acknowledgement checks and authenticated request-local skill guidance. | Extension API |
 | `src/index.ts` | Extension entry point, environment variables and session authentication adoption. | Types only |
 
@@ -110,6 +112,7 @@ Every feature maps to a named capability. Each capability has a source:
 | --- | --- | --- |
 | `agents.list` | public | `pi.pi.AgentRegistry` |
 | `agents.list.persisted` | internal | The built-in `read` tool's `history://<id>` lookup runs OMP's persisted-roster scan for the current root session. |
+| `agents.output` | public | `pi.pi.loadSessionMessagesReadOnly`, `pi.pi.loadEntriesFromFile`; live children expose `session.messages` and `agent.state.streamMessage`. |
 | `agents.steer` | public | `AgentSession.steer` + `queuedMessageCount` |
 | `agents.followUp` | public | `AgentSession.followUp` + `queuedMessageCount` |
 | `agents.turn` | public | `pi.pi.runSubagentFollowUpTurn`, `pi.pi.discoverAgents` |
@@ -170,7 +173,7 @@ Replies can arrive out of order; match them by `id`. Two kinds of event arrive b
 
 **Closed vocabularies.** Every enumeration is closed. When OMP reports a value the bridge doesn't recognize, the bridge sends `unknown` rather than passing OMP's value through, so a new OMP state can't reach Noli as an unexpected string.
 
-**Agent rows.** `{ id, name, kind, parentId, state, live, streaming, activity, definition, createdAt, lastActivity }`.
+**Agent rows.** `{ id, name, kind, parentId, state, live, streaming, activity, definition, model, effort, requests, contextTokens, contextWindow, inputTokens, outputTokens, sessionCost, tokensPerSecond, createdAt, lastActivity }`. Identical fields are sent in `agents.list` and `agent.changed`.
 
 | Field | Values |
 | --- | --- |
@@ -178,9 +181,16 @@ Replies can arrive out of order; match them by `id`. Two kinds of event arrive b
 | `state` | `running` (streaming, or a live session with queued input, including hidden next-turn messages), `idle` (live, waiting), `parked` (not in memory, revivable), `terminated` (killed, not revivable), `unknown`. A live main row whose registry status still says running but which is neither streaming nor holding queued input is `idle`. |
 | `live` / `streaming` | A live in-memory session is attached / it's producing output now. |
 | `definition` | Name of the agent definition the child runs (see `definitions.list`), or `null` when OMP didn't record one. |
+| `model` / `effort` | This agent's serving model identity and applied thinking level, falling back to its own session getters; never the effort-suffixed model selector or root metrics. Unavailable values are `null`. |
+| `requests` | This agent's assistant request count, separate from task-result usage. |
+| `contextTokens` / `contextWindow` | This session's observed current context use/capacity, or `null`. Cold-restored capacity remains `null`; context is recovered only from explicit persisted observations. |
+| `inputTokens` / `outputTokens` / `sessionCost` | Native session accounting, including task-result usage and persisted `model_usage` entries where applicable. Invalid/missing values are `null`; observed zero spend is valid. |
+| `tokensPerSecond` | This session's `tokenRate.rate()` throughput, or `null` when unobservable or parked. |
 | `createdAt`, `lastActivity` | Milliseconds since the Unix epoch. |
 
 Rows don't include file paths or other host storage details.
+
+Live telemetry uses each agent's own `getSessionStats()` and serving model; changes are published during active work. Parking retains observed fields keyed by the actual registry object, not its reusable ID. Cold restoration uses `loadEntriesFromFile`, follows the persisted leaf/parent chain, excludes abandoned branches and uses OMP's native context/accounting projection. Optional telemetry failures never reject listing or root chat. Observers, timers and caches are cleared on release.
 
 **Methods.**
 
@@ -189,12 +199,31 @@ Rows don't include file paths or other host storage details.
 | `capabilities.get` | none | none | Returns `{ capabilities }`. |
 | `definitions.list` | none | `definitions.list` | Returns `{ definitions: [{ name, description, source }] }`, with `source` one of `bundled`, `user`, `project`, `unknown`. These are the names `agents.turn` accepts. |
 | `agents.list` | optional `persisted` (boolean) | `agents.list`; an explicit `persisted: true` also requires `agents.list.persisted` | Returns `{ agents, discovery }` for the current root session. When `persisted` is omitted, discovery runs if `agents.list.persisted` is available, and it never makes the listing fail. With discovery, OMP first registers children left by earlier processes as `parked`, or `terminated` if they were killed. |
+| `agents.output` | `agentId`, optional `offset`, optional `limit` | `agents.output` | Returns visible live/parked output for an already-known owned child, without revival or a model turn. See pagination below. |
 | `agents.steer` | `agentId`, `text` | `agents.steer` | Queues an interrupting user message on a live child. Returns `{ queued: true }` once queued, not when the turn completes. |
 | `agents.followUp` | `agentId`, `text` | `agents.followUp` | Queues a follow-up user message on a live child. Returns `{ queued: true }` once queued. |
 | `agents.turn` | `agentId`, `text`, optional `agent` | `agents.turn` | Runs one turn through OMP's monitored follow-up driver, reviving the child first if it is parked. Uses `params.agent` if given, otherwise the row's `definition`. Returns `{ output, exitCode, aborted }`. Only one bridge turn per child at a time. |
 | `work.get` | none | `work.get` | Returns `{ settled, streaming, admittedSubmission, queued, hiddenQueued, pendingAsyncWork, jobs, undeliveredResults }`. `settled` uses OMP's RPC settle predicate, extended to retain cancellation-draining job bodies. `queued` includes hidden next-turn messages; `hiddenQueued` subtracts only user-authored messages still in the actual steering/follow-up queues, never live-steered chips already consumed from those queues. `jobs` includes running and cancellation-draining background jobs `{ id, kind, label, startedAt, agentId }`, with `kind` one of `bash`, `task`, `eval`, `unknown`. |
 | `work.cancel` | `jobId` | `work.cancel` | Cancels one background job owned by the root session and waits for that exact job's body and cleanup to finish. Returns `{ cancelled }`; `false` if already finished or not owned. No timeout is reported as successful cancellation; foreign jobs are neither aborted nor awaited. During cancellation drain, `work.get` retains the job and reports `pendingAsyncWork: true`, `settled: false`. |
 | `agents.kill` | `agentId` | `agents.kill.live` or `agents.kill.parked`, depending on the child | Live child: abort, then terminal release. Parked child: terminal release with no revival and no turn. OMP writes the tombstone, so the child stays terminated after a restart. Returns `{ killed, mode: "live" \| "parked" }`. |
+
+**Child output pagination.** Params are `{ agentId: string, offset?: number, limit?: number }`; `offset` must be a nonnegative safe integer and `limit` an integer from 1 to 500 (default 100). Omitted `offset` selects the newest page. An offset is an exclusive upper line bound; each returned page is oldest-to-newest. Pass `nextOffset` to read the next older page; `null` means the beginning.
+
+```ts
+{
+  agentId: string;
+  text: string;
+  spans: { id: string; role: string; tool: string | null;
+    created_ms: number; start: number; end: number }[];
+  nextOffset: number | null;
+}
+```
+
+Span offsets index `text` in **UTF-16 code units**, with exclusive `end`. Native roles, message/block IDs, timestamps and tool names are preserved; when a native ID is absent, a deterministic `derived:` identity is used. Output includes user/assistant text and tool calls/results, including in-flight assistant text/calls; hidden thinking, signatures and provider payloads are excluded. Parked reads use OMP's `loadSessionMessagesReadOnly` export and existing persisted entries, never a session writer, lock, revival or model turn. This is display history, not provider replay.
+
+Pages contain at most **500 lines** and **64 KiB UTF-8** of rendered text (span metadata is subject to the separate bridge frame bound). Lines over **8 KiB UTF-8** are explicitly marked `[… line truncated …]` and clipped on a Unicode code-point boundary. Persisted files over **64 MiB** are rejected before loading and checked again afterwards. Byte-limited pages preserve older cursors.
+
+**Noli integration:** ship this published package, not a locally patched plugin. Consume `agents.output` and the row fields above; add `src/agent-output.ts` and `src/agent-telemetry.ts` to any explicit packaging, release extraction, persistent installation and SSH digest inventories alongside the existing modules and bundled skill. Noli remains responsible for presentation, not transcript/telemetry implementation. Protocol 1 is additive; update strict client decoders and respect capability availability.
 
 **Error codes.** `capability_unavailable` errors also carry `capability` and `reason`; no other error does.
 
@@ -231,7 +260,7 @@ Rows don't include file paths or other host storage details.
 
 None of these fail the request. The bridge uses OMP's own per-root scan latch on the registry as positive evidence that a scan ran.
 
-**Scoping.** Only `sub` rows can be controlled; main and advisor rows are read-only. A child belongs to the current root session only if its transcript is inside that session's artifact directory. Children of an earlier root are left out of listings and events, and can't be controlled. Agent definition lookup is asynchronous, so ownership is checked again afterwards. After a native session switch, requests carrying the old session ID fail with `stale_session`; reconnect and authenticate again to get the new one.
+**Scoping.** Only `sub` rows can be controlled or read with `agents.output`; root and advisor transcripts are rejected. Output requires a known child whose registry ancestry belongs to the authenticated root and whose canonical transcript path remains inside the root artifact directory. Unknown/foreign agents and symlink escapes are rejected. After asynchronous transcript/telemetry loading, session adoption, registry object identity, ancestry and transcript path are rechecked. Children of an earlier root are left out of listings/events. After a native session switch, requests carrying the old session ID fail with `stale_session`; reconnect and authenticate again.
 
 **Limits.**
 
@@ -251,7 +280,7 @@ None of these fail the request. The bridge uses OMP's own per-root scan latch on
   An OMP release can change any of these. The plugin then detects the change, warns and degrades as described above. A supported upstream extension API would remove this risk.
 - **Definitions of live children.** OMP records a child's definition on the registry only when it reloads the child from disk. For children spawned while the plugin is loaded, the bridge takes the name from OMP's `task:subagent:lifecycle` event on the extension event bus. OMP registers the child just before that event, so the first `agent.changed` for a new child has `definition: null`, and a second one follows with the name filled in. The name is tied to that specific registry entry, so it's kept across session switches (a branch or tree navigation doesn't stop running children), and a child that reuses an ID gets a new entry and never inherits the old name. A child spawned before the plugin loaded has `definition: null` until OMP reloads it from disk; pass `params.agent` for it.
 - **Same-process rescan.** OMP scans each root's persisted children once per process. A transcript that becomes complete later in the same process (without its spawn registering it live) stays `pending` until the next process resumes that root.
-- **Out of scope for this channel.** Steer and follow-up only queue messages; use native RPC events and subagent subscriptions to watch activity and completion. The channel doesn't provide transcript replay, extension UI rendering, advisor configuration or MCP OAuth.
+- **Out of scope for this channel.** Steer and follow-up only queue messages; use native RPC events and subagent subscriptions to watch activity and completion. `agents.output` provides bounded child display history, not root transcript replay, extension UI rendering, advisor configuration or MCP OAuth.
 - **Platform.** The bridge listens on a Unix domain socket and secures it with Unix file permissions, so it runs on macOS and Linux only. Windows needs a different transport, and it isn't yet known which API works there under Bun: Bun documents `Bun.listen` for TCP and Unix sockets only, and its named-pipe support has been demonstrated through `node:net`. `scripts/probe-transport.ts`, run by the manual `windows-probe` workflow, tests both APIs on Windows runners to settle this before any port.
 
 ## Verification
@@ -272,9 +301,9 @@ None of these fail the request. The bridge uses OMP's own per-root scan latch on
 
 `bun run typecheck` checks against the pinned OMP types.
 
-CI (`.github/workflows/ci.yml`) runs `bun install --frozen-lockfile`, `bun run typecheck` and `bun test` on Ubuntu and macOS for pushes to `main` and for pull requests. It doesn't run the real-process smoke below, which needs the `omp` binary. A separate, manually triggered workflow (`.github/workflows/windows-probe.yml`) runs the transport probe, typecheck and tests on Windows x64 and Arm64 runners; its typecheck and test steps don't fail the job, since the suite is expected to fail on Windows until the transport is ported.
+CI (`.github/workflows/ci.yml`) runs `bun install --frozen-lockfile`, `bun run typecheck`, `bun run schema:check`, `bun run extension:check` and `bun test` on Ubuntu and macOS for pushes to `main` and pull requests. Generate evolving agent schema definitions from TypeScript with `bun run schema`; `schema:check` rejects drift. CI does not run the installed-binary smoke below. The separate manual Windows transport probe remains experimental; the bridge is Unix-only.
 
-The real-process smoke ran the official OMP 18.4.5 binary with an isolated temporary home and a scripted local OpenAI-compatible endpoint (not a real model provider), validating every received frame against the schema:
+Historical v0.3.0 real-process verification ran the official OMP 18.4.5 binary with an isolated temporary home and a scripted local OpenAI-compatible endpoint (not a real model provider), validating every received frame against the schema:
 
 1. `hello` reported protocol 1 with every capability on. `definitions.list` returned the bundled and user definitions.
 2. Spawned a child and let it park. Its row showed `state: parked` and `definition: task` (from the spawn event). `agents.turn` without `params.agent` used that definition; a made-up name returned `unknown_definition`.
@@ -284,3 +313,11 @@ The real-process smoke ran the official OMP 18.4.5 binary with an isolated tempo
 37 frames were received across the runs and all passed schema validation. Every run exited 0 with no non-JSON stdout lines.
 
 This shows the harness and protocol lifecycle works. It says nothing about the quality of real-model coding work. No GUI and no real model provider were exercised.
+
+### v0.3.2 child transcript and telemetry verification
+
+Run `bun run smoke:child` with compiled official **OMP 18.5.1** on `PATH`. To verify an installed release, run `bun scripts/smoke-child.ts /path/to/installed/omp-noli`. The runner uses disposable HOME/profile/config/workdir, an environment allowlist and a loopback scripted provider; it needs no external credentials and removes its process, sockets and temporary files.
+
+The exercised flow spawns a native child with `child-smoke/child-model:high`, independently configures the root with low effort and a different context capacity, observes the child's prompt/live text/tool call, releases a real held extension tool, and completes through native `yield`. A short disposable `task.agentIdleTtlMs` parks the child. Bridge output and telemetry are compared with independent registry/session APIs and the native persisted transcript. UTF-16 spans, native roles/IDs/timestamps/tool names, pagination, changing telemetry, positive live throughput and valid zero spend are checked. Five repeated parked reads assert no revival, model requests or child/root transcript hash/stat mutation. Root task-result usage is included without inflating root assistant requests.
+
+The behavior suite also covers bounds, foreign/root/advisor rejection, symlink escape, stale asynchronous ownership, AgentRef reuse, cold active-branch restoration, missing cost and observer cleanup. No Noli GUI, external model provider or production billing was exercised.

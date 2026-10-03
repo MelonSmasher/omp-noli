@@ -5,147 +5,409 @@
   "description": "Every frame the bridge sends. Enumerations are closed: a client may treat an unlisted value as a protocol violation. Keep in sync with src/protocol.ts; tests check that the enumerations match and that every emitted frame validates.",
   "$ref": "#/$defs/ServerFrame",
   "$defs": {
-    "ServerFrame": { "oneOf": [{ "$ref": "#/$defs/ResponseFrame" }, { "$ref": "#/$defs/EventFrame" }] },
-
-    "RequestId": { "type": ["string", "number", "null"] },
-
+    "ServerFrame": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ResponseFrame"
+        },
+        {
+          "$ref": "#/$defs/EventFrame"
+        }
+      ]
+    },
+    "RequestId": {
+      "type": [
+        "string",
+        "number",
+        "null"
+      ]
+    },
     "ResponseFrame": {
       "oneOf": [
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type", "id", "ok", "result"],
-          "properties": { "type": { "const": "response" }, "id": { "$ref": "#/$defs/RequestId" }, "ok": { "const": true }, "result": { "$ref": "#/$defs/Result" } }
+          "required": [
+            "type",
+            "id",
+            "ok",
+            "result"
+          ],
+          "properties": {
+            "type": {
+              "const": "response"
+            },
+            "id": {
+              "$ref": "#/$defs/RequestId"
+            },
+            "ok": {
+              "const": true
+            },
+            "result": {
+              "$ref": "#/$defs/Result"
+            }
+          }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type", "id", "ok", "error"],
-          "properties": { "type": { "const": "response" }, "id": { "$ref": "#/$defs/RequestId" }, "ok": { "const": false }, "error": { "$ref": "#/$defs/ErrorBody" } }
+          "required": [
+            "type",
+            "id",
+            "ok",
+            "error"
+          ],
+          "properties": {
+            "type": {
+              "const": "response"
+            },
+            "id": {
+              "$ref": "#/$defs/RequestId"
+            },
+            "ok": {
+              "const": false
+            },
+            "error": {
+              "$ref": "#/$defs/ErrorBody"
+            }
+          }
         }
       ]
     },
-
     "Result": {
       "description": "Result of one method. Which variant applies follows from the request's method.",
       "anyOf": [
-        { "$ref": "#/$defs/HelloResult" },
-        { "$ref": "#/$defs/CapabilitiesResult" },
-        { "$ref": "#/$defs/DefinitionsResult" },
-        { "$ref": "#/$defs/ListResult" },
-        { "$ref": "#/$defs/QueuedResult" },
-        { "$ref": "#/$defs/TurnResult" },
-        { "$ref": "#/$defs/KillResult" },
-        { "$ref": "#/$defs/WorkResult" },
-        { "$ref": "#/$defs/CancelWorkResult" }
+        {
+          "$ref": "#/$defs/HelloResult"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesResult"
+        },
+        {
+          "$ref": "#/$defs/DefinitionsResult"
+        },
+        {
+          "$ref": "#/$defs/ListResult"
+        },
+        {
+          "$ref": "#/$defs/QueuedResult"
+        },
+        {
+          "$ref": "#/$defs/TurnResult"
+        },
+        {
+          "$ref": "#/$defs/KillResult"
+        },
+        {
+          "$ref": "#/$defs/WorkResult"
+        },
+        {
+          "$ref": "#/$defs/CancelWorkResult"
+        },
+        {
+          "$ref": "#/$defs/AgentOutputResult"
+        }
       ]
     },
-
     "HelloResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["protocol", "sessionId", "pid", "capabilities"],
+      "required": [
+        "protocol",
+        "sessionId",
+        "pid",
+        "capabilities"
+      ],
       "properties": {
-        "protocol": { "const": 1 },
-        "sessionId": { "type": "string", "minLength": 1 },
-        "pid": { "type": "integer" },
-        "capabilities": { "$ref": "#/$defs/Capabilities" }
+        "protocol": {
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/Capabilities"
+        }
       }
     },
     "CapabilitiesResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["capabilities"],
-      "properties": { "capabilities": { "$ref": "#/$defs/Capabilities" } }
+      "required": [
+        "capabilities"
+      ],
+      "properties": {
+        "capabilities": {
+          "$ref": "#/$defs/Capabilities"
+        }
+      }
     },
     "DefinitionsResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["definitions"],
-      "properties": { "definitions": { "type": "array", "items": { "$ref": "#/$defs/DefinitionView" } } }
+      "required": [
+        "definitions"
+      ],
+      "properties": {
+        "definitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DefinitionView"
+          }
+        }
+      }
     },
     "ListResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["agents", "discovery"],
-      "properties": { "agents": { "type": "array", "items": { "$ref": "#/$defs/AgentView" } }, "discovery": { "$ref": "#/$defs/DiscoveryReport" } }
+      "required": [
+        "agents",
+        "discovery"
+      ],
+      "properties": {
+        "agents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentView"
+          }
+        },
+        "discovery": {
+          "$ref": "#/$defs/DiscoveryReport"
+        }
+      }
     },
     "QueuedResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["queued"],
-      "properties": { "queued": { "const": true } }
+      "required": [
+        "queued"
+      ],
+      "properties": {
+        "queued": {
+          "const": true
+        }
+      }
     },
     "TurnResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["output", "exitCode", "aborted"],
-      "properties": { "output": { "type": "string" }, "exitCode": { "type": ["integer", "null"] }, "aborted": { "type": "boolean" } }
+      "required": [
+        "output",
+        "exitCode",
+        "aborted"
+      ],
+      "properties": {
+        "output": {
+          "type": "string"
+        },
+        "exitCode": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "aborted": {
+          "type": "boolean"
+        }
+      }
     },
     "KillResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["killed", "mode"],
-      "properties": { "killed": { "type": "boolean" }, "mode": { "enum": ["live", "parked"] } }
+      "required": [
+        "killed",
+        "mode"
+      ],
+      "properties": {
+        "killed": {
+          "type": "boolean"
+        },
+        "mode": {
+          "enum": [
+            "live",
+            "parked"
+          ]
+        }
+      }
     },
     "WorkResult": {
       "description": "Observed settlement state of the root session. Cancellation-draining job bodies remain pending until completion.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["settled", "streaming", "admittedSubmission", "queued", "hiddenQueued", "pendingAsyncWork", "jobs", "undeliveredResults"],
+      "required": [
+        "settled",
+        "streaming",
+        "admittedSubmission",
+        "queued",
+        "hiddenQueued",
+        "pendingAsyncWork",
+        "jobs",
+        "undeliveredResults"
+      ],
       "properties": {
-        "settled": { "type": "boolean" },
-        "streaming": { "type": "boolean" },
-        "admittedSubmission": { "type": "boolean" },
-        "queued": { "type": "integer", "minimum": 0 },
-        "hiddenQueued": { "type": "integer", "minimum": 0 },
-        "pendingAsyncWork": { "type": "boolean" },
-        "jobs": { "type": "array", "items": { "$ref": "#/$defs/JobView" } },
-        "undeliveredResults": { "type": "integer", "minimum": 0 }
+        "settled": {
+          "type": "boolean"
+        },
+        "streaming": {
+          "type": "boolean"
+        },
+        "admittedSubmission": {
+          "type": "boolean"
+        },
+        "queued": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hiddenQueued": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pendingAsyncWork": {
+          "type": "boolean"
+        },
+        "jobs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JobView"
+          }
+        },
+        "undeliveredResults": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
     "CancelWorkResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cancelled"],
-      "properties": { "cancelled": { "type": "boolean" } }
+      "required": [
+        "cancelled"
+      ],
+      "properties": {
+        "cancelled": {
+          "type": "boolean"
+        }
+      }
     },
-    "JobKind": { "enum": ["bash", "task", "eval", "unknown"] },
+    "JobKind": {
+      "enum": [
+        "bash",
+        "task",
+        "eval",
+        "unknown"
+      ]
+    },
     "JobView": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "kind", "label", "startedAt", "agentId"],
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "startedAt",
+        "agentId"
+      ],
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "kind": { "$ref": "#/$defs/JobKind" },
-        "label": { "type": "string" },
-        "startedAt": { "type": "number", "description": "Milliseconds since the Unix epoch." },
-        "agentId": { "type": ["string", "null"] }
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "$ref": "#/$defs/JobKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "number",
+          "description": "Milliseconds since the Unix epoch."
+        },
+        "agentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     },
-
     "CapabilityName": {
-      "enum": ["agents.list", "agents.list.persisted", "agents.steer", "agents.followUp", "agents.turn", "agents.kill.live", "agents.kill.parked", "definitions.list", "work.get", "work.cancel"]
+      "enum": [
+        "agents.list",
+        "agents.list.persisted",
+        "agents.output",
+        "agents.steer",
+        "agents.followUp",
+        "agents.turn",
+        "agents.kill.live",
+        "agents.kill.parked",
+        "definitions.list",
+        "work.get",
+        "work.cancel"
+      ]
     },
-    "CapabilityReason": { "enum": ["export_missing", "tool_missing", "hook_changed", "runtime_failure", "not_ready"] },
-    "CapabilityApi": { "enum": ["public", "internal"] },
+    "CapabilityReason": {
+      "enum": [
+        "export_missing",
+        "tool_missing",
+        "hook_changed",
+        "runtime_failure",
+        "not_ready"
+      ]
+    },
+    "CapabilityApi": {
+      "enum": [
+        "public",
+        "internal"
+      ]
+    },
     "CapabilityState": {
       "oneOf": [
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["available", "api", "detail"],
-          "properties": { "available": { "const": true }, "api": { "$ref": "#/$defs/CapabilityApi" }, "detail": { "type": "string" } }
+          "required": [
+            "available",
+            "api",
+            "detail"
+          ],
+          "properties": {
+            "available": {
+              "const": true
+            },
+            "api": {
+              "$ref": "#/$defs/CapabilityApi"
+            },
+            "detail": {
+              "type": "string"
+            }
+          }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["available", "api", "reason", "detail"],
+          "required": [
+            "available",
+            "api",
+            "reason",
+            "detail"
+          ],
           "properties": {
-            "available": { "const": false },
-            "api": { "$ref": "#/$defs/CapabilityApi" },
-            "reason": { "$ref": "#/$defs/CapabilityReason" },
-            "detail": { "type": "string" }
+            "available": {
+              "const": false
+            },
+            "api": {
+              "$ref": "#/$defs/CapabilityApi"
+            },
+            "reason": {
+              "$ref": "#/$defs/CapabilityReason"
+            },
+            "detail": {
+              "type": "string"
+            }
           }
         }
       ]
@@ -153,65 +415,363 @@
     "Capabilities": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["agents.list", "agents.list.persisted", "agents.steer", "agents.followUp", "agents.turn", "agents.kill.live", "agents.kill.parked", "definitions.list", "work.get", "work.cancel"],
+      "required": [
+        "agents.list",
+        "agents.list.persisted",
+        "agents.output",
+        "agents.steer",
+        "agents.followUp",
+        "agents.turn",
+        "agents.kill.live",
+        "agents.kill.parked",
+        "definitions.list",
+        "work.get",
+        "work.cancel"
+      ],
       "properties": {
-        "agents.list": { "$ref": "#/$defs/CapabilityState" },
-        "agents.list.persisted": { "$ref": "#/$defs/CapabilityState" },
-        "agents.steer": { "$ref": "#/$defs/CapabilityState" },
-        "agents.followUp": { "$ref": "#/$defs/CapabilityState" },
-        "agents.turn": { "$ref": "#/$defs/CapabilityState" },
-        "agents.kill.live": { "$ref": "#/$defs/CapabilityState" },
-        "agents.kill.parked": { "$ref": "#/$defs/CapabilityState" },
-        "definitions.list": { "$ref": "#/$defs/CapabilityState" },
-        "work.get": { "$ref": "#/$defs/CapabilityState" },
-        "work.cancel": { "$ref": "#/$defs/CapabilityState" }
+        "agents.list": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "agents.list.persisted": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "agents.output": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "agents.steer": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "agents.followUp": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "agents.turn": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "agents.kill.live": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "agents.kill.parked": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "definitions.list": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "work.get": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "work.cancel": {
+          "$ref": "#/$defs/CapabilityState"
+        }
       }
     },
-
-    "AgentKind": { "enum": ["main", "sub", "advisor", "unknown"] },
-    "AgentState": { "enum": ["running", "idle", "parked", "terminated", "unknown"] },
+    "AgentKind": {
+      "enum": [
+        "main",
+        "sub",
+        "advisor",
+        "unknown"
+      ]
+    },
+    "AgentState": {
+      "enum": [
+        "running",
+        "idle",
+        "parked",
+        "terminated",
+        "unknown"
+      ]
+    },
     "AgentView": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "name", "kind", "parentId", "state", "live", "streaming", "activity", "definition", "createdAt", "lastActivity"],
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "parentId",
+        "state",
+        "live",
+        "streaming",
+        "activity",
+        "definition",
+        "model",
+        "effort",
+        "requests",
+        "contextTokens",
+        "contextWindow",
+        "inputTokens",
+        "outputTokens",
+        "sessionCost",
+        "tokensPerSecond",
+        "createdAt",
+        "lastActivity"
+      ],
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "name": { "type": "string" },
-        "kind": { "$ref": "#/$defs/AgentKind" },
-        "parentId": { "type": ["string", "null"] },
-        "state": { "$ref": "#/$defs/AgentState" },
-        "live": { "type": "boolean" },
-        "streaming": { "type": "boolean" },
-        "activity": { "type": ["string", "null"] },
-        "definition": { "type": ["string", "null"] },
-        "createdAt": { "type": "number", "description": "Milliseconds since the Unix epoch." },
-        "lastActivity": { "type": "number", "description": "Milliseconds since the Unix epoch." }
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "const": "main"
+            },
+            {
+              "const": "sub"
+            },
+            {
+              "const": "advisor"
+            },
+            {
+              "const": "unknown"
+            }
+          ]
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "const": "unknown"
+            },
+            {
+              "const": "running"
+            },
+            {
+              "const": "idle"
+            },
+            {
+              "const": "parked"
+            },
+            {
+              "const": "terminated"
+            }
+          ]
+        },
+        "live": {
+          "type": "boolean"
+        },
+        "streaming": {
+          "type": "boolean"
+        },
+        "activity": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "definition": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "requests": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "contextTokens": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "contextWindow": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "inputTokens": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "outputTokens": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "sessionCost": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "tokensPerSecond": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "lastActivity": {
+          "type": "number"
+        }
       }
     },
-
-    "DiscoveryStatus": { "enum": ["complete", "skipped", "inconclusive", "unavailable", "none", "not_requested"] },
-    "DiscoveryReason": { "enum": ["host_declined", "previously_declined", "no_scan_evidence", "lookup_failed", "capability_unavailable", "no_root"] },
+    "DiscoveryStatus": {
+      "enum": [
+        "complete",
+        "skipped",
+        "inconclusive",
+        "unavailable",
+        "none",
+        "not_requested"
+      ]
+    },
+    "DiscoveryReason": {
+      "enum": [
+        "host_declined",
+        "previously_declined",
+        "no_scan_evidence",
+        "lookup_failed",
+        "capability_unavailable",
+        "no_root"
+      ]
+    },
     "DiscoveryReport": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "reason", "detail", "restored", "pending"],
+      "required": [
+        "status",
+        "reason",
+        "detail",
+        "restored",
+        "pending"
+      ],
       "properties": {
-        "status": { "$ref": "#/$defs/DiscoveryStatus" },
-        "reason": { "oneOf": [{ "$ref": "#/$defs/DiscoveryReason" }, { "type": "null" }] },
-        "detail": { "type": "string" },
-        "restored": { "type": "array", "items": { "type": "string" } },
-        "pending": { "type": "array", "items": { "type": "string" } }
+        "status": {
+          "$ref": "#/$defs/DiscoveryStatus"
+        },
+        "reason": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DiscoveryReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detail": {
+          "type": "string"
+        },
+        "restored": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pending": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
-
-    "DefinitionSource": { "enum": ["bundled", "user", "project", "unknown"] },
+    "DefinitionSource": {
+      "enum": [
+        "bundled",
+        "user",
+        "project",
+        "unknown"
+      ]
+    },
     "DefinitionView": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "description", "source"],
-      "properties": { "name": { "type": "string", "minLength": 1 }, "description": { "type": "string" }, "source": { "$ref": "#/$defs/DefinitionSource" } }
+      "required": [
+        "name",
+        "description",
+        "source"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/DefinitionSource"
+        }
+      }
     },
-
     "ErrorCode": {
       "enum": [
         "unauthorized",
@@ -238,51 +798,198 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["code", "message", "capability", "reason"],
+          "required": [
+            "code",
+            "message",
+            "capability",
+            "reason"
+          ],
           "properties": {
-            "code": { "const": "capability_unavailable" },
-            "message": { "type": "string" },
-            "capability": { "$ref": "#/$defs/CapabilityName" },
-            "reason": { "$ref": "#/$defs/CapabilityReason" }
+            "code": {
+              "const": "capability_unavailable"
+            },
+            "message": {
+              "type": "string"
+            },
+            "capability": {
+              "$ref": "#/$defs/CapabilityName"
+            },
+            "reason": {
+              "$ref": "#/$defs/CapabilityReason"
+            }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["code", "message"],
+          "required": [
+            "code",
+            "message"
+          ],
           "properties": {
-            "code": { "allOf": [{ "$ref": "#/$defs/ErrorCode" }, { "not": { "const": "capability_unavailable" } }] },
-            "message": { "type": "string" }
+            "code": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/ErrorCode"
+                },
+                {
+                  "not": {
+                    "const": "capability_unavailable"
+                  }
+                }
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
           }
         }
       ]
     },
-
     "EventFrame": {
       "oneOf": [
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type", "event", "sessionId", "agent"],
+          "required": [
+            "type",
+            "event",
+            "sessionId",
+            "agent"
+          ],
           "properties": {
-            "type": { "const": "event" },
-            "event": { "const": "agent.changed" },
-            "sessionId": { "type": "string", "minLength": 1 },
-            "agent": { "$ref": "#/$defs/AgentView" }
+            "type": {
+              "const": "event"
+            },
+            "event": {
+              "const": "agent.changed"
+            },
+            "sessionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "agent": {
+              "$ref": "#/$defs/AgentView"
+            }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["type", "event", "sessionId", "capabilities"],
+          "required": [
+            "type",
+            "event",
+            "sessionId",
+            "capabilities"
+          ],
           "properties": {
-            "type": { "const": "event" },
-            "event": { "const": "capabilities.changed" },
-            "sessionId": { "type": "string", "minLength": 1 },
-            "capabilities": { "$ref": "#/$defs/Capabilities" }
+            "type": {
+              "const": "event"
+            },
+            "event": {
+              "const": "capabilities.changed"
+            },
+            "sessionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "capabilities": {
+              "$ref": "#/$defs/Capabilities"
+            }
           }
         }
       ]
+    },
+    "AgentOutputParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agentId"
+      ],
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        }
+      }
+    },
+    "AgentOutputResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agentId",
+        "text",
+        "spans",
+        "nextOffset"
+      ],
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "spans": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "role",
+              "tool",
+              "created_ms",
+              "start",
+              "end"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "tool": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "created_ms": {
+                "type": "number"
+              },
+              "start": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "nextOffset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
     }
   }
 }
