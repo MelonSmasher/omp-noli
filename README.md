@@ -6,13 +6,23 @@ An OMP extension that gives Noli a private local control channel. It runs next t
 
 Works with official OMP releases; no custom build is needed. Developed and verified against OMP 18.4.5, with Bun. Install development dependencies with `bun install`. Load `src/index.ts` with `omp -e /path/to/omp-noli/src/index.ts --mode rpc-ui`, or through the package's `omp.extensions` declaration.
 
-Install release v0.3.0 with `omp plugin install github:MelonSmasher/omp-noli#v0.3.0`. Restart OMP sessions to load the updated extension. The package manifest reports `0.3.0`; protocol version 1 is unchanged.
+Install release v0.3.1 with `omp plugin install github:MelonSmasher/omp-noli#v0.3.1`. Restart OMP sessions to load the updated extension. The package manifest reports `0.3.1`; protocol version 1 is unchanged.
 
 The launcher passes `NOLI_BRIDGE_DIR` and `NOLI_BRIDGE_TOKEN` in the child process environment. If either is missing, the extension does nothing. Use a fresh private directory for each OMP process and a cryptographically random token. Don't log the token or put it on the command line. The extension never writes the token to disk or sends it over RPC.
 
 The directory is created with mode 0700. It is rejected if it is a symlink, isn't owned by the current user, or is accessible to group/other. The socket is `<dir>/omp-<pid>.sock`, mode 0600. The bridge never removes an existing endpoint at that path. On shutdown it closes clients, removes the socket and unsubscribes its listeners.
 
 Only the top-level session starts the server; child sessions never open listeners. All runtime objects come from OMP itself: the host-injected `pi.pi` exports, the shared extension event bus, and the host's own built-in tool instances for the internal paths described below. Importing a second copy of OMP's runtime would control a different agent registry, so package dependencies are used for types only.
+
+## Agent images
+
+The authenticated owning main agent can call `noli_show_image({ source: "screenshots/result.png", caption: "Updated screen" })` to show a local image inline in Noli. `source` may also be an HTTP(S) image URL. Relative paths resolve in the agent's current working directory on its machine, including remote workspaces. Children and advisors return image paths or URLs to their parent rather than publishing directly.
+
+Supported formats are PNG, JPEG, WebP and GIF, up to 5 MiB per image. The plugin bounds local/streaming download bytes, checks complete image containers and native pixel decoding, honors cancellation, and rechecks authenticated session ownership before submission. Native validation requires Bun.Image (Bun 1.4.2 or newer in the OMP runtime); an older runtime returns an explicit error.
+
+The tool submits a displayed `noli.image` custom message with optional text and an image block `{ type: "image", data: "<base64>", mimeType: "image/png" }`. Busy sessions use noninterrupting `aside` delivery; idle submission does not start a model turn. Its acknowledgement is **submitted**, not proof of persistence or that the user has viewed it. Image bytes are not duplicated in the tool result. OMP may normalize large images before delivery and uses blob-backed native persistence.
+
+**Companion Noli support is required:** translate displayed `noli.image` custom entries to assistant image/text blocks, retain image data through persistence/projection, and render image blocks inline with previews. Packaging, persistent installation and SSH transfer must include `src/images.ts`. This plugin release alone cannot make an older Noli UI display images. The socket bridge schema is unchanged.
 
 ## Agent-requested current-thread closure
 
