@@ -14,6 +14,67 @@ The directory is created with mode 0700. It is rejected if it is a symlink, isn'
 
 Only the top-level session starts the server; child sessions never open listeners. All runtime objects come from OMP itself: the host-injected `pi.pi` exports, the shared extension event bus, and the host's own built-in tool instances for the internal paths described below. Importing a second copy of OMP's runtime would control a different agent registry, so package dependencies are used for types only.
 
+## Agent-requested current-thread closure
+
+The selected transport is **native RPC host tools**, not reverse bridge requests. Noli registers `noli_thread_get` and `noli_thread_finish` with `set_host_tools`; OMP emits `host_tool_call`, and Noli answers `host_tool_result`. The plugin registers no duplicate tools and performs no thread lifecycle operation or database write. Protocol 1 of the socket bridge remains Noli-to-plugin only.
+
+`src/thread-control.ts` intercepts the host tools using OMP's trusted `ctx.agent.kind`, never arguments supplied by the model. Only `main` is allowed; subagents are blocked before forwarding. Official OMP's advisor tool pool excludes dynamically registered RPC host tools (verified in the running binary); advisor contexts are also rejected by the guard. This depends on OMP preserving its host-tool wrapping and advisor exclusion: re-run runtime checks when upgrading OMP, and do not grant advisors a copy of a main-session wrapped control tool.
+
+Availability requires **both** a live socket client that completed authenticated `hello` for the current session adoption and both native host tools (`sourceInfo.source === "sdk"`). Environment variables or plugin installation alone do not enable control. Switch, branch and tree adoption revoke authentication, including returning to an old session ID; Noli must reconnect and complete `hello` again. Disconnect revokes availability. Instructions are request-local `before_agent_start` system policy, not persistent conversation entries, so startup/resume/branch/switch cannot duplicate them. The hidden bundled skill is reachable as `skill://noli` but is not advertised to ordinary terminal sessions.
+
+Agent and capability broadcasts also require a matching authenticated session. A revoked or previous-session socket receives no new events; a freshly authenticated connection restores both subscriptions. Already queued replies remain subject to the existing request/session checks.
+
+### Backend contract (requires companion Noli implementation)
+
+Noli must register exactly these schemas, with `additionalProperties: false`:
+
+```json
+[
+  { "name": "noli_thread_get", "description": "Read current Noli thread identity, lifecycle, permissions and pending closure.", "parameters": { "type": "object", "properties": {}, "additionalProperties": false } },
+  { "name": "noli_thread_finish", "description": "Schedule current-thread settle or archive after completed work and final response; does not close synchronously.", "parameters": { "type": "object", "properties": { "action": { "type": "string", "enum": ["settle", "archive"] } }, "required": ["action"], "additionalProperties": false } }
+]
+```
+
+Derive the target thread and permissions from the authenticated, owning OMP process/session connection. Neither tool accepts `threadId`, caller identity, credentials, delete or global settings. The guard independently rejects extra arguments and invalid actions. `noli_thread_get` returns a text JSON representation and matching `result.details` containing `{ thread: { id, title }, lifecycle: { settled, archived }, permittedActions: ["settle", "archive"], pendingLifecycleRequest: null | { requestId, action, status: "pending" } }`; permissions may be an empty/subset array. Noli owns every value and must apply permission checks again on finish.
+
+For finish, persist the lifecycle request before acknowledging. Return `host_tool_result` with the original RPC `id`, `result.content: [{ type: "text", text: "...scheduled..." }]` and **`result.details: { status: "scheduled", requestId: "<durable request id>", action: "settle" | "archive" }`**. The plugin refuses a missing, mismatched or completed-state acknowledgement as an error. It never synthesizes success. Backend denials/errors must use `isError: true` and an explanatory text result, not successful details. Noli must respond to every accepted call, including unavailable/unauthorized control.
+
+Keep RPC correlation `id` separate from model `toolCallId` and durable lifecycle `requestId`. Scope the pending-call map to the process/connection **and session generation**. On `host_tool_cancel`, use `targetId` to cancel the correlated request; Noli owns persistence and cancellation of any pending lifecycle action. Serialize cancellation, persistence and application. Cancel or invalidate outstanding requests on session change/disconnect; never apply an old request to a newly active thread. A late acknowledgement after cancellation must not become success. OMP already rejects an aborted call and emits `host_tool_cancel`; the plugin also rejects a success result whose authenticated session was lost. A race after persistence can leave an unknown outcome: inspect the pending request before retrying, not an automatic duplicate request.
+
+Finish only schedules: do not synchronously abort or stop the requesting agent. Noli must allow its final response, wait for actual OMP settlement (including admitted submissions, hidden queued input, asynchronous work and outstanding children), drain final history, then stop the agent and apply settle/archive under its existing lifecycle policy. Noli persists/cancels requests and displays pending/completed actions. Settle is Noli's Mark done: still in the inbox, terminals retained. Archive moves out of the inbox and closes terminals; neither deletes the thread.
+
+### Companion Noli launch and resource changes
+
+Inspected the existing Noli checkout: `crates/noli-adapter-omp/src/lib.rs` currently ignores `host_tool_call` and `host_tool_cancel`. Replace that discard path with authenticated current-session routing, registration, correlated results/cancellation, and server-owned durable scheduling. `crates/noli-server/src/runtime.rs`/`commands.rs` own stop/drain and thread actions; keep lifecycle policy there, not here. **Until those changes exist this plugin cannot schedule a real Noli lifecycle action.**
+
+Registered-plugin loading discovers the sibling `skills/noli/SKILL.md` automatically. The adapter's fallback currently supplies only `-e <package>/src/index.ts`, which loads code but does **not** discover sibling skills. Preferred companion change in `crates/noli-adapter-omp/src/lib.rs`: supply `-e <package>` (the root containing `package.json`); OMP resolves `omp.extensions` and discovers package skills. Alternatively retain the explicit file and pass a session-only `--config <overlay.yml>` containing:
+
+```yaml
+skills:
+  customDirectories:
+    - /absolute/path/to/omp-noli/skills
+```
+
+Use the **parent** `skills` directory, not `skills/noli`. Custom-directory arrays replace inherited arrays; preserve other required directories in a launch overlay. No global OMP config workaround. A trusted-file-only launch likewise needs the skill overlay; a copied Markdown file or package metadata alone cannot make file-only loading discover it.
+
+Ship **both** `src/thread-control.ts` and `skills/noli/SKILL.md`, preserving paths, in each companion inventory:
+
+- `app/scripts/bridge-resources.ts` (vendored bridge → desktop resources).
+- `crates/noli-adapter-omp/src/bridge.rs::install_bridge` (persistent registered-plugin installation/repair).
+- `crates/noli-server/src/bridge_updates.rs` (release allowlist, validation and extraction).
+- `crates/noli-client/src/install.rs` (SSH resource transfer and per-file digest inventory).
+
+Update the vendored package and release manifests/digests together. Existing recursive Tauri mapping in `app/src-tauri/tauri.conf.json` covers the staged resource tree; no extra global skill install is needed.
+
+### Agent-control verification
+
+Regression coverage checks main/sub/advisor restrictions, unavailable authentication, provenance, argument injection, invalid/mismatched acknowledgements, backend errors, cancellation, session isolation and request-local instruction deduplication. Bridge tests exercise real socket authentication and revocation. Run `bun test` and `bun run typecheck`.
+
+Real macOS OMP **18.4.12** binary checks exercised a wrapped native host-tool call: main forwarded, backend denial propagated, abort emitted a correlated `host_tool_cancel`, and a real SDK-created child with this guard forwarded no lifecycle call. Runtime advisor available-tool enumeration excluded both control tools. No success-returning Noli backend stub was used. The pinned 18.4.5 npm SDK source could not be imported for the initial probe (`createRatchetPrelude` export missing); the installed binary was used instead.
+
+Skill discovery was exercised in isolated temporary HOME/agent directories: registered plugin (`omp plugin link`, then `omp read skill://noli`), existing file-only fallback (no `skill:noli` in RPC command catalog), package-root `-e` fallback (skill present), and file-only fallback plus `skills.customDirectories` overlay (skill present). No global config was modified. Backend persistence, final-history drain, UI pending/completed actions and actual settle/archive remain **unverified end-to-end**, dependent on the companion Noli implementation above.
+
+
 ## Layout
 
 | Module | Role | Knows OMP? |
@@ -23,9 +84,10 @@ Only the top-level session starts the server; child sessions never open listener
 | `src/bridge.ts` | Socket, authentication, framing, method dispatch and capability gating, written against the `BridgeHost` interface. | No |
 | `src/capabilities.ts` | Shape checks for the internal OMP hooks, reported as protocol reason codes. | By shape only |
 | `src/omp-host.ts` | The only OMP adapter. Maps OMP's registry, tools, events and transcript layout onto protocol values. | Yes |
-| `src/index.ts` | Extension entry point and environment variables. | Types only |
+| `src/thread-control.ts` | Native host-tool caller guard, scheduling acknowledgement checks and authenticated request-local skill guidance. | Extension API |
+| `src/index.ts` | Extension entry point, environment variables and session authentication adoption. | Types only |
 
-Noli should code against the schema, not against this plugin's internals. Tests check that the schema's enumerations match `src/protocol.ts` exactly, and every frame the bridge sends in the test suite is validated against the schema.
+Noli should code against the socket schema and the separate native host-tool contract above, not against this plugin's internals. Tests check that the schema's enumerations match `src/protocol.ts` exactly, and every socket frame the bridge sends in the test suite is validated against the schema.
 
 ## Capabilities
 

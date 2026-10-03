@@ -208,6 +208,22 @@ beforeEach(() => {
 	bridge = startBridge({ dir, token: TOKEN, host: h.host });
 });
 
+test("agent control authentication is revoked on adoption and disconnect", async () => {
+	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(false);
+	const client = await Client.connect(bridge.socketPath);
+	await client.call({ id: 1, method: "hello", params: { token: TOKEN } });
+	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
+	expect(bridge.hasAuthenticatedSession("sess-2")).toBe(false);
+	bridge.invalidateAuthentication();
+	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(false);
+	const replacement = await Client.connect(bridge.socketPath);
+	await replacement.call({ id: 2, method: "hello", params: { token: TOKEN } });
+	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
+	bridge.close();
+	await replacement.closedPromise;
+	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(false);
+});
+
 afterEach(() => {
 	bridge.close();
 	rmSync(dir, { recursive: true, force: true });
@@ -525,6 +541,21 @@ describe("events and shutdown", () => {
 		const first = await quiet.call({ id: 1, method: "hello", params: { token: "bad" } });
 		expect(first.event).toBeUndefined();
 		expect(first.error?.code).toBe("unauthorized");
+	});
+
+	test.each(["session switch", "same-session adoption"])("%s revokes both event streams until a fresh hello", async reason => {
+		const old = await authed();
+		if (reason === "session switch") h.session = "sess-2";
+		bridge.invalidateAuthentication();
+		const current = await authed();
+		for (const listener of h.listeners) listener(view({ id: "new-session-child", state: "idle" }));
+		for (const listener of h.capabilityListeners) listener(h.caps);
+		expect((await current.next()).event).toBe("agent.changed");
+		expect((await current.next()).event).toBe("capabilities.changed");
+		// The reply is a stream ordering barrier: leaked events would precede it.
+		const barrier = await call(old, "capabilities.get");
+		expect(barrier.event).toBeUndefined();
+		expect(barrier.ok).toBe(true);
 	});
 
 	test("close removes the socket and unsubscribes", () => {
