@@ -208,6 +208,22 @@ beforeEach(() => {
 	bridge = startBridge({ dir, token: TOKEN, host: h.host });
 });
 
+test("agent control authentication is revoked on adoption and disconnect", async () => {
+	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(false);
+	const client = await Client.connect(bridge.socketPath);
+	await client.call({ id: 1, method: "hello", params: { token: TOKEN } });
+	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
+	expect(bridge.hasAuthenticatedSession("sess-2")).toBe(false);
+	bridge.invalidateAuthentication();
+	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(false);
+	const replacement = await Client.connect(bridge.socketPath);
+	await replacement.call({ id: 2, method: "hello", params: { token: TOKEN } });
+	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
+	bridge.close();
+	await replacement.closedPromise;
+	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(false);
+});
+
 afterEach(() => {
 	bridge.close();
 	rmSync(dir, { recursive: true, force: true });

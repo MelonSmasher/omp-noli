@@ -68,6 +68,7 @@ interface ConnectionState {
 	authed: boolean;
 	closed: boolean;
 	outbound: Buffer;
+	authenticatedSession?: string;
 }
 
 export interface BridgeOptions {
@@ -81,6 +82,9 @@ export interface BridgeOptions {
 export interface Bridge {
 	socketPath: string;
 	close(): void;
+	/** Only a successful hello for this adoption authorizes agent-facing control. */
+	hasAuthenticatedSession(sessionId: string): boolean;
+	invalidateAuthentication(): void;
 }
 
 function digest(value: string): Buffer {
@@ -258,6 +262,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 				return;
 			}
 			socket.data.authed = true;
+			socket.data.authenticatedSession = host.sessionId();
 			const hello: HelloResult = { protocol: PROTOCOL_VERSION, sessionId: host.sessionId(), pid: process.pid, capabilities: host.refreshCapabilities() };
 			send(socket, { type: "response", id, ok: true, result: hello });
 			return;
@@ -332,6 +337,15 @@ export function startBridge(options: BridgeOptions): Bridge {
 
 	return {
 		socketPath,
+		hasAuthenticatedSession(sessionId) {
+			for (const socket of sockets) {
+				if (!socket.data.closed && socket.data.authed && socket.data.authenticatedSession === sessionId) return true;
+			}
+			return false;
+		},
+		invalidateAuthentication() {
+			for (const socket of sockets) socket.data.authenticatedSession = undefined;
+		},
 		close() {
 			unsubscribeAgents();
 			unsubscribeCapabilities();
