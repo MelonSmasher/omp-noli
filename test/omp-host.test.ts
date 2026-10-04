@@ -536,10 +536,19 @@ describe("work", () => {
 			const oldBudget = omp.host.nativeControl!("goal.budget", { tokenBudget: 10 });
 			const oldRejected = oldBudget.catch(error => error);
 			await oldEntered.promise;
+			const root = registry.refs.get("Main")!;
+			root.session = { ...mainSession };
 			omp.adopt(ctx);
 			expect(await omp.host.nativeControl!("tree.navigate", { targetId: "new" })).toEqual({ cancelled: true });
+			root.session = mainSession;
+			omp.adopt(ctx);
+			const recalled = omp.host.nativeControl!("tree.navigate", { targetId: "recalled" });
+			await Promise.resolve();
+			expect(calls).toEqual(["tree"]);
 			oldGate.resolve();
 			expect(String(await oldRejected)).toContain("Root session changed");
+			await recalled;
+			expect(calls).toEqual(["tree", "tree"]);
 		} finally {
 			gate.resolve();
 			await cancellation;

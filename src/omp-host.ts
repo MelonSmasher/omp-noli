@@ -535,7 +535,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 	const requireNativeOwnership = (generation: number, ctx: ExtensionContext, session: AgentSession, message: string): void => {
 		if (generation !== adoption || current?.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId() || mainSession() !== session) throw new BridgeError("stale_session", message);
 	};
-	let nativeMutationTail: Promise<void> = Promise.resolve();
+	const nativeMutationTails = new WeakMap<AgentSession, Promise<void>>();
 	const host: BridgeHost = {
 		sessionId: () => {
 			if (!current) throw new BridgeError("not_ready", "session context not established");
@@ -555,9 +555,9 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			const capability = refresh()[method];
 			if (!capability.available) throw new BridgeError("capability_unavailable", capability.detail, { capability: method, reason: capability.reason });
 			const mutate = method === "tree.navigate" || method === "goal.budget";
-			const previous = nativeMutationTail;
+			const previous = nativeMutationTails.get(session) ?? Promise.resolve();
 			let release: (() => void) | undefined;
-			if (mutate) nativeMutationTail = new Promise<void>(resolve => { release = resolve; });
+			if (mutate) nativeMutationTails.set(session, new Promise<void>(resolve => { release = resolve; }));
 			try {
 				if (mutate) await previous;
 				requireNativeOwnership(generation, ctx, session, "Root session changed while native control awaited admission");
@@ -761,7 +761,6 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			// Subagent sessions re-run session_start when revived; only the top-level session owns the bridge.
 			if (ctx.agent.kind !== "main") return;
 			adoption++;
-			nativeMutationTail = Promise.resolve();
 			stopObservers?.();
 			stopObservers = undefined;
 			// Same-root branch/tree adoption keeps observed data on the actual refs.
@@ -777,7 +776,6 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		},
 		release: () => {
 			adoption++;
-			nativeMutationTail = Promise.resolve();
 			stopObservers?.();
 			stopObservers = undefined;
 			agentTelemetry.clear();
