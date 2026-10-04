@@ -302,6 +302,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 		try {
 			const params = record.params && typeof record.params === "object" && !Array.isArray(record.params) ? (record.params as Params) : {};
 			const result = await dispatch(record.method, params);
+			if (Buffer.byteLength(JSON.stringify({ type: "response", id, ok: true, result })) + 1 > MAX_FRAME_BYTES) throw new BridgeError("frame_too_large", "Native result exceeds the negotiated frame limit; outcome may already be applied, do not replay mutations");
 			if (socket.data.authenticatedSession !== host.sessionId() || record.sessionId !== host.sessionId()) {
 				throw new BridgeError("stale_session", "session changed while the request was running");
 			}

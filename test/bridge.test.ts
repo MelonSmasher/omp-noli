@@ -278,6 +278,17 @@ describe("supplemental native authentication", () => {
 		for (const method of ["plan.propose", "plan.approve", "memory.clear", "mcp.control", "lsp.control", "dap.control", "input.secret"]) expect((await call(client, method)).error?.code).toBe("capability_unavailable");
 		expect(h.calls).toEqual([]);
 	});
+	test("oversized native result returns bounded failure without fake acknowledgement", async () => {
+		const original = h.host.nativeControl;
+		try {
+			h.host.nativeControl = async () => ({ cancelled: false, editorText: "x".repeat(2 * 1024 * 1024) });
+			const client = await authed();
+			const response = await call(client, "tree.navigate", { targetId: "e" });
+			expect(response.ok).toBe(false);
+			expect(response.error?.code).toBe("frame_too_large");
+			expect(response.error?.message).toContain("do not replay");
+		} finally { h.host.nativeControl = original; }
+	});
 });
 
 describe("authentication", () => {

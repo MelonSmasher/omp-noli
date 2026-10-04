@@ -16,6 +16,9 @@ The authenticated socket admits only the current root session: both the connecti
 
 Supported method capabilities are `tree.navigate`, `goal.budget`, `memory.status`, `memory.search`, and `memory.save`. Parameters are defined together in `src/protocol.ts` and the generated JSON schema. The response `result` is the lossless official SDK result without a wrapper or fabricated success: navigation cancellation stays top-level `cancelled`, disabled memory reports inactive, and a backend that stores nothing reports `stored: 0`.
 
+Navigation omits only the SDK-only `sessionContext` rendering cache (a duplicate transcript); native editor text/images and cancellation remain intact. Noli must consume editor recall without submitting it. Any result exceeding the 1 MiB frame limit returns `frame_too_large` with an explicit unknown-outcome/no-replay warning, not fake success. Transcript/goal mutations refuse streaming, compaction, retries, bash/eval, session transitions, admitted submissions, queued messages, disposal and pending asynchronous work. A disappearing/replaced goal or unconfirmed budget cannot receive a successful acknowledgement.
+
+
 - `tree.navigate`: `{targetId, summarize?}` calls public `AgentSession.navigateTree`, not branch creation. Active transcript work is refused. It preserves session identity and follows native user-message editor recall/leaf behavior.
 - `goal.budget`: `{tokenBudget}` accepts a positive safe integer or `null` to remove a budget. It calls `AgentSession.goalRuntime.onBudgetMutated`, which updates the actual goal, accounting, budget-limited state and persisted mode history. It requires an existing goal and idle snapshot admission; it never changes the global wallet setting.
 - `memory.status`: `{}` calls `ExtensionContext.memory.status`.

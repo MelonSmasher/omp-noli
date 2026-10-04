@@ -7,10 +7,17 @@ const API_DETAILS: Record<NativeMethod, string> = {
 	"tree.navigate": "AgentSession.navigateTree", "goal.budget": "AgentSession.goalRuntime.onBudgetMutated",
 	"memory.status": "ExtensionContext.memory.status", "memory.search": "ExtensionContext.memory.search", "memory.save": "ExtensionContext.memory.save",
 };
+function hasAdmissionApi(session: AgentSession): boolean {
+	return [session.isBusyForSnapshot, session.isSessionTransitioning, session.hasAdmittedSubmission, session.isDisposed].every(value => typeof value === "boolean")
+		&& typeof session.queuedMessageCount === "number" && typeof session.hasPendingAsyncWork === "function";
+}
+function requireIdle(session: AgentSession): void {
+	if (session.isBusyForSnapshot || session.isSessionTransitioning || session.hasAdmittedSubmission || session.isDisposed || session.queuedMessageCount > 0 || session.hasPendingAsyncWork()) throw new BridgeError("busy", "Native session has active work or a transition");
+}
 function present(method: NativeMethod, ctx: ExtensionContext, session: AgentSession): boolean {
 	switch (method) {
-		case "tree.navigate": return typeof session.navigateTree === "function" && typeof session.isBusyForSnapshot === "boolean";
-		case "goal.budget": return typeof session.goalRuntime?.onBudgetMutated === "function" && typeof session.getGoalModeState === "function" && typeof session.isBusyForSnapshot === "boolean";
+		case "tree.navigate": return typeof session.navigateTree === "function" && hasAdmissionApi(session);
+		case "goal.budget": return typeof session.goalRuntime?.onBudgetMutated === "function" && typeof session.getGoalModeState === "function" && hasAdmissionApi(session);
 		case "memory.status": return typeof ctx.memory?.status === "function";
 		case "memory.search": return typeof ctx.memory?.search === "function";
 		case "memory.save": return typeof ctx.memory?.save === "function";
@@ -30,18 +37,25 @@ function text(params: Record<string, unknown>, key: string, required = true): st
 	if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > 256 * 1024) throw new BridgeError("bad_request", `${key} must be non-empty bounded text`);
 	return value;
 }
-function navigate(params: Record<string, unknown>, session: AgentSession) {
+async function navigate(params: Record<string, unknown>, session: AgentSession) {
 	const target = text(params, "targetId")!;
 	if (params.summarize !== undefined && typeof params.summarize !== "boolean") throw new BridgeError("bad_request", "summarize must be boolean");
-	if (session.isBusyForSnapshot) throw new BridgeError("busy", "Native transcript has active work");
-	return session.navigateTree(target, { summarize: params.summarize as boolean | undefined });
+	requireIdle(session);
+	const result = await session.navigateTree(target, { summarize: params.summarize as boolean | undefined });
+	// SDK-only rendering cache duplicates the entire transcript and is not a control result.
+	const { sessionContext: _context, ...response } = result;
+	return response;
 }
-function budget(params: Record<string, unknown>, session: AgentSession) {
+async function budget(params: Record<string, unknown>, session: AgentSession) {
 	const value = params.tokenBudget;
 	if (value !== null && (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)) throw new BridgeError("bad_request", "tokenBudget must be null or a positive safe integer");
-	if (session.isBusyForSnapshot) throw new BridgeError("busy", "Native goal has active work");
-	if (!session.getGoalModeState()) throw new BridgeError("not_ready", "No native goal exists");
-	return session.goalRuntime.onBudgetMutated(value === null ? undefined : value as number);
+	requireIdle(session);
+	const goal = session.getGoalModeState()?.goal;
+	if (!goal) throw new BridgeError("not_ready", "No native goal exists");
+	const result = await session.goalRuntime.onBudgetMutated(value === null ? undefined : value as number);
+	if (!result || result.goal.id !== goal.id) throw new BridgeError("stale_session", "Native goal changed during budget mutation; do not replay");
+	if (result.goal.tokenBudget !== (value === null ? undefined : value)) throw new BridgeError("internal", "Native goal budget was not confirmed; do not replay");
+	return result;
 }
 function search(params: Record<string, unknown>, ctx: ExtensionContext) {
 	const query = text(params, "query")!;
