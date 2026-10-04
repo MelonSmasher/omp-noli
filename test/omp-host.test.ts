@@ -529,6 +529,17 @@ describe("work", () => {
 			budgetGate.resolve();
 			await Promise.all([budget, tree]);
 			expect(calls).toEqual(["budget", "tree"]);
+			calls.length = 0;
+			const oldGate = Promise.withResolvers<void>();
+			const oldEntered = Promise.withResolvers<void>();
+			Object.assign(mainSession, { goalRuntime: { onBudgetMutated: async () => { oldEntered.resolve(); await oldGate.promise; return { goal: { id: "g", tokenBudget: 10 } }; } } });
+			const oldBudget = omp.host.nativeControl!("goal.budget", { tokenBudget: 10 });
+			const oldRejected = oldBudget.catch(error => error);
+			await oldEntered.promise;
+			omp.adopt(ctx);
+			expect(await omp.host.nativeControl!("tree.navigate", { targetId: "new" })).toEqual({ cancelled: true });
+			oldGate.resolve();
+			expect(String(await oldRejected)).toContain("Root session changed");
 		} finally {
 			gate.resolve();
 			await cancellation;

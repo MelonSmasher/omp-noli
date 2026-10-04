@@ -761,6 +761,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			// Subagent sessions re-run session_start when revived; only the top-level session owns the bridge.
 			if (ctx.agent.kind !== "main") return;
 			adoption++;
+			nativeMutationTail = Promise.resolve();
 			stopObservers?.();
 			stopObservers = undefined;
 			// Same-root branch/tree adoption keeps observed data on the actual refs.
@@ -776,6 +777,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		},
 		release: () => {
 			adoption++;
+			nativeMutationTail = Promise.resolve();
 			stopObservers?.();
 			stopObservers = undefined;
 			agentTelemetry.clear();
