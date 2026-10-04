@@ -134,6 +134,8 @@ export interface OmpHost {
 	host: BridgeHost;
 	/** Bind to a top-level session context; re-probes capabilities and warns. No-op for subagent contexts. */
 	adopt(ctx: ExtensionContext): void;
+	/** Refresh same-identity context without invalidating correlated native controls. */
+	refreshContext(ctx: ExtensionContext): void;
 	release(): void;
 }
 
@@ -549,7 +551,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			const capability = refresh()[method];
 			if (!capability.available) throw new BridgeError("capability_unavailable", capability.detail, { capability: method, reason: capability.reason });
 			const result = await nativeControl(method, params, ctx, session);
-			if (generation !== adoption || current !== ctx || mainSession() !== session) throw new BridgeError("stale_session", "Root session changed during native control; do not replay mutations");
+			if (generation !== adoption || current?.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId() || mainSession() !== session) throw new BridgeError("stale_session", "Root session changed during native control; do not replay mutations");
 			return result;
 		},
 		list: async ({ includePersisted }) => {
@@ -736,6 +738,12 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 
 	return {
 		host,
+		refreshContext: ctx => {
+			if (ctx.agent.kind !== "main" || !current || ctx.sessionManager.getSessionId() !== current.sessionManager.getSessionId()) return;
+			current = ctx;
+			refresh();
+			telemetry();
+		},
 		adopt: ctx => {
 			// Subagent sessions re-run session_start when revived; only the top-level session owns the bridge.
 			if (ctx.agent.kind !== "main") return;

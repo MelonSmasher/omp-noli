@@ -23,7 +23,7 @@ export default function noli(pi: ExtensionAPI): void {
 		if (ctx.agent.kind !== "main") return;
 		const sessionId = ctx.sessionManager.getSessionId();
 		// Tree navigation changes the leaf, not admission identity. Keep its correlated response authenticated.
-		if (boundSession === sessionId) return;
+		if (boundSession === sessionId) { omp.refreshContext(ctx); return; }
 		boundSession = sessionId;
 		bridge?.invalidateAuthentication();
 		omp.adopt(ctx);

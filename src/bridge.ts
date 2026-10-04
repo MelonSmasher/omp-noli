@@ -142,9 +142,9 @@ export function startBridge(options: BridgeOptions): Bridge {
 		const written = socket.write(socket.data.outbound);
 		socket.data.outbound = socket.data.outbound.subarray(written);
 	};
-	const send = (socket: Socket<ConnectionState>, frame: ServerFrame): void => {
+	const send = (socket: Socket<ConnectionState>, frame: ServerFrame | Buffer): void => {
 		if (socket.data.closed) return;
-		const bytes = Buffer.from(`${JSON.stringify(frame)}\n`);
+		const bytes = Buffer.isBuffer(frame) ? frame : Buffer.from(`${JSON.stringify(frame)}\n`);
 		if (socket.data.outbound.length + bytes.length > 8 * MAX_FRAME_BYTES) {
 			socket.terminate();
 			return;
@@ -302,11 +302,12 @@ export function startBridge(options: BridgeOptions): Bridge {
 		try {
 			const params = record.params && typeof record.params === "object" && !Array.isArray(record.params) ? (record.params as Params) : {};
 			const result = await dispatch(record.method, params);
-			if (Buffer.byteLength(JSON.stringify({ type: "response", id, ok: true, result })) + 1 > MAX_FRAME_BYTES) throw new BridgeError("frame_too_large", "Native result exceeds the negotiated frame limit; outcome may already be applied, do not replay mutations");
+			const responseBytes = Buffer.from(`${JSON.stringify({ type: "response", id, ok: true, result })}\n`);
+			if ((NATIVE_METHODS as readonly string[]).includes(record.method) && responseBytes.length > MAX_FRAME_BYTES) throw new BridgeError("frame_too_large", "Native result exceeds the negotiated frame limit; outcome may already be applied, do not replay mutations");
 			if (socket.data.authenticatedSession !== host.sessionId() || record.sessionId !== host.sessionId()) {
 				throw new BridgeError("stale_session", "session changed while the request was running");
 			}
-			send(socket, { type: "response", id, ok: true, result });
+			send(socket, responseBytes);
 		} catch (error) {
 			if (error instanceof BridgeError) fail(error.body);
 			else fail({ code: "internal", message: error instanceof Error ? error.message : String(error) });

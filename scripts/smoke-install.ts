@@ -19,7 +19,9 @@ try {
 	const packageRoot = join(dir, String(manifest).slice(0, -"package.json".length));
 	const pkg = await Bun.file(join(packageRoot, "package.json")).json();
 	assert.equal(pkg.version, tag.slice(1));
-	const loaded = await loadExtensions([join(packageRoot, "src/index.ts")], dir);
+	const entries: unknown = pkg.omp?.extensions;
+	assert(Array.isArray(entries) && entries.length > 0 && entries.every(entry => typeof entry === "string"), "Installed manifest declares non-empty extension entries");
+	const loaded = await loadExtensions(entries.map(entry => join(packageRoot, entry)), dir);
 	assert.deepEqual(loaded.errors, []);
 	assert.equal(loaded.extensions.length, 1);
 	// Published plugin path is selected by the official installer at runtime, not this checkout.
