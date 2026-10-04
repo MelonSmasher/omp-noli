@@ -16,6 +16,9 @@ import {
 	type HelloResult,
 	type KillResult,
 	type ListResult,
+	type NativeMethod,
+	NATIVE_METHODS,
+	UNAVAILABLE_NATIVE_METHODS,
 	PROTOCOL_VERSION,
 	type ServerFrame,
 	type TurnResult,
@@ -57,6 +60,8 @@ export interface BridgeHost {
 	work(): WorkResult;
 	/** Cancel an owned job and await its body/cleanup. False if already finished or not owned. */
 	cancelJob(id: string): Promise<boolean>;
+	/** Supplemental authenticated root-session controls; absent hosts fail closed. */
+	nativeControl?(method: NativeMethod, params: Record<string, unknown>): Promise<unknown>;
 }
 
 export class BridgeError extends Error {
@@ -137,9 +142,9 @@ export function startBridge(options: BridgeOptions): Bridge {
 		const written = socket.write(socket.data.outbound);
 		socket.data.outbound = socket.data.outbound.subarray(written);
 	};
-	const send = (socket: Socket<ConnectionState>, frame: ServerFrame): void => {
+	const send = (socket: Socket<ConnectionState>, frame: ServerFrame | Buffer): void => {
 		if (socket.data.closed) return;
-		const bytes = Buffer.from(`${JSON.stringify(frame)}\n`);
+		const bytes = Buffer.isBuffer(frame) ? frame : Buffer.from(`${JSON.stringify(frame)}\n`);
 		if (socket.data.outbound.length + bytes.length > 8 * MAX_FRAME_BYTES) {
 			socket.terminate();
 			return;
@@ -163,6 +168,12 @@ export function startBridge(options: BridgeOptions): Bridge {
 	};
 
 	const dispatch = async (method: string, params: Params): Promise<unknown> => {
+		if ((UNAVAILABLE_NATIVE_METHODS as readonly string[]).includes(method)) throw new BridgeError("capability_unavailable", `${method} requires an upstream public controller that is not exported by OMP 18.6.1`);
+		if ((NATIVE_METHODS as readonly string[]).includes(method)) {
+			requireCapability(method as NativeMethod);
+			if (!host.nativeControl) throw new BridgeError("capability_unavailable", "Native session control is not installed");
+			return host.nativeControl(method as NativeMethod, params);
+		}
 		switch (method) {
 			case "capabilities.get":
 				return { capabilities: host.refreshCapabilities() };
@@ -291,10 +302,12 @@ export function startBridge(options: BridgeOptions): Bridge {
 		try {
 			const params = record.params && typeof record.params === "object" && !Array.isArray(record.params) ? (record.params as Params) : {};
 			const result = await dispatch(record.method, params);
+			const responseBytes = Buffer.from(`${JSON.stringify({ type: "response", id, ok: true, result })}\n`);
+			if ((NATIVE_METHODS as readonly string[]).includes(record.method) && responseBytes.length > MAX_FRAME_BYTES) throw new BridgeError("frame_too_large", "Native result exceeds the negotiated frame limit; outcome may already be applied, do not replay mutations");
 			if (socket.data.authenticatedSession !== host.sessionId() || record.sessionId !== host.sessionId()) {
 				throw new BridgeError("stale_session", "session changed while the request was running");
 			}
-			send(socket, { type: "response", id, ok: true, result });
+			send(socket, responseBytes);
 		} catch (error) {
 			if (error instanceof BridgeError) fail(error.body);
 			else fail({ code: "internal", message: error instanceof Error ? error.message : String(error) });

@@ -25,3 +25,20 @@ Scope: One authenticated host-tool surface, main-agent enforcement, deferred lif
   EVIDENCE: Full Bun suite passes with new image coverage for four formats, invalid/truncated/corrupt/oversized inputs, HTTP failures, cancellation, authentication loss and session replacement. Frozen install and strict SDK typecheck pass.
 - [x] IM2: Native OMP image history survives process restart.
   EVIDENCE: Compiled OMP 18.5.0 real registered tool/native sendMessage published and flushed displayed noli.image with caption and screenshot. A separate resumed process hydrated identical image bytes through get_entries. No model request; streaming aside drain not exercised. README documents required companion Noli rendering and packaging support.
+
+## Supplemental native controls 0.4.0
+
+- [x] NC1: Official OMP 18.6.1 session APIs implement the five reachable negotiated supplemental methods; unavailable controllers fail closed.
+  EVIDENCE: Official public AgentSession.navigateTree/goalRuntime.onBudgetMutated and ExtensionContext.memory status/search/save; README records unsupported upstream controller prerequisites, no slash substitutions.
+- [x] NC2: Authentication, session changes, parameter boundaries and native results have regression coverage.
+  EVIDENCE: bun test: 207 pass, 0 fail; new native transport and parameter boundary regressions.
+  CHECK: bun test
+  EXPECT: 0 fail
+- [x] NC3: TypeScript and generated protocol-v1 schema agree and extension imports on official runtime.
+  CHECK: bun run typecheck && bun run schema:check && bun run extension:check
+  EXPECT: EXTENSION LOAD PASSED
+  EVIDENCE: bun run typecheck, schema:check and extension:check passed against pinned official 18.6.1.
+- [x] NC4: Real official SDK smoke exercises native tree, goal budget and memory behavior without model prompts or system-profile mutation.
+  EVIDENCE: bun run smoke:native passed; native leaf recall and identity preserved, goal budget persisted/removed, off memory returns stored 0, local memory stored 1 and independent learned.md content assertion passed.
+- [ ] NC5: Review and Ubuntu/macOS CI pass on the aligned release commit before stable publication; isolated published-release installation succeeds.
+
