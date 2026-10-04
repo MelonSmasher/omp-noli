@@ -46,15 +46,19 @@ async function navigate(params: Record<string, unknown>, session: AgentSession) 
 	const { sessionContext: _context, ...response } = result;
 	return response;
 }
+function tokenBudget(value: unknown): number | undefined {
+	if (value === null) return undefined;
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) throw new BridgeError("bad_request", "tokenBudget must be null or a positive safe integer");
+	return value;
+}
 async function budget(params: Record<string, unknown>, session: AgentSession) {
-	const value = params.tokenBudget;
-	if (value !== null && (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)) throw new BridgeError("bad_request", "tokenBudget must be null or a positive safe integer");
+	const value = tokenBudget(params.tokenBudget);
 	requireIdle(session);
 	const goal = session.getGoalModeState()?.goal;
 	if (!goal) throw new BridgeError("not_ready", "No native goal exists");
-	const result = await session.goalRuntime.onBudgetMutated(value === null ? undefined : value as number);
+	const result = await session.goalRuntime.onBudgetMutated(value);
 	if (!result || result.goal.id !== goal.id) throw new BridgeError("stale_session", "Native goal changed during budget mutation; do not replay");
-	if (result.goal.tokenBudget !== (value === null ? undefined : value)) throw new BridgeError("internal", "Native goal budget was not confirmed; do not replay");
+	if (result.goal.tokenBudget !== value) throw new BridgeError("internal", "Native goal budget was not confirmed; do not replay");
 	return result;
 }
 function search(params: Record<string, unknown>, ctx: ExtensionContext) {
