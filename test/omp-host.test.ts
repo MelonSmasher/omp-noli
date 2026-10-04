@@ -504,6 +504,38 @@ describe("work", () => {
 		expect(await omp.host.cancelJob("other")).toBe(false);
 		expect(work.cancelled).toEqual([{ id: "bg_1", filter: { ownerId: "Main" } }]);
 	});
+	test("native mutations refuse owned cancellation cleanup after native pending work clears", async () => {
+		const gate = Promise.withResolvers<void>();
+		const original = mainSession.asyncJobManager.getJob;
+		const additions = { isBusyForSnapshot: false, isSessionTransitioning: false, isDisposed: false, navigateTree: async () => ({ cancelled: true }), getGoalModeState: () => ({ goal: { id: "g" } }), goalRuntime: { onBudgetMutated: async () => ({ goal: { id: "g", tokenBudget: 10 } }) } };
+		Object.assign(mainSession, additions);
+		mainSession.asyncJobManager.getJob = () => ({ ownerId: "Main", status: "running", promise: gate.promise, type: "bash", label: "cleanup", startTime: 1 });
+		const cancellation = omp.host.cancelJob("bg_1");
+		try {
+			expect(work.pending).toBe(false);
+			for (const method of ["tree.navigate", "goal.budget"] as const) await expect(omp.host.nativeControl!(method, method === "tree.navigate" ? { targetId: "e" } : { tokenBudget: 10 })).rejects.toThrow("cleanup is still draining");
+			gate.resolve();
+			await cancellation;
+			expect(await omp.host.nativeControl!("tree.navigate", { targetId: "e" })).toEqual({ cancelled: true });
+			const budgetGate = Promise.withResolvers<void>();
+			const entered = Promise.withResolvers<void>();
+			const calls: string[] = [];
+			Object.assign(mainSession, { goalRuntime: { onBudgetMutated: async () => { calls.push("budget"); entered.resolve(); await budgetGate.promise; return { goal: { id: "g", tokenBudget: 10 } }; } }, navigateTree: async () => { calls.push("tree"); return { cancelled: true }; } });
+			const budget = omp.host.nativeControl!("goal.budget", { tokenBudget: 10 });
+			await entered.promise;
+			const tree = omp.host.nativeControl!("tree.navigate", { targetId: "e" });
+			await Promise.resolve();
+			expect(calls).toEqual(["budget"]);
+			budgetGate.resolve();
+			await Promise.all([budget, tree]);
+			expect(calls).toEqual(["budget", "tree"]);
+		} finally {
+			gate.resolve();
+			await cancellation;
+			mainSession.asyncJobManager.getJob = original;
+			for (const key of Object.keys(additions)) Reflect.deleteProperty(mainSession, key);
+		}
+	});
 
 	test("without an owner id, cancellation is refused and never reaches the job manager unscoped", async () => {
 		const original = mainSession.getAgentId;

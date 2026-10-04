@@ -532,6 +532,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		return session;
 	};
 
+	let nativeMutationTail: Promise<void> = Promise.resolve();
 	const host: BridgeHost = {
 		sessionId: () => {
 			if (!current) throw new BridgeError("not_ready", "session context not established");
@@ -550,9 +551,18 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			if (!ctx || !session || session.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()) throw new BridgeError("stale_session", "No owned root session");
 			const capability = refresh()[method];
 			if (!capability.available) throw new BridgeError("capability_unavailable", capability.detail, { capability: method, reason: capability.reason });
-			const result = await nativeControl(method, params, ctx, session);
-			if (generation !== adoption || current?.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId() || mainSession() !== session) throw new BridgeError("stale_session", "Root session changed during native control; do not replay mutations");
-			return result;
+			const mutate = method === "tree.navigate" || method === "goal.budget";
+			const previous = nativeMutationTail;
+			let release: (() => void) | undefined;
+			if (mutate) nativeMutationTail = new Promise<void>(resolve => { release = resolve; });
+			try {
+				if (mutate) await previous;
+				if (generation !== adoption || mainSession() !== session) throw new BridgeError("stale_session", "Root session changed while native control awaited admission");
+				if (mutate && [...cancellingJobs.values()].some(entry => entry.session === session)) throw new BridgeError("not_ready", "Owned background cancellation cleanup is still draining");
+				const result = await nativeControl(method, params, ctx, session);
+				if (generation !== adoption || current?.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId() || mainSession() !== session) throw new BridgeError("stale_session", "Root session changed during native control; do not replay mutations");
+				return result;
+			} finally { release?.(); }
 		},
 		list: async ({ includePersisted }) => {
 			const generation = adoption;
