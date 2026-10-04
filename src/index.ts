@@ -10,6 +10,7 @@ export const ENV_TOKEN = "NOLI_BRIDGE_TOKEN";
 
 export default function noli(pi: ExtensionAPI): void {
 	let bridge: Bridge | undefined;
+	let boundSession: string | undefined;
 	installThreadControl(pi, sessionId => bridge?.hasAuthenticatedSession(sessionId) ?? false);
 	const dir = process.env[ENV_DIR];
 	const token = process.env[ENV_TOKEN];
@@ -20,6 +21,10 @@ export default function noli(pi: ExtensionAPI): void {
 
 	const adopt = (ctx: ExtensionContext): void => {
 		if (ctx.agent.kind !== "main") return;
+		const sessionId = ctx.sessionManager.getSessionId();
+		// Tree navigation changes the leaf, not admission identity. Keep its correlated response authenticated.
+		if (boundSession === sessionId) return;
+		boundSession = sessionId;
 		bridge?.invalidateAuthentication();
 		omp.adopt(ctx);
 		bridge ??= startBridge({ dir, token, host: omp.host });
@@ -33,6 +38,7 @@ export default function noli(pi: ExtensionAPI): void {
 		if (ctx.agent.kind !== "main") return;
 		bridge?.close();
 		bridge = undefined;
+		boundSession = undefined;
 		omp.release();
 	});
 }
