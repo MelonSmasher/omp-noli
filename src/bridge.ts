@@ -172,7 +172,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 		if ((NATIVE_METHODS as readonly string[]).includes(method)) {
 			requireCapability(method as NativeMethod);
 			if (!host.nativeControl) throw new BridgeError("capability_unavailable", "Native session control is not installed");
-			return { value: await host.nativeControl(method as NativeMethod, params) };
+			return host.nativeControl(method as NativeMethod, params);
 		}
 		switch (method) {
 			case "capabilities.get":

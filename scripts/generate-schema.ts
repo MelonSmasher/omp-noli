@@ -59,6 +59,8 @@ if (!results.some((result: Schema) => result.$ref === "#/$defs/AgentOutputResult
 if (!results.some((result: Schema) => result.$ref === "#/$defs/NativeControlResult")) results.push({ $ref: "#/$defs/NativeControlResult" });
 schema.$defs.GoalBudgetParams.properties.tokenBudget = { anyOf: [{ type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, { type: "null" }] };
 schema.$defs.MemorySearchParams.properties.limit = { type: "integer", minimum: 1, maximum: 1000 };
+schema.$defs.NativeControlResult.additionalProperties = true;
+schema.$defs.NativeControlResult.anyOf = ["cancelled", "backend", "goal"].map(key => ({ required: [key], properties: { [key]: schema.$defs.NativeControlResult.properties[key] } }));
 
 // An upstream-unavailable method is deliberately not an advertised CapabilityName.
 schema.$defs.ErrorBody.description = "Unavailable advertised capabilities carry capability/reason; unsupported native controllers carry code/message only.";

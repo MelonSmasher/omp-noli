@@ -265,7 +265,7 @@ describe("supplemental native authentication", () => {
 		expect((await call(client, "tree.navigate", { targetId: "e1" }, "other")).error?.code).toBe("stale_session");
 		expect(h.calls).toEqual([]);
 		const result = await call(client, "tree.navigate", { targetId: "e1" });
-		expect(result.result).toEqual({ value: { cancelled: true } });
+		expect(result.result).toEqual({ cancelled: true });
 		expect(h.calls).toEqual(['native:tree.navigate:{"targetId":"e1"}']);
 		h.session = "replacement";
 		expect((await call(client, "memory.status")).error?.code).toBe("stale_session");

@@ -66,7 +66,7 @@ export interface GoalBudgetParams { tokenBudget: number | null }
 export interface MemorySearchParams { query: string; limit?: number }
 export interface MemorySaveParams { content: string; context?: string; source?: string; importance?: number }
 /** Lossless official SDK result, including cancellation and backend-specific metadata. */
-export interface NativeControlResult { value: unknown }
+export interface NativeControlResult { cancelled?: boolean; backend?: string; goal?: unknown }
 
 
 // ---------------------------------------------------------------------- agents

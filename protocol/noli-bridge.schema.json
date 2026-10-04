@@ -1123,13 +1123,55 @@
     },
     "NativeControlResult": {
       "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "value"
-      ],
+      "additionalProperties": true,
+      "required": [],
       "properties": {
-        "value": {}
-      }
+        "cancelled": {
+          "type": "boolean"
+        },
+        "backend": {
+          "anyOf": [
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "goal": {}
+      },
+      "anyOf": [
+        {
+          "required": [
+            "cancelled"
+          ],
+          "properties": {
+            "cancelled": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "required": [
+            "backend"
+          ],
+          "properties": {
+            "backend": {
+              "anyOf": [
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "required": [
+            "goal"
+          ],
+          "properties": {
+            "goal": {}
+          }
+        }
+      ]
     }
   }
 }
