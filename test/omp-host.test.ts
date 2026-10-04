@@ -238,7 +238,7 @@ describe("persisted discovery", () => {
 		expect(ids(first)).toEqual(["Main"]);
 		expect(first.discovery).toMatchObject({ status: "skipped", pending: ["Fresh"] });
 		expect(omp.host.capabilities()["agents.list.persisted"].available).toBe(true);
-		expect(notices).toEqual([]);
+		expect(notices.every(notice => !notice.includes("agents.list.persisted"))).toBe(true);
 	});
 
 	test("stub later completed by its live spawn: discovery stays on and the child is listed", async () => {

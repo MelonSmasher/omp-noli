@@ -70,9 +70,10 @@ describe("schema rejects frames that would leak host internals or drift", () => 
 		expect(() => assertValidFrame(event({ ...agent, state: "aborted" }))).toThrow();
 	});
 
-	test("capability_unavailable errors must carry capability and reason, others must not", () => {
+	test("unadvertised unsupported methods allow bare errors; capability metadata remains paired", () => {
 		const response = (error: unknown) => ({ type: "response", id: 1, ok: false, error });
-		expect(() => assertValidFrame(response({ code: "capability_unavailable", message: "x" }))).toThrow();
+		expect(() => assertValidFrame(response({ code: "capability_unavailable", message: "x" }))).not.toThrow();
+		expect(() => assertValidFrame(response({ code: "capability_unavailable", message: "x", capability: "goal.budget" }))).toThrow();
 		expect(() => assertValidFrame(response({ code: "capability_unavailable", message: "x", capability: "agents.kill.parked", reason: "tool_missing" }))).not.toThrow();
 		expect(() => assertValidFrame(response({ code: "busy", message: "x", reason: "tool_missing" }))).toThrow();
 	});

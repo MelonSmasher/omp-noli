@@ -16,6 +16,9 @@ import {
 	type HelloResult,
 	type KillResult,
 	type ListResult,
+	type NativeMethod,
+	NATIVE_METHODS,
+	UNAVAILABLE_NATIVE_METHODS,
 	PROTOCOL_VERSION,
 	type ServerFrame,
 	type TurnResult,
@@ -57,6 +60,8 @@ export interface BridgeHost {
 	work(): WorkResult;
 	/** Cancel an owned job and await its body/cleanup. False if already finished or not owned. */
 	cancelJob(id: string): Promise<boolean>;
+	/** Supplemental authenticated root-session controls; absent hosts fail closed. */
+	nativeControl?(method: NativeMethod, params: Record<string, unknown>): Promise<unknown>;
 }
 
 export class BridgeError extends Error {
@@ -163,6 +168,12 @@ export function startBridge(options: BridgeOptions): Bridge {
 	};
 
 	const dispatch = async (method: string, params: Params): Promise<unknown> => {
+		if ((UNAVAILABLE_NATIVE_METHODS as readonly string[]).includes(method)) throw new BridgeError("capability_unavailable", `${method} requires an upstream public controller that is not exported by OMP 18.6.1`);
+		if ((NATIVE_METHODS as readonly string[]).includes(method)) {
+			requireCapability(method as NativeMethod);
+			if (!host.nativeControl) throw new BridgeError("capability_unavailable", "Native session control is not installed");
+			return { value: await host.nativeControl(method as NativeMethod, params) };
+		}
 		switch (method) {
 			case "capabilities.get":
 				return { capabilities: host.refreshCapabilities() };

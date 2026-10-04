@@ -7,11 +7,12 @@
 import { readdirSync, statSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { AgentRef, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { AgentRef, AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { type BridgeHost, BridgeError } from "./bridge";
 import { type Probe, available, probeJobCanceller, probeLifecycle, probeRosterReader, probeWork, unavailable } from "./capabilities";
 import { readAgentOutput } from "./agent-output";
 import { AgentTelemetry } from "./agent-telemetry";
+import { nativeCapabilities, nativeControl } from "./native-controls";
 import {
 	type AgentKind,
 	type AgentState,
@@ -259,6 +260,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			return result.ok ? available("internal", result.detail) : unavailable("internal", result.reason, result.detail);
 		};
 		return {
+			...nativeCapabilities(current, mainSession() as AgentSession | undefined),
 			"agents.list": publicCap([], "pi.pi.AgentRegistry"),
 			"agents.list.persisted": internalCap("agents.list.persisted", probeRosterReader),
 			"agents.output": (() => {
@@ -539,6 +541,17 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			return () => capabilityListeners.delete(listener);
 		},
 		refreshCapabilities: refresh,
+		nativeControl: async (method, params) => {
+			const ctx = current;
+			const session = mainSession() as AgentSession | undefined;
+			const generation = adoption;
+			if (!ctx || !session || session.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()) throw new BridgeError("stale_session", "No owned root session");
+			const capability = refresh()[method];
+			if (!capability.available) throw new BridgeError("capability_unavailable", capability.detail, { capability: method, reason: capability.reason });
+			const result = await nativeControl(method, params, ctx, session);
+			if (generation !== adoption || current !== ctx || mainSession() !== session) throw new BridgeError("stale_session", "Root session changed during native control; do not replay mutations");
+			return result;
+		},
 		list: async ({ includePersisted }) => {
 			const generation = adoption;
 			if (!registryOk) {

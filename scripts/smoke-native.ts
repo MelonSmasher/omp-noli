@@ -1,0 +1,58 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createAgentSession, SessionManager, Settings, VERSION } from "@oh-my-pi/pi-coding-agent";
+import type { AgentSession, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { nativeControl } from "../src/native-controls";
+
+assert.equal(VERSION, "18.6.1");
+const dir = mkdtempSync(join(tmpdir(), "noli-native-smoke-"));
+let session: AgentSession | undefined;
+try {
+	const manager = SessionManager.create(dir, join(dir, "sessions"));
+	const created = await createAgentSession({ cwd: dir, agentDir: join(dir, "agent"), sessionManager: manager, settings: Settings.isolated({ "memory.backend": "off" }), toolNames: [], restrictToolNames: true, enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: false });
+	session = created.session;
+	const runtime = session.extensionRunner;
+	assert(runtime, "official session extension runner");
+	const ctx = runtime.createContext() as ExtensionContext;
+	manager.appendMessage({ role: "user", content: "first", timestamp: Date.now() });
+	const target = manager.getLeafId()!;
+	manager.appendMessage({ role: "user", content: "second", timestamp: Date.now() });
+	const identity = manager.getSessionId();
+	const navigation = await nativeControl("tree.navigate", { targetId: target, summarize: false }, ctx, session) as { cancelled: boolean };
+	assert.equal(navigation.cancelled, false);
+	assert.equal(manager.getSessionId(), identity);
+	assert.notEqual(manager.getLeafId(), target, "user navigation lands on parent for editor recall");
+	await session.goalRuntime.createGoal({ objective: "Native smoke objective", tokenBudget: 100 });
+	await nativeControl("goal.budget", { tokenBudget: 200 }, ctx, session);
+	assert.equal(session.getGoalModeState()?.goal.tokenBudget, 200);
+	assert(manager.getEntries().some(entry => entry.type === "mode_change" && (entry.data?.goal as { tokenBudget?: number } | undefined)?.tokenBudget === 200), "budget persisted in native mode history");
+	await nativeControl("goal.budget", { tokenBudget: null }, ctx, session);
+	assert.equal(session.getGoalModeState()?.goal.tokenBudget, undefined);
+	const status = await nativeControl("memory.status", {}, ctx, session) as { backend: string; active: boolean };
+	assert.equal(status.backend, "off");
+	assert.equal(status.active, false);
+	const searched = await nativeControl("memory.search", { query: "native smoke", limit: 1 }, ctx, session) as { count: number };
+	assert.equal(searched.count, 0);
+	const saved = await nativeControl("memory.save", { content: "native smoke" }, ctx, session) as { stored: number };
+	assert.equal(saved.stored, 0);
+	await session.dispose();
+	const local = await createAgentSession({ cwd: dir, agentDir: join(dir, "local-agent"), sessionManager: SessionManager.create(dir, join(dir, "local-sessions")), settings: Settings.isolated({ "memory.backend": "local" }), toolNames: [], restrictToolNames: true, enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: false });
+	session = local.session;
+	assert(session.extensionRunner);
+	const localCtx = session.extensionRunner.createContext();
+	const localStatus = await nativeControl("memory.status", {}, localCtx, session) as { active: boolean; writable: boolean };
+	assert.equal(localStatus.active, true);
+	assert.equal(localStatus.writable, true);
+	const retained = await nativeControl("memory.save", { content: "noli-native-persistence-proof" }, localCtx, session) as { stored: number };
+	assert.equal(retained.stored, 1);
+	const memoryRoot = join(dir, "local-agent", "memories");
+	const learned = readdirSync(memoryRoot, { recursive: true }).find(path => String(path).endsWith("learned.md"));
+	assert(learned, "native lesson file exists");
+	assert(readFileSync(join(memoryRoot, String(learned)), "utf8").includes("noli-native-persistence-proof"));
+	console.log("OFFICIAL NATIVE SMOKE PASSED: tree identity/leaf, persisted goal budget/clear, memory off status/search/save and enabled local save persistence; no model prompts");
+} finally {
+	await session?.dispose();
+	rmSync(dir, { recursive: true, force: true });
+}
