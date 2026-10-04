@@ -532,6 +532,9 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		return session;
 	};
 
+	const requireNativeOwnership = (generation: number, ctx: ExtensionContext, session: AgentSession, message: string): void => {
+		if (generation !== adoption || current?.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId() || mainSession() !== session) throw new BridgeError("stale_session", message);
+	};
 	let nativeMutationTail: Promise<void> = Promise.resolve();
 	const host: BridgeHost = {
 		sessionId: () => {
@@ -557,10 +560,10 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			if (mutate) nativeMutationTail = new Promise<void>(resolve => { release = resolve; });
 			try {
 				if (mutate) await previous;
-				if (generation !== adoption || mainSession() !== session) throw new BridgeError("stale_session", "Root session changed while native control awaited admission");
+				requireNativeOwnership(generation, ctx, session, "Root session changed while native control awaited admission");
 				if (mutate && [...cancellingJobs.values()].some(entry => entry.session === session)) throw new BridgeError("not_ready", "Owned background cancellation cleanup is still draining");
 				const result = await nativeControl(method, params, ctx, session);
-				if (generation !== adoption || current?.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId() || mainSession() !== session) throw new BridgeError("stale_session", "Root session changed during native control; do not replay mutations");
+				requireNativeOwnership(generation, ctx, session, "Root session changed during native control; do not replay mutations");
 				return result;
 			} finally { release?.(); }
 		},
