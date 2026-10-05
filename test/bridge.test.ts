@@ -490,6 +490,7 @@ describe("control semantics", () => {
 	});
 });
 
+/** Narrow a socket response before inspecting negotiated capability fields. */
 function responseCapabilities(frame: Frame): Record<string, unknown> {
 	const result = frame.result;
 	if (!result || typeof result !== "object" || !("capabilities" in result) || !result.capabilities || typeof result.capabilities !== "object") throw new Error("Missing capability response");

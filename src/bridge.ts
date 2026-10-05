@@ -174,6 +174,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 		return view;
 	};
 
+	/** Dispatch an authenticated session request; hostTools explicitly opts into bootstrap policy. */
 	const dispatch = async (method: string, params: Params): Promise<unknown> => {
 		if ((UNAVAILABLE_NATIVE_METHODS as readonly string[]).includes(method)) throw new BridgeError("capability_unavailable", `${method} requires an upstream public controller that is not exported by OMP 18.6.1`);
 		if ((NATIVE_METHODS as readonly string[]).includes(method)) {

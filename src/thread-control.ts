@@ -6,7 +6,9 @@ const ATTACHMENT_INSTRUCTION = "Use authenticated noli_attach_file({path, captio
 
 /** No tools are registered here: Noli owns the single native RPC host-tool surface. */
 export function installThreadControl(pi: ExtensionAPI, authenticated: (sessionId: string) => boolean): void {
+	/** Read the adopted native session identity, never a model-supplied target. */
 	const sessionId = (ctx: ExtensionContext): string => ctx.sessionManager.getSessionId();
+	/** Require current socket authentication and SDK provenance for each requested tool. */
 	const available = (ctx: ExtensionContext, name?: string): boolean => authenticated(sessionId(ctx)) &&
 		(name ? [name] : ["noli_thread_get", "noli_thread_finish"]).every(name =>
 			pi.getAllTools().some(tool => tool.name === name && tool.sourceInfo.source === "sdk"));
