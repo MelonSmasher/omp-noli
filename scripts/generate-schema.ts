@@ -16,6 +16,7 @@ const declarations = new Map(source.statements.filter(ts.isInterfaceDeclaration)
 
 type Schema = Record<string, unknown>;
 function generate(type: ts.Type): Schema {
+	if (type.flags & ts.TypeFlags.Unknown) return {};
 	if (type.isUnion()) {
 		const parts = type.types.filter(part => !(part.flags & ts.TypeFlags.Undefined));
 		if (parts.every(part => part.flags & ts.TypeFlags.BooleanLiteral)) return { type: "boolean" };
@@ -40,13 +41,13 @@ function generate(type: ts.Type): Schema {
 	}
 	throw new Error(`Unsupported protocol type: ${checker.typeToString(type)}`);
 }
-for (const name of ["AgentView", "AgentOutputParams", "AgentOutputResult"]) {
+for (const name of ["AgentView", "AgentOutputParams", "AgentOutputResult", "NavigateTreeParams", "GoalBudgetParams", "MemorySearchParams", "MemorySaveParams", "NativeControlResult"]) {
 	const declaration = declarations.get(name);
 	if (!declaration) throw new Error(`Missing ${name}`);
 	schema.$defs[name] = generate(checker.getTypeAtLocation(declaration));
 }
 for (const [name, values] of Object.entries({ CapabilityName: CAPABILITY_NAMES, CapabilityReason: CAPABILITY_REASONS, AgentKind: AGENT_KINDS, AgentState: AGENT_STATES, DefinitionSource: DEFINITION_SOURCES, DiscoveryReason: DISCOVERY_REASONS, DiscoveryStatus: DISCOVERY_STATUSES, ErrorCode: ERROR_CODES, JobKind: JOB_KINDS })) schema.$defs[name] = { enum: values };
-schema.$defs.Capabilities.required = [...CAPABILITY_NAMES];
+schema.$defs.Capabilities.required = CAPABILITY_NAMES.filter(name => name !== "host.attach_file");
 schema.$defs.Capabilities.properties = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { $ref: "#/$defs/CapabilityState" }]));
 schema.$defs.CapabilityApi = { enum: ["public", "internal", "main-only-v1"] };
 const output = schema.$defs.AgentOutputResult;
@@ -56,6 +57,16 @@ schema.$defs.AgentOutputParams.properties.offset = { type: "integer", minimum: 0
 schema.$defs.AgentOutputParams.properties.limit = { type: "integer", minimum: 1, maximum: 500 };
 const results = schema.$defs.Result.anyOf;
 if (!results.some((result: Schema) => result.$ref === "#/$defs/AgentOutputResult")) results.push({ $ref: "#/$defs/AgentOutputResult" });
+if (!results.some((result: Schema) => result.$ref === "#/$defs/NativeControlResult")) results.push({ $ref: "#/$defs/NativeControlResult" });
+schema.$defs.GoalBudgetParams.properties.tokenBudget = { anyOf: [{ type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, { type: "null" }] };
+schema.$defs.MemorySearchParams.properties.limit = { type: "integer", minimum: 1, maximum: 1000 };
+schema.$defs.NativeControlResult.additionalProperties = true;
+schema.$defs.NativeControlResult.anyOf = ["cancelled", "backend", "goal"].map(key => ({ required: [key], properties: { [key]: schema.$defs.NativeControlResult.properties[key] } }));
+
+// An upstream-unavailable method is deliberately not an advertised CapabilityName.
+schema.$defs.ErrorBody.description = "Unavailable advertised capabilities carry capability/reason; unsupported native controllers carry code/message only.";
+const unsupportedError = { type: "object", additionalProperties: false, required: ["code", "message"], properties: { code: { const: "capability_unavailable" }, message: { type: "string" } } };
+if (schema.$defs.ErrorBody.oneOf.length === 2) schema.$defs.ErrorBody.oneOf.push(unsupportedError);
 if (process.argv.includes("--check")) {
 	if (previous !== JSON.stringify(schema)) throw new Error("Protocol schema is stale; run bun run schema");
 	console.log("SCHEMA CURRENT");

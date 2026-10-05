@@ -29,6 +29,11 @@ export const CAPABILITY_NAMES = [
 	"work.get",
 	"work.cancel",
 	"host.attach_file",
+	"tree.navigate",
+	"goal.budget",
+	"memory.status",
+	"memory.search",
+	"memory.save",
 ] as const;
 export type CapabilityName = (typeof CAPABILITY_NAMES)[number];
 
@@ -52,6 +57,18 @@ export type CapabilityState =
 	| { available: false; api: "public" | "internal" | "main-only-v1"; reason: CapabilityReason; detail: string };
 
 export type Capabilities = Record<CapabilityName, CapabilityState>;
+
+/** Supplemental methods are negotiated individually; unsupported upstream APIs are not capabilities. */
+export const NATIVE_METHODS = ["tree.navigate", "goal.budget", "memory.status", "memory.search", "memory.save"] as const;
+export type NativeMethod = (typeof NATIVE_METHODS)[number];
+export const UNAVAILABLE_NATIVE_METHODS = ["memory.clear", "memory.enqueue", "memory.stats", "memory.diagnose", "memory.queue", "plan.propose", "plan.approve", "mcp.control", "lsp.control", "dap.control", "input.secret"] as const;
+export interface NavigateTreeParams { targetId: string; summarize?: boolean }
+export interface GoalBudgetParams { tokenBudget: number | null }
+export interface MemorySearchParams { query: string; limit?: number }
+export interface MemorySaveParams { content: string; context?: string; source?: string; importance?: number }
+/** Lossless official SDK result, including cancellation and backend-specific metadata. */
+export interface NativeControlResult { cancelled?: boolean; backend?: string; goal?: unknown }
+
 
 // ---------------------------------------------------------------------- agents
 

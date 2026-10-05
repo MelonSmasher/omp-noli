@@ -9,6 +9,7 @@ function harness() {
 	let authed = true;
 	let session = "owning-session";
 	let source = "sdk";
+	let tools = ["noli_thread_get", "noli_thread_finish", "noli_attach_file"];
 	// Test seam supplies only the API members the guard consumes.
 	const pi = {
 		on(name: string, handler: unknown) {
@@ -16,13 +17,13 @@ function harness() {
 			if (name === "tool_result") result = handler as typeof result;
 			if (name === "before_agent_start") prompt = handler as typeof prompt;
 		},
-		getAllTools: () => ["noli_thread_get", "noli_thread_finish", "noli_attach_file"].map(name => ({ name, sourceInfo: { source } })),
+		getAllTools: () => tools.map(name => ({ name, sourceInfo: { source } })),
 	} as unknown as ExtensionAPI;
 	installThreadControl(pi, id => authed && id === "owning-session");
 	const ctx = (kind = "main") => ({ agent: { kind }, sessionManager: { getSessionId: () => session } }) as unknown as ExtensionContext;
 	const event: ToolCallEvent = { type: "tool_call", toolName: "noli_thread_finish", toolCallId: "call", input: { action: "archive" } };
 	const reply: ToolResultEvent = { ...event, type: "tool_result", content: [{ type: "text", text: "scheduled" }], details: { status: "scheduled", requestId: "request", action: "archive" }, isError: false };
-	return { call, result, prompt, ctx, event, reply, setAuth: (value: boolean) => { authed = value; }, setSession: (value: string) => { session = value; }, setSource: (value: string) => { source = value; } };
+	return { call, result, prompt, ctx, event, reply, setTools: (value: string[]) => { tools = value; }, setAuth: (value: boolean) => { authed = value; }, setSession: (value: string) => { session = value; }, setSource: (value: string) => { source = value; } };
 }
 
 describe("current-thread host tool guard", () => {
@@ -86,5 +87,16 @@ describe("current-thread host tool guard", () => {
 		expect(h.prompt({ ...event, systemPrompt: first.systemPrompt! }, h.ctx())?.systemPrompt).toEqual(first.systemPrompt);
 		expect(h.prompt(event, h.ctx("sub"))).toBeUndefined(); h.setAuth(false);
 		expect(h.prompt(event, h.ctx())).toBeUndefined();
+	});
+	test("mixed-version SDK registrations only recommend tools that can be called", () => {
+		const h = harness(); const event: BeforeAgentStartEvent = { type: "before_agent_start", prompt: "done", systemPrompt: ["base"] };
+		h.setTools(["noli_thread_get", "noli_thread_finish"]);
+		expect(h.prompt(event, h.ctx())?.systemPrompt?.join()).not.toContain("noli_attach_file");
+		h.setTools(["noli_attach_file"]);
+		const onlyAttachment = h.prompt(event, h.ctx())!.systemPrompt!;
+		expect(onlyAttachment.join()).toContain("noli_attach_file");
+		expect(onlyAttachment.join()).not.toContain("settle/archive");
+		h.setTools([]);
+		expect(h.prompt({ ...event, systemPrompt: onlyAttachment }, h.ctx())?.systemPrompt).toEqual(["base"]);
 	});
 });

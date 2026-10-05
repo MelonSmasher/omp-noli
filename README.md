@@ -4,11 +4,31 @@ An OMP extension that gives Noli a private local control channel. It runs next t
 
 ## Runtime and loading
 
-Requires official OMP **18.5.1 or newer** and **Bun 1.4.2 or newer in the OMP runtime**; verified against OMP 18.5.1. No custom build is needed. Missing host APIs disable the affected capability with an explicit reason. Install development dependencies with `bun install`. Load the package root with `omp -e /path/to/omp-noli --mode rpc-ui`, or through the package's `omp.extensions` declaration.
+Requires official OMP **18.6.1 or newer** and **Bun 1.4.2 or newer in the OMP runtime**; verified against official OMP 18.6.1. No custom build is needed. Missing host APIs disable the affected capability with an explicit reason. Install development dependencies with `bun install`. Load the package root with `omp -e /path/to/omp-noli --mode rpc-ui`, or through the package's `omp.extensions` declaration.
 
-Install release v0.3.2 with `omp plugin install github:MelonSmasher/omp-noli#v0.3.2`. Restart OMP sessions to load the updated extension. The package manifest reports `0.3.2`; protocol version 1 is unchanged. This release adds `agents.output` and nullable telemetry fields; clients with strict row/capability decoders must update to the bundled schema.
+Install release v0.4.0 with `omp plugin install github:MelonSmasher/omp-noli#v0.4.0`. Restart OMP sessions to load the updated extension. The package manifest reports `0.4.0`; protocol version 1 is unchanged. This release adds individually negotiated supplemental native controls; clients with strict capability decoders must update to the bundled schema.
 
 The launcher passes `NOLI_BRIDGE_DIR` and `NOLI_BRIDGE_TOKEN` in the child process environment. If either is missing, the extension does nothing. Use a fresh private directory for each OMP process and a cryptographically random token. Don't log the token or put it on the command line. The extension never writes the token to disk or sends it over RPC.
+
+## v0.4.0 supplemental native session controls
+
+The authenticated socket admits only the current root session: both the connection's hello binding and each request's `sessionId` must match. Session adoption invalidates authentication. The adapter rechecks root identity after asynchronous operations; a stale mutation response must never be replayed automatically.
+
+Supported method capabilities are `tree.navigate`, `goal.budget`, `memory.status`, `memory.search`, and `memory.save`. Parameters are defined together in `src/protocol.ts` and the generated JSON schema. The response `result` is the lossless official SDK result without a wrapper or fabricated success: navigation cancellation stays top-level `cancelled`, disabled memory reports inactive, and a backend that stores nothing reports `stored: 0`.
+
+Navigation omits only the SDK-only `sessionContext` rendering cache (a duplicate transcript); native editor text/images and cancellation remain intact. Noli must consume editor recall without submitting it. Any result exceeding the 1 MiB frame limit returns `frame_too_large` with an explicit unknown-outcome/no-replay warning, not fake success. Transcript/goal mutations refuse streaming, compaction, retries, bash/eval, session transitions, admitted submissions, queued messages, disposal and pending asynchronous work. A disappearing/replaced goal or unconfirmed budget cannot receive a successful acknowledgement.
+
+
+- `tree.navigate`: `{targetId, summarize?}` calls public `AgentSession.navigateTree`, not branch creation. Active transcript work is refused. It preserves session identity and follows native user-message editor recall/leaf behavior.
+- `goal.budget`: `{tokenBudget}` accepts a positive safe integer or `null` to remove a budget. It calls `AgentSession.goalRuntime.onBudgetMutated`, which updates the actual goal, accounting, budget-limited state and persisted mode history. It requires an existing goal and idle snapshot admission; it never changes the global wallet setting.
+- `memory.status`: `{}` calls `ExtensionContext.memory.status`.
+- `memory.search`: `{query, limit?}` calls `ExtensionContext.memory.search`; limit is 1–1000.
+- `memory.save`: `{content, context?, source?, importance?}` calls `ExtensionContext.memory.save`; importance must be finite. Native backend redaction/storage semantics remain authoritative.
+
+**Not full native control completion:** `memory.clear`, `memory.enqueue`, `memory.stats`, `memory.diagnose` and `memory.queue` are not advertised. OMP 18.6.1's `MemoryRuntimeContext` exposes only status/search/save; `MemoryBackend.clear/enqueue/stats/diagnose/queuePreview` and the backend resolver are not root SDK exports. `plan.propose` is also unavailable: the public extension/session surface has no installed host review/proposal controller. Proposal is not approval. Plan approval, live MCP/LSP/DAP controllers and secure secret-input similarly require upstream public authenticated controllers/input transport. Known unsupported requests return `capability_unavailable`, never slash prompts, arbitrary built-in tool execution or fake success. No internal module import or vendored OMP fallback fills those gaps.
+
+Verification: `bun run smoke:native` exercises official SDK navigation identity/leaf, native budget persistence/removal, disabled-backend memory status/search/save and enabled local-memory save with an independent persisted learned.md assertion, without prompting a model. `bun test`, `bun run typecheck`, `bun run schema:check` and `bun run extension:check` cover regressions and loading. Other enabled backend success depends on the user's configured backend and is not inferred from a disabled-backend result. Run `bun scripts/smoke-install.ts v0.4.0` to verify installation from the published release using the official CLI in a disposable isolated HOME/profile.
+
 
 The directory is created with mode 0700. It is rejected if it is a symlink, isn't owned by the current user, or is accessible to group/other. The socket is `<dir>/omp-<pid>.sock`, mode 0600. The bridge never removes an existing endpoint at that path. On shutdown it closes clients, removes the socket and unsubscribes its listeners.
 
@@ -26,7 +46,7 @@ The tool submits a displayed `noli.image` custom message with optional text and 
 
 ## Agent downloadable files
 
-The companion Noli server registers `noli_attach_file({ path: "report.pdf", caption: "Optional explanation" })` on the existing native host-tool surface. This plugin guards the call using trusted main-agent identity, SDK tool provenance and current-session socket authentication. `host.attach_file` advertises `available: true, api: "main-only-v1"`; older plugins do not enable this tool. Protocol version remains 1; consumers must accept this additive capability and API marker.
+The companion Noli server registers `noli_attach_file({ path: "report.pdf", caption: "Optional explanation" })` on the existing native host-tool surface. This plugin guards the call using trusted main-agent identity, SDK tool provenance and current-session socket authentication. An authenticated explicit `capabilities.get({hostTools:true})` returns `host.attach_file` with `available: true, api: "main-only-v1"` as bootstrap permission to register that tool, not proof that it is already registered. Legacy hello, default capability reads and broadcasts omit this optional policy marker, preserving their existing protocol-1 schema. Attachment guidance is injected only while the authenticated SDK tool is actually registered; lifecycle guidance is independent.
 
 Noli retains any local regular file up to 100 MiB (including empty files) in server-owned storage and persists an attachment card before acknowledging `{ status: "attached", attachmentId: "..." }`. Relative paths resolve against the server-side thread workspace. The client downloads exact bytes through authenticated chunked transport and Save As; HTML is saved, not run inside Noli. The plugin rejects missing durable acknowledgements and child/advisor calls. Markdown links alone do not attach files.
 
@@ -44,20 +64,22 @@ Agent and capability broadcasts also require a matching authenticated session. A
 
 ### Backend contract (requires companion Noli implementation)
 
-Noli must register exactly these schemas, with `additionalProperties: false`:
+Noli registers the lifecycle schemas below; attachment support additionally registers `noli_attach_file` after explicitly negotiating the host-tool policy. All schemas use `additionalProperties: false`:
 
 ```json
 [
   { "name": "noli_thread_get", "description": "Read current Noli thread identity, lifecycle, permissions and pending closure.", "parameters": { "type": "object", "properties": {}, "additionalProperties": false } },
-  { "name": "noli_thread_finish", "description": "Schedule current-thread settle or archive after completed work and final response; does not close synchronously.", "parameters": { "type": "object", "properties": { "action": { "type": "string", "enum": ["settle", "archive"] } }, "required": ["action"], "additionalProperties": false } }
+  { "name": "noli_thread_finish", "description": "Schedule current-thread settle or archive after completed work and final response; does not close synchronously.", "parameters": { "type": "object", "properties": { "action": { "type": "string", "enum": ["settle", "archive"] } }, "required": ["action"], "additionalProperties": false } },
+  { "name": "noli_attach_file", "description": "Persist a local regular file as a downloadable current-thread attachment.", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "caption": { "type": "string" } }, "required": ["path"], "additionalProperties": false } }
 ]
 ```
 
-Derive the target thread and permissions from the authenticated, owning OMP process/session connection. Neither tool accepts `threadId`, caller identity, credentials, delete or global settings. The guard independently rejects extra arguments and invalid actions. `noli_thread_get` returns a text JSON representation and matching `result.details` containing `{ thread: { id, title }, lifecycle: { settled, archived }, permittedActions: ["settle", "archive"], pendingLifecycleRequest: null | { requestId, action, status: "pending" } }`; permissions may be an empty/subset array. Noli owns every value and must apply permission checks again on finish.
+Derive the target thread and permissions from the authenticated, owning OMP process/session connection. None of these tools accepts `threadId`, caller identity, credentials, delete or global settings. The guard independently rejects extra arguments and invalid actions. `noli_thread_get` returns a text JSON representation and matching `result.details` containing `{ thread: { id, title }, lifecycle: { settled, archived }, permittedActions: ["settle", "archive"], pendingLifecycleRequest: null | { requestId, action, status: "pending" } }`; permissions may be an empty/subset array. Noli owns every value and must apply permission checks again on finish.
 
 For finish, persist the lifecycle request before acknowledging. Return `host_tool_result` with the original RPC `id`, `result.content: [{ type: "text", text: "...scheduled..." }]` and **`result.details: { status: "scheduled", requestId: "<durable request id>", action: "settle" | "archive" }`**. The plugin refuses a missing, mismatched or completed-state acknowledgement as an error. It never synthesizes success. Backend denials/errors must use `isError: true` and an explanatory text result, not successful details. Noli must respond to every accepted call, including unavailable/unauthorized control.
 
 Keep RPC correlation `id` separate from model `toolCallId` and durable lifecycle `requestId`. Scope the pending-call map to the process/connection **and session generation**. On `host_tool_cancel`, use `targetId` to cancel the correlated request; Noli owns persistence and cancellation of any pending lifecycle action. Serialize cancellation, persistence and application. Cancel or invalidate outstanding requests on session change/disconnect; never apply an old request to a newly active thread. A late acknowledgement after cancellation must not become success. OMP already rejects an aborted call and emits `host_tool_cancel`; the plugin also rejects a success result whose authenticated session was lost. A race after persistence can leave an unknown outcome: inspect the pending request before retrying, not an automatic duplicate request.
+For attachments, persist owned bytes and timeline metadata before acknowledging `result.details: {status:"attached", attachmentId:"..."}`. Lost authentication after commit is an **unknown outcome**, not a retry instruction: inspect the owning conversation before any retry. Never accept old-session results into a newly adopted session or bypass the authenticated guard to avoid duplicate uploads.
 
 Finish only schedules: do not synchronously abort or stop the requesting agent. Noli must allow its final response, wait for actual OMP settlement (including admitted submissions, hidden queued input, asynchronous work and outstanding children), drain final history, then stop the agent and apply settle/archive under its existing lifecycle policy. Noli persists/cancels requests and displays pending/completed actions. Settle is Noli's Mark done: still in the inbox, terminals retained. Archive moves out of the inbox and closes terminals; neither deletes the thread.
 

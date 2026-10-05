@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 export const THREAD_TOOLS = ["noli_thread_get", "noli_thread_finish", "noli_attach_file"] as const;
-const INSTRUCTION = "Authenticated Noli current-thread control is available. Read skill://noli before requesting deferred settle/archive; scheduled is not completed. Use noli_attach_file({path, caption?}) to copy a local file to persistent server storage and publish a downloadable conversation attachment; Markdown links alone do not attach files.";
+const INSTRUCTION = "Authenticated Noli current-thread control is available. Read skill://noli before requesting deferred settle/archive; scheduled is not completed.";
+const ATTACHMENT_INSTRUCTION = "Use authenticated noli_attach_file({path, caption?}) to copy a local file to persistent server storage and publish a downloadable conversation attachment; Markdown links alone do not attach files.";
 
 /** No tools are registered here: Noli owns the single native RPC host-tool surface. */
 export function installThreadControl(pi: ExtensionAPI, authenticated: (sessionId: string) => boolean): void {
@@ -30,7 +31,7 @@ export function installThreadControl(pi: ExtensionAPI, authenticated: (sessionId
 		const owner = calls.get(event.toolCallId);
 		calls.delete(event.toolCallId);
 		if (!event.isError && (owner !== sessionId(ctx) || !available(ctx, event.toolName))) {
-			return { content: [{ type: "text", text: "Noli control acknowledgement lost its authenticated session; outcome unknown, inspect Noli before retrying" }], isError: true };
+			return { content: [{ type: "text", text: "Noli control acknowledgement lost its authenticated session; outcome unknown. The operation may already be persisted. Do not retry automatically; inspect the owning conversation before retrying." }], isError: true };
 		}
 		if (!event.isError && event.toolName === "noli_thread_finish") {
 			const ack = event.details;
@@ -47,7 +48,11 @@ export function installThreadControl(pi: ExtensionAPI, authenticated: (sessionId
 	});
 	// Request-local policy, not a persisted message: no duplicate startup/resume/switch entries.
 	pi.on("before_agent_start", (event, ctx) => {
-		if (ctx.agent.kind !== "main" || !available(ctx)) return;
-		return { systemPrompt: [...event.systemPrompt.filter(line => line !== INSTRUCTION), INSTRUCTION] };
+		if (ctx.agent.kind !== "main") return;
+		const guidance = [];
+		if (available(ctx)) guidance.push(INSTRUCTION);
+		if (available(ctx, "noli_attach_file")) guidance.push(ATTACHMENT_INSTRUCTION);
+		if (guidance.length === 0 && !event.systemPrompt.some(line => line === INSTRUCTION || line === ATTACHMENT_INSTRUCTION)) return;
+		return { systemPrompt: [...event.systemPrompt.filter(line => line !== INSTRUCTION && line !== ATTACHMENT_INSTRUCTION), ...guidance] };
 	});
 }

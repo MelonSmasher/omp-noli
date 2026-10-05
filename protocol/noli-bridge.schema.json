@@ -106,6 +106,9 @@
         },
         {
           "$ref": "#/$defs/AgentOutputResult"
+        },
+        {
+          "$ref": "#/$defs/NativeControlResult"
         }
       ]
     },
@@ -347,7 +350,12 @@
         "definitions.list",
         "work.get",
         "work.cancel",
-        "host.attach_file"
+        "host.attach_file",
+        "tree.navigate",
+        "goal.budget",
+        "memory.status",
+        "memory.search",
+        "memory.save"
       ]
     },
     "CapabilityReason": {
@@ -429,7 +437,11 @@
         "definitions.list",
         "work.get",
         "work.cancel",
-        "host.attach_file"
+        "tree.navigate",
+        "goal.budget",
+        "memory.status",
+        "memory.search",
+        "memory.save"
       ],
       "properties": {
         "agents.list": {
@@ -466,6 +478,21 @@
           "$ref": "#/$defs/CapabilityState"
         },
         "host.attach_file": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "tree.navigate": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "goal.budget": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "memory.status": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "memory.search": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "memory.save": {
           "$ref": "#/$defs/CapabilityState"
         }
       }
@@ -799,7 +826,7 @@
       ]
     },
     "ErrorBody": {
-      "description": "capability_unavailable carries the capability and its reason; every other code carries only code and message.",
+      "description": "Unavailable advertised capabilities carry capability/reason; unsupported native controllers carry code/message only.",
       "oneOf": [
         {
           "type": "object",
@@ -844,6 +871,22 @@
                   }
                 }
               ]
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "const": "capability_unavailable"
             },
             "message": {
               "type": "string"
@@ -996,6 +1039,144 @@
           "minimum": 0
         }
       }
+    },
+    "NavigateTreeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "targetId"
+      ],
+      "properties": {
+        "targetId": {
+          "type": "string"
+        },
+        "summarize": {
+          "type": "boolean"
+        }
+      }
+    },
+    "GoalBudgetParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokenBudget"
+      ],
+      "properties": {
+        "tokenBudget": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "MemorySearchParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      }
+    },
+    "MemorySaveParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "content"
+      ],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "context": {
+          "anyOf": [
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "importance": {
+          "anyOf": [
+            {
+              "type": "number"
+            }
+          ]
+        }
+      }
+    },
+    "NativeControlResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [],
+      "properties": {
+        "cancelled": {
+          "type": "boolean"
+        },
+        "backend": {
+          "anyOf": [
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "goal": {}
+      },
+      "anyOf": [
+        {
+          "required": [
+            "cancelled"
+          ],
+          "properties": {
+            "cancelled": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "required": [
+            "backend"
+          ],
+          "properties": {
+            "backend": {
+              "anyOf": [
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "required": [
+            "goal"
+          ],
+          "properties": {
+            "goal": {}
+          }
+        }
+      ]
     }
   }
 }

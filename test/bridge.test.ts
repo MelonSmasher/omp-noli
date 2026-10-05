@@ -130,6 +130,10 @@ const h: Harness = {
 			h.calls.push(`cancelJob:${id}`);
 			return id === "bg_1";
 		},
+		nativeControl: async (method, params) => {
+			h.calls.push(`native:${method}:${JSON.stringify(params)}`);
+			return { cancelled: true };
+		},
 	},
 };
 
@@ -252,6 +256,40 @@ async function authed(): Promise<Client> {
 function call(client: Client, method: string, params: Record<string, unknown> = {}, sessionId = h.session): Promise<Frame> {
 	return client.call({ id: 2, sessionId, method, params });
 }
+
+describe("supplemental native authentication", () => {
+	test("native calls require hello and current session", async () => {
+		const unauthenticated = await Client.connect(bridge.socketPath);
+		expect((await call(unauthenticated, "tree.navigate", { targetId: "e1" })).error?.code).toBe("unauthorized");
+		const client = await authed();
+		expect((await call(client, "tree.navigate", { targetId: "e1" }, "other")).error?.code).toBe("stale_session");
+		expect(h.calls).toEqual([]);
+		const result = await call(client, "tree.navigate", { targetId: "e1" });
+		expect(result.result).toEqual({ cancelled: true });
+		expect(h.calls).toEqual(['native:tree.navigate:{"targetId":"e1"}']);
+		h.session = "replacement";
+		expect((await call(client, "memory.status")).error?.code).toBe("stale_session");
+		expect(h.calls).toHaveLength(1);
+	});
+	test("disabled and unsupported methods never reach host", async () => {
+		const client = await authed();
+		disable("goal.budget", "export_missing");
+		expect((await call(client, "goal.budget", { tokenBudget: 10 })).error?.code).toBe("capability_unavailable");
+		for (const method of ["plan.propose", "plan.approve", "memory.clear", "mcp.control", "lsp.control", "dap.control", "input.secret"]) expect((await call(client, method)).error?.code).toBe("capability_unavailable");
+		expect(h.calls).toEqual([]);
+	});
+	test("oversized native result returns bounded failure without fake acknowledgement", async () => {
+		const original = h.host.nativeControl;
+		try {
+			h.host.nativeControl = async () => ({ cancelled: false, editorText: "x".repeat(2 * 1024 * 1024) });
+			const client = await authed();
+			const response = await call(client, "tree.navigate", { targetId: "e" });
+			expect(response.ok).toBe(false);
+			expect(response.error?.code).toBe("frame_too_large");
+			expect(response.error?.message).toContain("do not replay");
+		} finally { h.host.nativeControl = original; }
+	});
+});
 
 describe("authentication", () => {
 	test("wrong token is rejected and the connection is closed", async () => {
@@ -452,6 +490,12 @@ describe("control semantics", () => {
 	});
 });
 
+function responseCapabilities(frame: Frame): Record<string, unknown> {
+	const result = frame.result;
+	if (!result || typeof result !== "object" || !("capabilities" in result) || !result.capabilities || typeof result.capabilities !== "object") throw new Error("Missing capability response");
+	return Object.fromEntries(Object.entries(result.capabilities));
+}
+
 describe("capabilities", () => {
 	test("hello and capabilities.get advertise the host capability set", async () => {
 		disable("agents.kill.parked");
@@ -462,7 +506,21 @@ describe("capabilities", () => {
 		expect(advertised.capabilities["agents.kill.parked"]).toEqual({ available: false, api: "internal", reason: "tool_missing", detail: "probe failed" });
 		expect(advertised.capabilities["agents.kill.live"].available).toBe(true);
 		const got = await call(client, "capabilities.get");
-		expect(got.result).toEqual({ capabilities: h.caps });
+		const { "host.attach_file": _attachmentPolicy, ...legacy } = h.caps;
+		expect(got.result).toEqual({ capabilities: legacy });
+	});
+
+	test("attachment policy is returned only on explicit authenticated bootstrap requests", async () => {
+		h.caps["host.attach_file"] = available("main-only-v1", "trusted main-agent guard");
+		const client = await Client.connect(bridge.socketPath);
+		const hello = await client.call({ id: 1, method: "hello", params: { token: TOKEN } });
+		expect(responseCapabilities(hello)).not.toHaveProperty("host.attach_file");
+		const legacy = await call(client, "capabilities.get");
+		expect(responseCapabilities(legacy)).not.toHaveProperty("host.attach_file");
+		const negotiated = await call(client, "capabilities.get", { hostTools: true });
+		expect(responseCapabilities(negotiated)["host.attach_file"]).toEqual(h.caps["host.attach_file"]);
+		for (const listener of h.capabilityListeners) listener(h.caps);
+		expect((await client.next()).capabilities).not.toHaveProperty("host.attach_file");
 	});
 
 	test("parked kill is closed off when its capability is unavailable; live kill still works", async () => {

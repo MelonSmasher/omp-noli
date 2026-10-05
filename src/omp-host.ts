@@ -7,11 +7,12 @@
 import { readdirSync, statSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { AgentRef, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { AgentRef, AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { type BridgeHost, BridgeError } from "./bridge";
 import { type Probe, available, probeJobCanceller, probeLifecycle, probeRosterReader, probeWork, unavailable } from "./capabilities";
 import { readAgentOutput } from "./agent-output";
 import { AgentTelemetry } from "./agent-telemetry";
+import { nativeCapabilities, nativeControl } from "./native-controls";
 import {
 	type AgentKind,
 	type AgentState,
@@ -133,6 +134,8 @@ export interface OmpHost {
 	host: BridgeHost;
 	/** Bind to a top-level session context; re-probes capabilities and warns. No-op for subagent contexts. */
 	adopt(ctx: ExtensionContext): void;
+	/** Refresh same-identity context without invalidating correlated native controls. */
+	refreshContext(ctx: ExtensionContext): void;
 	release(): void;
 }
 
@@ -259,6 +262,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			return result.ok ? available("internal", result.detail) : unavailable("internal", result.reason, result.detail);
 		};
 		return {
+			...nativeCapabilities(current, mainSession() as AgentSession | undefined),
 			"agents.list": publicCap([], "pi.pi.AgentRegistry"),
 			"agents.list.persisted": internalCap("agents.list.persisted", probeRosterReader),
 			"agents.output": (() => {
@@ -529,6 +533,10 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		return session;
 	};
 
+	const requireNativeOwnership = (generation: number, ctx: ExtensionContext, session: AgentSession, message: string): void => {
+		if (generation !== adoption || current?.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId() || mainSession() !== session) throw new BridgeError("stale_session", message);
+	};
+	const nativeMutationTails = new WeakMap<AgentSession, Promise<void>>();
 	const host: BridgeHost = {
 		sessionId: () => {
 			if (!current) throw new BridgeError("not_ready", "session context not established");
@@ -540,6 +548,26 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			return () => capabilityListeners.delete(listener);
 		},
 		refreshCapabilities: refresh,
+		nativeControl: async (method, params) => {
+			const ctx = current;
+			const session = mainSession() as AgentSession | undefined;
+			const generation = adoption;
+			if (!ctx || !session || session.sessionManager.getSessionId() !== ctx.sessionManager.getSessionId()) throw new BridgeError("stale_session", "No owned root session");
+			const capability = refresh()[method];
+			if (!capability.available) throw new BridgeError("capability_unavailable", capability.detail, { capability: method, reason: capability.reason });
+			const mutate = method === "tree.navigate" || method === "goal.budget";
+			const previous = nativeMutationTails.get(session) ?? Promise.resolve();
+			let release: (() => void) | undefined;
+			if (mutate) nativeMutationTails.set(session, new Promise<void>(resolve => { release = resolve; }));
+			try {
+				if (mutate) await previous;
+				requireNativeOwnership(generation, ctx, session, "Root session changed while native control awaited admission");
+				if (mutate && [...cancellingJobs.values()].some(entry => entry.session === session)) throw new BridgeError("not_ready", "Owned background cancellation cleanup is still draining");
+				const result = await nativeControl(method, params, ctx, session);
+				requireNativeOwnership(generation, ctx, session, "Root session changed during native control; do not replay mutations");
+				return result;
+			} finally { release?.(); }
+		},
 		list: async ({ includePersisted }) => {
 			const generation = adoption;
 			if (!registryOk) {
@@ -724,6 +752,12 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 
 	return {
 		host,
+		refreshContext: ctx => {
+			if (ctx.agent.kind !== "main" || !current || ctx.sessionManager.getSessionId() !== current.sessionManager.getSessionId()) return;
+			current = ctx;
+			refresh();
+			telemetry();
+		},
 		adopt: ctx => {
 			// Subagent sessions re-run session_start when revived; only the top-level session owns the bridge.
 			if (ctx.agent.kind !== "main") return;
