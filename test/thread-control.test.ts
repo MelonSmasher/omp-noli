@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult, ToolResultEvent, ToolResultEventResult, BeforeAgentStartEvent, BeforeAgentStartEventResult } from "@oh-my-pi/pi-coding-agent";
 import { installThreadControl } from "../src/thread-control";
 
+/** Capture guard hooks with independently mutable authentication, session and SDK tool state. */
 function harness() {
 	let call!: (event: ToolCallEvent, ctx: ExtensionContext) => ToolCallEventResult | undefined;
 	let result!: (event: ToolResultEvent, ctx: ExtensionContext) => ToolResultEventResult | undefined;

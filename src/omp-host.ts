@@ -139,6 +139,7 @@ export interface OmpHost {
 	release(): void;
 }
 
+/** Adapt the owning OMP SDK session into bridge operations and probed capability policy. */
 export function createOmpHost(pi: ExtensionAPI): OmpHost {
 	const exportsRecord: Record<string, unknown> = pi.pi;
 	const hasExport = (name: string): boolean => exportsRecord[name] !== undefined && exportsRecord[name] !== null;

@@ -135,6 +135,7 @@ function optionalString(params: Params, key: string): string | undefined {
 	return params[key] === undefined ? undefined : paramString(params, key);
 }
 
+/** Start the private session-authenticated socket broker and its revocable subscriptions. */
 export function startBridge(options: BridgeOptions): Bridge {
 	const { host, token } = options;
 	ensurePrivateDir(options.dir);
