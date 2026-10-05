@@ -24,6 +24,14 @@ The tool submits a displayed `noli.image` custom message with optional text and 
 
 **Companion Noli support is required:** translate displayed `noli.image` custom entries to assistant image/text blocks, retain image data through persistence/projection, and render image blocks inline with previews. Packaging, persistent installation and SSH transfer must include `src/images.ts`. This plugin release alone cannot make an older Noli UI display images. The socket bridge schema is unchanged.
 
+## Agent downloadable files
+
+The companion Noli server registers `noli_attach_file({ path: "report.pdf", caption: "Optional explanation" })` on the existing native host-tool surface. This plugin guards the call using trusted main-agent identity, SDK tool provenance and current-session socket authentication. `host.attach_file` advertises `available: true, api: "main-only-v1"`; older plugins do not enable this tool. Protocol version remains 1; consumers must accept this additive capability and API marker.
+
+Noli retains any local regular file up to 100 MiB (including empty files) in server-owned storage and persists an attachment card before acknowledging `{ status: "attached", attachmentId: "..." }`. Relative paths resolve against the server-side thread workspace. The client downloads exact bytes through authenticated chunked transport and Save As; HTML is saved, not run inside Noli. The plugin rejects missing durable acknowledgements and child/advisor calls. Markdown links alone do not attach files.
+
+This source change is not a published release. Production Noli requires a stable plugin release containing the gate and capability plus rebuilt server and desktop client; do not modify installed release archives to bypass provenance.
+
 ## Agent-requested current-thread closure
 
 The selected transport is **native RPC host tools**, not reverse bridge requests. Noli registers `noli_thread_get` and `noli_thread_finish` with `set_host_tools`; OMP emits `host_tool_call`, and Noli answers `host_tool_result`. The plugin registers no duplicate tools and performs no thread lifecycle operation or database write. Protocol 1 of the socket bridge remains Noli-to-plugin only.

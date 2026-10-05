@@ -346,7 +346,8 @@
         "agents.kill.parked",
         "definitions.list",
         "work.get",
-        "work.cancel"
+        "work.cancel",
+        "host.attach_file"
       ]
     },
     "CapabilityReason": {
@@ -361,7 +362,8 @@
     "CapabilityApi": {
       "enum": [
         "public",
-        "internal"
+        "internal",
+        "main-only-v1"
       ]
     },
     "CapabilityState": {
@@ -426,7 +428,8 @@
         "agents.kill.parked",
         "definitions.list",
         "work.get",
-        "work.cancel"
+        "work.cancel",
+        "host.attach_file"
       ],
       "properties": {
         "agents.list": {
@@ -460,6 +463,9 @@
           "$ref": "#/$defs/CapabilityState"
         },
         "work.cancel": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "host.attach_file": {
           "$ref": "#/$defs/CapabilityState"
         }
       }

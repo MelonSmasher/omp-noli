@@ -1,9 +1,16 @@
 ---
 name: noli
-description: Use to show a screenshot or image to the Noli user, or when the owning thread's main agent is asked to settle or archive after completing work. Requires authenticated Noli control.
+description: Use to attach downloadable files or show images to the Noli user, or when the owning thread's main agent is asked to settle or archive after completing work. Requires authenticated Noli control.
 hide: true
 ---
 # Noli images and thread closure
+
+## Attaching downloadable files
+
+- Call `noli_attach_file({ path: "report.html", caption: "Optional explanation" })` for any local regular file, including HTML, PDF, archives and empty files, up to 100 MiB. Relative paths resolve against the thread workspace on its server; absolute paths are accepted. URLs and directories are not attachments.
+- Noli copies the bytes into private server storage and persists a download card in the conversation before returning `status: "attached"` and `attachmentId`. The user downloads through their authenticated client with Save As; HTML is never executed inside Noli. Removing the original does not remove the retained download.
+- Markdown links to local paths, `sandbox:` URLs or HTTP pages do not upload files. Never claim a file is attached until the tool succeeds. If unavailable, explain that both Noli and a compatible released plugin are required; do not invent a download link.
+- Only the authenticated owning main agent may attach files. Children/advisors return generated paths to their parent.
 
 ## Showing images to the user
 

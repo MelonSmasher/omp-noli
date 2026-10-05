@@ -28,6 +28,7 @@ export const CAPABILITY_NAMES = [
 	"definitions.list",
 	"work.get",
 	"work.cancel",
+	"host.attach_file",
 ] as const;
 export type CapabilityName = (typeof CAPABILITY_NAMES)[number];
 
@@ -47,8 +48,8 @@ export const CAPABILITY_REASONS = [
 export type CapabilityReason = (typeof CAPABILITY_REASONS)[number];
 
 export type CapabilityState =
-	| { available: true; api: "public" | "internal"; detail: string }
-	| { available: false; api: "public" | "internal"; reason: CapabilityReason; detail: string };
+	| { available: true; api: "public" | "internal" | "main-only-v1"; detail: string }
+	| { available: false; api: "public" | "internal" | "main-only-v1"; reason: CapabilityReason; detail: string };
 
 export type Capabilities = Record<CapabilityName, CapabilityState>;
 

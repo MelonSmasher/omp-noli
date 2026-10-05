@@ -279,6 +279,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 				return probe.ok ? available("public", probe.detail) : unavailable("public", probe.reason, probe.detail);
 			})(),
 			"work.cancel": internalCap("work.cancel", probeJobCanceller),
+			"host.attach_file": available("main-only-v1", "Authenticated native host attachment calls are restricted to the owning main agent by installThreadControl"),
 		};
 	};
 	let capabilities = probeAll();
