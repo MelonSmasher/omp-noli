@@ -6,9 +6,13 @@ An OMP extension that gives Noli a private local control channel. It runs next t
 
 Requires official OMP **18.6.1 or newer** and **Bun 1.4.2 or newer in the OMP runtime**; verified against official OMP 18.6.1. No custom build is needed. Missing host APIs disable the affected capability with an explicit reason. Install development dependencies with `bun install`. Load the package root with `omp -e /path/to/omp-noli --mode rpc-ui`, or through the package's `omp.extensions` declaration.
 
-Install release v0.4.0 with `omp plugin install github:MelonSmasher/omp-noli#v0.4.0`. Restart OMP sessions to load the updated extension. The package manifest reports `0.4.0`; protocol version 1 is unchanged. This release adds individually negotiated supplemental native controls; clients with strict capability decoders must update to the bundled schema.
+Install release v0.4.1 with `omp plugin install github:MelonSmasher/omp-noli#v0.4.1`. Restart OMP sessions to load the updated extension. The package manifest reports `0.4.1`; protocol version 1 is unchanged.
 
 The launcher passes `NOLI_BRIDGE_DIR` and `NOLI_BRIDGE_TOKEN` in the child process environment. If either is missing, the extension does nothing. Use a fresh private directory for each OMP process and a cryptographically random token. Don't log the token or put it on the command line. The extension never writes the token to disk or sends it over RPC.
+
+## v0.4.1 downloadable conversation attachments
+
+Adds authenticated, owning-main-agent authorization for `noli_attach_file` and validates durable attachment acknowledgements. Attachment guidance requires actual SDK tool registration, independently of lifecycle tools. Explicit `capabilities.get({hostTools:true})` negotiates bootstrap permission; legacy hello, default capability reads and broadcasts retain their protocol-1 shape. Lost session acknowledgements report an unknown outcome and prohibit automatic retry. Downloadable cards and retained bytes require the updated companion Noli server and desktop client.
 
 ## v0.4.0 supplemental native session controls
 
@@ -50,7 +54,7 @@ The companion Noli server registers `noli_attach_file({ path: "report.pdf", capt
 
 Noli retains any local regular file up to 100 MiB (including empty files) in server-owned storage and persists an attachment card before acknowledging `{ status: "attached", attachmentId: "..." }`. Relative paths resolve against the server-side thread workspace. The client downloads exact bytes through authenticated chunked transport and Save As; HTML is saved, not run inside Noli. The plugin rejects missing durable acknowledgements and child/advisor calls. Markdown links alone do not attach files.
 
-This source change is not a published release. Production Noli requires a stable plugin release containing the gate and capability plus rebuilt server and desktop client; do not modify installed release archives to bypass provenance.
+Production Noli requires v0.4.1 or newer plus rebuilt server and desktop client for downloadable attachments; do not modify installed release archives to bypass provenance.
 
 ## Agent-requested current-thread closure
 
