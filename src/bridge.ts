@@ -80,6 +80,13 @@ interface ConnectionState {
 	authenticatedSession?: string;
 }
 
+/** The attachment policy is bootstrap permission, not proof that a client registered its tool. */
+function clientCapabilities(capabilities: Capabilities, hostTools = false): Omit<Capabilities, "host.attach_file"> | Capabilities {
+	if (hostTools) return capabilities;
+	const { "host.attach_file": _attachmentPolicy, ...legacy } = capabilities;
+	return legacy;
+}
+
 export interface BridgeOptions {
 	/** Directory that will contain the socket. Created 0700; must be owned by us and inaccessible to others. */
 	dir: string;
@@ -128,6 +135,7 @@ function optionalString(params: Params, key: string): string | undefined {
 	return params[key] === undefined ? undefined : paramString(params, key);
 }
 
+/** Start the private session-authenticated socket broker and its revocable subscriptions. */
 export function startBridge(options: BridgeOptions): Bridge {
 	const { host, token } = options;
 	ensurePrivateDir(options.dir);
@@ -167,6 +175,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 		return view;
 	};
 
+	/** Dispatch an authenticated session request; hostTools explicitly opts into bootstrap policy. */
 	const dispatch = async (method: string, params: Params): Promise<unknown> => {
 		if ((UNAVAILABLE_NATIVE_METHODS as readonly string[]).includes(method)) throw new BridgeError("capability_unavailable", `${method} requires an upstream public controller that is not exported by OMP 18.6.1`);
 		if ((NATIVE_METHODS as readonly string[]).includes(method)) {
@@ -176,7 +185,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 		}
 		switch (method) {
 			case "capabilities.get":
-				return { capabilities: host.refreshCapabilities() };
+				return { capabilities: clientCapabilities(host.refreshCapabilities(), params.hostTools === true) };
 			case "definitions.list": {
 				requireCapability("definitions.list");
 				return { definitions: await host.definitions() };
@@ -290,8 +299,8 @@ export function startBridge(options: BridgeOptions): Bridge {
 			}
 			socket.data.authed = true;
 			socket.data.authenticatedSession = host.sessionId();
-			const hello: HelloResult = { protocol: PROTOCOL_VERSION, sessionId: host.sessionId(), pid: process.pid, capabilities: host.refreshCapabilities() };
-			send(socket, { type: "response", id, ok: true, result: hello });
+			const hello = { protocol: PROTOCOL_VERSION, sessionId: host.sessionId(), pid: process.pid, capabilities: clientCapabilities(host.refreshCapabilities()) };
+			send(socket, Buffer.from(`${JSON.stringify({ type: "response", id, ok: true, result: hello })}\n`));
 			return;
 		}
 
@@ -321,9 +330,14 @@ export function startBridge(options: BridgeOptions): Bridge {
 		}
 	};
 	const unsubscribeAgents = host.subscribe(agent => broadcast(sessionId => ({ type: "event", event: "agent.changed", sessionId, agent })));
-	const unsubscribeCapabilities = host.onCapabilitiesChanged(capabilities =>
-		broadcast(sessionId => ({ type: "event", event: "capabilities.changed", sessionId, capabilities })),
-	);
+	const unsubscribeCapabilities = host.onCapabilitiesChanged(capabilities => {
+		const sessionId = host.sessionId();
+		for (const socket of sockets) {
+			if (socket.data.authed && socket.data.authenticatedSession === sessionId) {
+				send(socket, Buffer.from(`${JSON.stringify({ type: "event", event: "capabilities.changed", sessionId, capabilities: clientCapabilities(capabilities) })}\n`));
+			}
+		}
+	});
 
 	const listener: SocketListener<ConnectionState> = Bun.listen<ConnectionState>({
 		unix: socketPath,

@@ -350,6 +350,7 @@
         "definitions.list",
         "work.get",
         "work.cancel",
+        "host.attach_file",
         "tree.navigate",
         "goal.budget",
         "memory.status",
@@ -369,7 +370,8 @@
     "CapabilityApi": {
       "enum": [
         "public",
-        "internal"
+        "internal",
+        "main-only-v1"
       ]
     },
     "CapabilityState": {
@@ -473,6 +475,9 @@
           "$ref": "#/$defs/CapabilityState"
         },
         "work.cancel": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "host.attach_file": {
           "$ref": "#/$defs/CapabilityState"
         },
         "tree.navigate": {

@@ -44,6 +44,14 @@ The tool submits a displayed `noli.image` custom message with optional text and 
 
 **Companion Noli support is required:** translate displayed `noli.image` custom entries to assistant image/text blocks, retain image data through persistence/projection, and render image blocks inline with previews. Packaging, persistent installation and SSH transfer must include `src/images.ts`. This plugin release alone cannot make an older Noli UI display images. The socket bridge schema is unchanged.
 
+## Agent downloadable files
+
+The companion Noli server registers `noli_attach_file({ path: "report.pdf", caption: "Optional explanation" })` on the existing native host-tool surface. This plugin guards the call using trusted main-agent identity, SDK tool provenance and current-session socket authentication. An authenticated explicit `capabilities.get({hostTools:true})` returns `host.attach_file` with `available: true, api: "main-only-v1"` as bootstrap permission to register that tool, not proof that it is already registered. Legacy hello, default capability reads and broadcasts omit this optional policy marker, preserving their existing protocol-1 schema. Attachment guidance is injected only while the authenticated SDK tool is actually registered; lifecycle guidance is independent.
+
+Noli retains any local regular file up to 100 MiB (including empty files) in server-owned storage and persists an attachment card before acknowledging `{ status: "attached", attachmentId: "..." }`. Relative paths resolve against the server-side thread workspace. The client downloads exact bytes through authenticated chunked transport and Save As; HTML is saved, not run inside Noli. The plugin rejects missing durable acknowledgements and child/advisor calls. Markdown links alone do not attach files.
+
+This source change is not a published release. Production Noli requires a stable plugin release containing the gate and capability plus rebuilt server and desktop client; do not modify installed release archives to bypass provenance.
+
 ## Agent-requested current-thread closure
 
 The selected transport is **native RPC host tools**, not reverse bridge requests. Noli registers `noli_thread_get` and `noli_thread_finish` with `set_host_tools`; OMP emits `host_tool_call`, and Noli answers `host_tool_result`. The plugin registers no duplicate tools and performs no thread lifecycle operation or database write. Protocol 1 of the socket bridge remains Noli-to-plugin only.
@@ -56,20 +64,22 @@ Agent and capability broadcasts also require a matching authenticated session. A
 
 ### Backend contract (requires companion Noli implementation)
 
-Noli must register exactly these schemas, with `additionalProperties: false`:
+Noli registers the lifecycle schemas below; attachment support additionally registers `noli_attach_file` after explicitly negotiating the host-tool policy. All schemas use `additionalProperties: false`:
 
 ```json
 [
   { "name": "noli_thread_get", "description": "Read current Noli thread identity, lifecycle, permissions and pending closure.", "parameters": { "type": "object", "properties": {}, "additionalProperties": false } },
-  { "name": "noli_thread_finish", "description": "Schedule current-thread settle or archive after completed work and final response; does not close synchronously.", "parameters": { "type": "object", "properties": { "action": { "type": "string", "enum": ["settle", "archive"] } }, "required": ["action"], "additionalProperties": false } }
+  { "name": "noli_thread_finish", "description": "Schedule current-thread settle or archive after completed work and final response; does not close synchronously.", "parameters": { "type": "object", "properties": { "action": { "type": "string", "enum": ["settle", "archive"] } }, "required": ["action"], "additionalProperties": false } },
+  { "name": "noli_attach_file", "description": "Persist a local regular file as a downloadable current-thread attachment.", "parameters": { "type": "object", "properties": { "path": { "type": "string" }, "caption": { "type": "string" } }, "required": ["path"], "additionalProperties": false } }
 ]
 ```
 
-Derive the target thread and permissions from the authenticated, owning OMP process/session connection. Neither tool accepts `threadId`, caller identity, credentials, delete or global settings. The guard independently rejects extra arguments and invalid actions. `noli_thread_get` returns a text JSON representation and matching `result.details` containing `{ thread: { id, title }, lifecycle: { settled, archived }, permittedActions: ["settle", "archive"], pendingLifecycleRequest: null | { requestId, action, status: "pending" } }`; permissions may be an empty/subset array. Noli owns every value and must apply permission checks again on finish.
+Derive the target thread and permissions from the authenticated, owning OMP process/session connection. None of these tools accepts `threadId`, caller identity, credentials, delete or global settings. The guard independently rejects extra arguments and invalid actions. `noli_thread_get` returns a text JSON representation and matching `result.details` containing `{ thread: { id, title }, lifecycle: { settled, archived }, permittedActions: ["settle", "archive"], pendingLifecycleRequest: null | { requestId, action, status: "pending" } }`; permissions may be an empty/subset array. Noli owns every value and must apply permission checks again on finish.
 
 For finish, persist the lifecycle request before acknowledging. Return `host_tool_result` with the original RPC `id`, `result.content: [{ type: "text", text: "...scheduled..." }]` and **`result.details: { status: "scheduled", requestId: "<durable request id>", action: "settle" | "archive" }`**. The plugin refuses a missing, mismatched or completed-state acknowledgement as an error. It never synthesizes success. Backend denials/errors must use `isError: true` and an explanatory text result, not successful details. Noli must respond to every accepted call, including unavailable/unauthorized control.
 
 Keep RPC correlation `id` separate from model `toolCallId` and durable lifecycle `requestId`. Scope the pending-call map to the process/connection **and session generation**. On `host_tool_cancel`, use `targetId` to cancel the correlated request; Noli owns persistence and cancellation of any pending lifecycle action. Serialize cancellation, persistence and application. Cancel or invalidate outstanding requests on session change/disconnect; never apply an old request to a newly active thread. A late acknowledgement after cancellation must not become success. OMP already rejects an aborted call and emits `host_tool_cancel`; the plugin also rejects a success result whose authenticated session was lost. A race after persistence can leave an unknown outcome: inspect the pending request before retrying, not an automatic duplicate request.
+For attachments, persist owned bytes and timeline metadata before acknowledging `result.details: {status:"attached", attachmentId:"..."}`. Lost authentication after commit is an **unknown outcome**, not a retry instruction: inspect the owning conversation before any retry. Never accept old-session results into a newly adopted session or bypass the authenticated guard to avoid duplicate uploads.
 
 Finish only schedules: do not synchronously abort or stop the requesting agent. Noli must allow its final response, wait for actual OMP settlement (including admitted submissions, hidden queued input, asynchronous work and outstanding children), drain final history, then stop the agent and apply settle/archive under its existing lifecycle policy. Noli persists/cancels requests and displays pending/completed actions. Settle is Noli's Mark done: still in the inbox, terminals retained. Archive moves out of the inbox and closes terminals; neither deletes the thread.
 

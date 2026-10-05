@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult, ToolResultEvent, ToolResultEventResult, BeforeAgentStartEvent, BeforeAgentStartEventResult } from "@oh-my-pi/pi-coding-agent";
 import { installThreadControl } from "../src/thread-control";
 
+/** Capture guard hooks with independently mutable authentication, session and SDK tool state. */
 function harness() {
 	let call!: (event: ToolCallEvent, ctx: ExtensionContext) => ToolCallEventResult | undefined;
 	let result!: (event: ToolResultEvent, ctx: ExtensionContext) => ToolResultEventResult | undefined;
@@ -9,6 +10,7 @@ function harness() {
 	let authed = true;
 	let session = "owning-session";
 	let source = "sdk";
+	let tools = ["noli_thread_get", "noli_thread_finish", "noli_attach_file"];
 	// Test seam supplies only the API members the guard consumes.
 	const pi = {
 		on(name: string, handler: unknown) {
@@ -16,19 +18,19 @@ function harness() {
 			if (name === "tool_result") result = handler as typeof result;
 			if (name === "before_agent_start") prompt = handler as typeof prompt;
 		},
-		getAllTools: () => ["noli_thread_get", "noli_thread_finish"].map(name => ({ name, sourceInfo: { source } })),
+		getAllTools: () => tools.map(name => ({ name, sourceInfo: { source } })),
 	} as unknown as ExtensionAPI;
 	installThreadControl(pi, id => authed && id === "owning-session");
 	const ctx = (kind = "main") => ({ agent: { kind }, sessionManager: { getSessionId: () => session } }) as unknown as ExtensionContext;
 	const event: ToolCallEvent = { type: "tool_call", toolName: "noli_thread_finish", toolCallId: "call", input: { action: "archive" } };
 	const reply: ToolResultEvent = { ...event, type: "tool_result", content: [{ type: "text", text: "scheduled" }], details: { status: "scheduled", requestId: "request", action: "archive" }, isError: false };
-	return { call, result, prompt, ctx, event, reply, setAuth: (value: boolean) => { authed = value; }, setSession: (value: string) => { session = value; }, setSource: (value: string) => { source = value; } };
+	return { call, result, prompt, ctx, event, reply, setTools: (value: string[]) => { tools = value; }, setAuth: (value: boolean) => { authed = value; }, setSession: (value: string) => { session = value; }, setSource: (value: string) => { source = value; } };
 }
 
 describe("current-thread host tool guard", () => {
 	test("children and advisors cannot mutate or inspect the parent", () => {
 		const h = harness();
-		for (const kind of ["sub", "advisor", "unknown"]) for (const toolName of ["noli_thread_get", "noli_thread_finish"]) {
+		for (const kind of ["sub", "advisor", "unknown"]) for (const toolName of ["noli_thread_get", "noli_thread_finish", "noli_attach_file"]) {
 			expect(h.call({ ...h.event, toolName }, h.ctx(kind))?.block).toBe(true);
 		}
 	});
@@ -42,6 +44,19 @@ describe("current-thread host tool guard", () => {
 		const h = harness();
 		for (const input of [{ action: "delete" }, { action: "archive", threadId: "foreign" }, { action: "settle", caller: "Main" }, { action: { toString: () => "archive" } }]) expect(h.call({ ...h.event, input }, h.ctx())?.block).toBe(true);
 		expect(h.call({ ...h.event, toolName: "noli_thread_get", input: { threadId: "foreign" } }, h.ctx())?.block).toBe(true);
+	});
+	test("attachments require an authenticated main caller and a durable acknowledgement", () => {
+		const h = harness();
+		const event = { ...h.event, toolName: "noli_attach_file", input: { path: "report.html", caption: "Report" } };
+		for (const input of [{ path: "" }, { path: 42 }, { path: "report.pdf", threadId: "foreign" }, { path: "report.pdf", caption: 42 }]) {
+			expect(h.call({ ...event, input }, h.ctx())?.block).toBe(true);
+		}
+		expect(h.call(event, h.ctx())).toBeUndefined();
+		expect(h.result({ ...h.reply, ...event, type: "tool_result", details: { status: "attached", attachmentId: "owned" } }, h.ctx())).toBeUndefined();
+		h.call(event, h.ctx());
+		expect(h.result({ ...h.reply, ...event, type: "tool_result", details: { status: "submitted" } }, h.ctx())?.isError).toBe(true);
+		h.setAuth(false); expect(h.call(event, h.ctx())?.block).toBe(true);
+		h.setAuth(true); h.setSource("extension"); expect(h.call(event, h.ctx())?.block).toBe(true);
 	});
 	test("only matching backend scheduling acknowledgements count", () => {
 		const h = harness();
@@ -73,5 +88,16 @@ describe("current-thread host tool guard", () => {
 		expect(h.prompt({ ...event, systemPrompt: first.systemPrompt! }, h.ctx())?.systemPrompt).toEqual(first.systemPrompt);
 		expect(h.prompt(event, h.ctx("sub"))).toBeUndefined(); h.setAuth(false);
 		expect(h.prompt(event, h.ctx())).toBeUndefined();
+	});
+	test("mixed-version SDK registrations only recommend tools that can be called", () => {
+		const h = harness(); const event: BeforeAgentStartEvent = { type: "before_agent_start", prompt: "done", systemPrompt: ["base"] };
+		h.setTools(["noli_thread_get", "noli_thread_finish"]);
+		expect(h.prompt(event, h.ctx())?.systemPrompt?.join()).not.toContain("noli_attach_file");
+		h.setTools(["noli_attach_file"]);
+		const onlyAttachment = h.prompt(event, h.ctx())!.systemPrompt!;
+		expect(onlyAttachment.join()).toContain("noli_attach_file");
+		expect(onlyAttachment.join()).not.toContain("settle/archive");
+		h.setTools([]);
+		expect(h.prompt({ ...event, systemPrompt: onlyAttachment }, h.ctx())?.systemPrompt).toEqual(["base"]);
 	});
 });

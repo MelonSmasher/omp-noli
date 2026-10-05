@@ -47,8 +47,9 @@ for (const name of ["AgentView", "AgentOutputParams", "AgentOutputResult", "Navi
 	schema.$defs[name] = generate(checker.getTypeAtLocation(declaration));
 }
 for (const [name, values] of Object.entries({ CapabilityName: CAPABILITY_NAMES, CapabilityReason: CAPABILITY_REASONS, AgentKind: AGENT_KINDS, AgentState: AGENT_STATES, DefinitionSource: DEFINITION_SOURCES, DiscoveryReason: DISCOVERY_REASONS, DiscoveryStatus: DISCOVERY_STATUSES, ErrorCode: ERROR_CODES, JobKind: JOB_KINDS })) schema.$defs[name] = { enum: values };
-schema.$defs.Capabilities.required = [...CAPABILITY_NAMES];
+schema.$defs.Capabilities.required = CAPABILITY_NAMES.filter(name => name !== "host.attach_file");
 schema.$defs.Capabilities.properties = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { $ref: "#/$defs/CapabilityState" }]));
+schema.$defs.CapabilityApi = { enum: ["public", "internal", "main-only-v1"] };
 const output = schema.$defs.AgentOutputResult;
 output.properties.nextOffset = { type: ["integer", "null"], minimum: 0 };
 for (const key of ["start", "end"]) output.properties.spans.items.properties[key] = { type: "integer", minimum: 0 };

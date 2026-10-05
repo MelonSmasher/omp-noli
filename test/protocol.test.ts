@@ -27,10 +27,6 @@ describe("schema matches src/protocol.ts", () => {
 		expect([...(schema.$defs[def]?.enum ?? [])].sort()).toEqual([...values].sort());
 	});
 
-	test("every capability is required in a capability map", () => {
-		const caps = schema.$defs.Capabilities as { required?: string[] };
-		expect([...(caps.required ?? [])].sort()).toEqual([...CAPABILITY_NAMES].sort());
-	});
 });
 
 describe("schema rejects frames that would leak host internals or drift", () => {

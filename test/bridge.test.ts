@@ -490,6 +490,13 @@ describe("control semantics", () => {
 	});
 });
 
+/** Narrow a socket response before inspecting negotiated capability fields. */
+function responseCapabilities(frame: Frame): Record<string, unknown> {
+	const result = frame.result;
+	if (!result || typeof result !== "object" || !("capabilities" in result) || !result.capabilities || typeof result.capabilities !== "object") throw new Error("Missing capability response");
+	return Object.fromEntries(Object.entries(result.capabilities));
+}
+
 describe("capabilities", () => {
 	test("hello and capabilities.get advertise the host capability set", async () => {
 		disable("agents.kill.parked");
@@ -500,7 +507,21 @@ describe("capabilities", () => {
 		expect(advertised.capabilities["agents.kill.parked"]).toEqual({ available: false, api: "internal", reason: "tool_missing", detail: "probe failed" });
 		expect(advertised.capabilities["agents.kill.live"].available).toBe(true);
 		const got = await call(client, "capabilities.get");
-		expect(got.result).toEqual({ capabilities: h.caps });
+		const { "host.attach_file": _attachmentPolicy, ...legacy } = h.caps;
+		expect(got.result).toEqual({ capabilities: legacy });
+	});
+
+	test("attachment policy is returned only on explicit authenticated bootstrap requests", async () => {
+		h.caps["host.attach_file"] = available("main-only-v1", "trusted main-agent guard");
+		const client = await Client.connect(bridge.socketPath);
+		const hello = await client.call({ id: 1, method: "hello", params: { token: TOKEN } });
+		expect(responseCapabilities(hello)).not.toHaveProperty("host.attach_file");
+		const legacy = await call(client, "capabilities.get");
+		expect(responseCapabilities(legacy)).not.toHaveProperty("host.attach_file");
+		const negotiated = await call(client, "capabilities.get", { hostTools: true });
+		expect(responseCapabilities(negotiated)["host.attach_file"]).toEqual(h.caps["host.attach_file"]);
+		for (const listener of h.capabilityListeners) listener(h.caps);
+		expect((await client.next()).capabilities).not.toHaveProperty("host.attach_file");
 	});
 
 	test("parked kill is closed off when its capability is unavailable; live kill still works", async () => {
