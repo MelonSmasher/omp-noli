@@ -340,6 +340,7 @@
     "CapabilityName": {
       "enum": [
         "agents.list",
+        "host.thread_read",
         "agents.list.persisted",
         "agents.output",
         "agents.steer",
@@ -371,7 +372,8 @@
       "enum": [
         "public",
         "internal",
-        "main-only-v1"
+        "main-only-v1",
+        "main-only-v2"
       ]
     },
     "CapabilityState": {
@@ -427,6 +429,7 @@
       "additionalProperties": false,
       "required": [
         "agents.list",
+        "host.thread_read",
         "agents.list.persisted",
         "agents.output",
         "agents.steer",
@@ -446,6 +449,21 @@
       "properties": {
         "agents.list": {
           "$ref": "#/$defs/CapabilityState"
+        },
+        "host.thread_read": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "api": {
+                  "const": "main-only-v2"
+                }
+              }
+            }
+          ]
         },
         "agents.list.persisted": {
           "$ref": "#/$defs/CapabilityState"

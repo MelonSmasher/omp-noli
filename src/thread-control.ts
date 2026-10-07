@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
-export const THREAD_TOOLS = ["noli_thread_get", "noli_thread_finish", "noli_attach_file"] as const;
+export const THREAD_TOOLS = ["noli_thread_get", "noli_thread_finish", "noli_thread_read", "noli_attach_file"] as const;
 const INSTRUCTION = "Authenticated Noli current-thread control is available. Read skill://noli before requesting deferred settle/archive; scheduled is not completed.";
 const ATTACHMENT_INSTRUCTION = "Use authenticated noli_attach_file({path, caption?}) to copy a local file to persistent server storage and publish a downloadable conversation attachment; Markdown links alone do not attach files.";
 
@@ -22,10 +22,14 @@ export function installThreadControl(pi: ExtensionAPI, authenticated: (sessionId
 		if (ctx.agent.kind !== "main") return { block: true, reason: "Noli thread control is restricted to the owning session's main agent" };
 		if (!available(ctx, event.toolName)) return { block: true, reason: "Authenticated Noli thread control is unavailable for this session" };
 		const keys = Object.keys(event.input);
-		const valid = event.toolName === "noli_thread_get" ? keys.length === 0 : event.toolName === "noli_attach_file"
-			? keys.every(key => key === "path" || key === "caption") && typeof event.input.path === "string" && event.input.path.trim().length > 0 && (event.input.caption === undefined || typeof event.input.caption === "string")
-			: keys.length === 1 && keys[0] === "action" && "action" in event.input && (event.input.action === "settle" || event.input.action === "archive");
-		if (!valid) return { block: true, reason: "Invalid Noli host-tool arguments; only the owning current thread is permitted" };
+		if (event.toolName === "noli_thread_read") {
+			if (keys.some(key => !["reference_id", "before", "limit"].includes(key)) || typeof event.input.reference_id !== "string" || !event.input.reference_id || event.input.reference_id.length > 512 || (event.input.before !== undefined && (typeof event.input.before !== "string" || event.input.before.length > 4096)) || (event.input.limit !== undefined && (!Number.isInteger(event.input.limit) || Number(event.input.limit) < 1 || Number(event.input.limit) > 50))) return { block: true, reason: "Invalid referenced-thread read arguments" };
+		} else {
+			const valid = event.toolName === "noli_thread_get" ? keys.length === 0 : event.toolName === "noli_attach_file"
+				? keys.every(key => key === "path" || key === "caption") && typeof event.input.path === "string" && event.input.path.trim().length > 0 && (event.input.caption === undefined || typeof event.input.caption === "string")
+				: keys.length === 1 && keys[0] === "action" && "action" in event.input && (event.input.action === "settle" || event.input.action === "archive");
+			if (!valid) return { block: true, reason: "Invalid Noli host-tool arguments; only the owning current thread is permitted" };
+		}
 		calls.set(event.toolCallId, sessionId(ctx));
 	});
 	pi.on("tool_result", (event, ctx) => {

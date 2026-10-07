@@ -264,6 +264,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 		};
 		return {
 			...nativeCapabilities(current, mainSession() as AgentSession | undefined),
+			"host.thread_read": current && mainSession() ? available("main-only-v2", "Authenticated owning-main reference_id host tool; Noli authorizes durable submitted references") : unavailable("main-only-v2", "not_ready", "Main session not established"),
 			"agents.list": publicCap([], "pi.pi.AgentRegistry"),
 			"agents.list.persisted": internalCap("agents.list.persisted", probeRosterReader),
 			"agents.output": (() => {
@@ -289,9 +290,9 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 	};
 	let capabilities = probeAll();
 
-	/** Warn loudly (log + stderr + UI) whenever the set of disabled capabilities changes. */
+	/** Warn for broken visible features; unsupported memory controls are silently omitted. */
 	const warnUnavailable = (): void => {
-		const down = CAPABILITY_NAMES.filter(n => !capabilities[n].available);
+		const down = CAPABILITY_NAMES.filter(n => !n.startsWith("memory.") && !capabilities[n].available);
 		const signature = down.map(n => `${n}:${capabilities[n].detail}`).join("|");
 		if (signature === warned) return;
 		warned = signature;

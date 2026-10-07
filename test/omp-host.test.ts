@@ -231,6 +231,16 @@ const list = () => omp.host.list({ includePersisted: true });
 const listLive = () => omp.host.list({ includePersisted: false });
 const ids = (r: ListResult) => r.agents.map(a => a.id);
 
+test("thread-read negotiation advertises only reference_id main-only-v2 and tracks root lifetime", () => {
+	expect(omp.host.capabilities()["host.thread_read"]).toMatchObject({ available: true, api: "main-only-v2" });
+	omp.release();
+	expect(omp.host.capabilities()["host.thread_read"]).toMatchObject({ available: false, api: "main-only-v2", reason: "not_ready" });
+	omp.adopt(ctx);
+	registry.refs.delete("Main");
+	expect(omp.host.capabilities()["host.thread_read"]).toMatchObject({ available: false, api: "main-only-v2", reason: "not_ready" });
+});
+
+
 describe("persisted discovery", () => {
 	test("a stub-only root keeps discovery available and still returns live rows", async () => {
 		writeChild("Fresh", header);
@@ -442,6 +452,36 @@ describe("mapping OMP data onto the protocol", () => {
 			expect(omp.host.refreshCapabilities()["agents.list.persisted"]).toMatchObject({ available: false, reason: "tool_missing" });
 		} finally {
 			mainSession.getToolByName = original;
+		}
+	});
+
+	test("unavailable memory capabilities stay negotiated but never appear in UI or stderr warnings", async () => {
+		const oldMemory = ctx.memory;
+		const manager = mainSession.sessionManager;
+		const writes: string[] = [];
+		process.stderr.write = ((chunk: unknown) => { writes.push(String(chunk)); return true; }) as typeof process.stderr.write;
+		try {
+			Object.assign(mainSession, { sessionManager: { ...manager, getCwd: () => "/" } });
+			for (const backend of ["off", "local", "hindsight"] as const) {
+				ctx.memory = { status: async () => ({ backend, active: backend !== "off", searchable: false, writable: backend === "local" }), search: async query => ({ backend, query, count: 0, items: [] }), save: async () => ({ backend, stored: 0 }) };
+				await omp.host.nativeControl!("memory.status", {});
+				expect(omp.host.refreshCapabilities()["memory.search"].available).toBe(false);
+			}
+			ctx.memory = undefined;
+			expect(omp.host.refreshCapabilities()["memory.status"].available).toBe(false);
+			expect(omp.host.refreshCapabilities()["memory.save"].available).toBe(false);
+			expect(notices.every(notice => !notice.includes("memory."))).toBe(true);
+			expect(writes.every(message => !message.includes("memory."))).toBe(true);
+			const original = mainSession.getToolByName;
+			mainSession.getToolByName = name => name === "read" ? undefined : original(name);
+			try {
+				omp.host.refreshCapabilities();
+				expect(notices.some(notice => notice.includes("agents.list.persisted"))).toBe(true);
+				expect(writes.some(message => message.includes("agents.list.persisted"))).toBe(true);
+			} finally { mainSession.getToolByName = original; }
+		} finally {
+			ctx.memory = oldMemory;
+			mainSession.sessionManager = manager;
 		}
 	});
 

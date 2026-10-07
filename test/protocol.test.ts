@@ -27,6 +27,19 @@ describe("schema matches src/protocol.ts", () => {
 		expect([...(schema.$defs[def]?.enum ?? [])].sort()).toEqual([...values].sort());
 	});
 
+	test("non-bootstrap capabilities are required while attachment remains explicitly negotiated", () => {
+		const caps = schema.$defs.Capabilities as { required?: string[] };
+		expect([...(caps.required ?? [])].sort()).toEqual(CAPABILITY_NAMES.filter(name => name !== "host.attach_file").sort());
+	});
+	test("thread-read capabilities validate v2 and reject legacy v1 for available and unavailable states", () => {
+		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: "public", detail: "public" }]));
+		for (const state of [{ available: true, detail: "reference reads" }, { available: false, reason: "not_ready", detail: "not ready" }]) {
+			const frame = (api: string) => ({ type: "event", event: "capabilities.changed", sessionId: "s", capabilities: { ...capabilities, "host.thread_read": { ...state, api } } });
+			expect(() => assertValidFrame(frame("main-only-v2"))).not.toThrow();
+			expect(() => assertValidFrame(frame("main-only-v1"))).toThrow();
+		}
+	});
+
 });
 
 describe("schema rejects frames that would leak host internals or drift", () => {

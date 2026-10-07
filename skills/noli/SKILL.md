@@ -1,6 +1,6 @@
 ---
 name: noli
-description: Use to attach downloadable files or show images to the Noli user, or when the owning thread's main agent is asked to settle or archive after completing work. Requires authenticated Noli control.
+description: Use to read user-supplied live thread references, attach downloadable files, show images to the Noli user, or request deferred settle/archive after completing work. Requires authenticated owning-main Noli control.
 hide: true
 ---
 # Noli images and thread closure
@@ -17,6 +17,14 @@ hide: true
 - Call `noli_show_image({ source: "path/to/screenshot.png", caption: "Optional explanation" })` to submit an image for inline chat display. `source` may also be an HTTP(S) image URL. Relative file paths resolve against the agent's current workspace on its own machine, not the user's desktop.
 - Capture or download the image using existing tools first when needed. Supported formats: PNG, JPEG, WebP and GIF; maximum 5 MiB per image. The tool submits image bytes, not a fragile file link. Displayed messages are saved in the thread history.
 - Only the authenticated owning main agent may publish. Children/advisors should return the image path or URL to their parent. Do not put base64 bytes in prose or claim success on an error. Submission is acknowledged before native message delivery; it is not a guarantee that the user has viewed the image.
+
+## Reading referenced threads
+
+- Only the authenticated owning main agent can call `noli_thread_read({ reference_id: "opaque-reference", before?, limit? })` when Noli registers the SDK host tool and negotiates `host.thread_read.api: "main-only-v2"`.
+- Use the public reference identifier supplied by the user's live context reference. Never substitute a thread ID, enumerate other threads, supply a caller, endpoint, credential or grant, or infer authority from a copied identifier. `thread_id` is not accepted.
+- This is read-only: pages contain 1–50 timeline items, bounded to 128 KiB. Pass the backend's opaque cursor as `before` for older items. Noli owns both local and already-connected remote access, authorization, durable submission activation and revocation; the extension cannot create access or dial another server.
+- Captured text is a snapshot, not live access. Draft/unsent references grant nothing. On denial, offline/unavailable source, cancellation or revoked access, report the actual error; do not claim an empty page proves an empty thread, retry an unknown outcome automatically, or mutate the referenced thread.
+
 
 ## Closing the thread
 
