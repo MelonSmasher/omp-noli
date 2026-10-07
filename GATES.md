@@ -72,3 +72,8 @@ Scope: One authenticated host-tool surface, main-agent enforcement, deferred lif
 - [ ] RV4: Installation invokes the checkout's pinned official CLI, not a PATH-selected global OMP; skill formatting has no consecutive blank lines.
   EVIDENCE: Source edits resolve the pinned SDK manifest/bin and invoke its CLI with the resolved Bun command (not process.execPath, which may identify compiled OMP); the reported duplicate skill blank line was removed. Awaiting parent smoke verification; delegated worker ran no checks.
 
+- [ ] RV5: In-place Hindsight scoping changes reject in-flight previous-scope results even when session identity, revision and config object are unchanged.
+  CHECK: bun test test/native-controls.test.ts && bun run typecheck
+  EXPECT: tsc --noEmit
+  EVIDENCE: Awaiting parent review and verification of Sourcery discussion_r4202897066 correction.
+
