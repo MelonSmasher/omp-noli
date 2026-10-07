@@ -42,3 +42,43 @@ Scope: One authenticated host-tool surface, main-agent enforcement, deferred lif
   EVIDENCE: bun run smoke:native passed; native leaf recall and identity preserved, goal budget persisted/removed, off memory returns stored 0, local memory stored 1 and independent learned.md content assertion passed.
 - [ ] NC5: Review and Ubuntu/macOS CI pass on the aligned release commit before stable publication; isolated published-release installation succeeds.
 
+
+## Automatic native memory backend search (unreleased)
+
+- [x] NM1: Hindsight recalls through OMP's owned authenticated native client using configured bank, project tags and recall tuning; native failures cannot become empty success.
+  CHECK: bun run smoke:native
+  EXPECT: OFFICIAL NATIVE SMOKE PASSED
+  EVIDENCE: Parent bun run smoke:native passed on official OMP 18.6.1; authenticated ephemeral loopback recall verified configured bank, project tags and recall tuning, upstream failure rejected; local save persisted independently. No production credentials or model prompts.
+- [x] NM2: Disabled/unsupported operations fail honestly without memory warning notices, supported backends delegate, limits and stale scope/lifecycle changes have regression coverage.
+  CHECK: bun test
+  EXPECT: 0 fail
+  EVIDENCE: Parent bun test passed: 224 pass, 0 fail, 841 assertions; host warning negative checks retain non-memory warning positive control.
+- [x] NM3: Pinned SDK types, protocol-v1 schema and official extension loading remain compatible.
+  CHECK: bun run typecheck && bun run schema:check && bun run extension:check
+  EXPECT: EXTENSION LOAD PASSED
+  EVIDENCE: Parent typecheck, schema:check (SCHEMA CURRENT), extension:check (EXTENSION LOAD PASSED) passed.
+
+## PR 11 installation review fixes
+
+- [ ] RV1: Bootstrap reference-read negotiation precedes SDK host-tool registration; calls remain denied until authenticated SDK registration.
+  CHECK: bun scripts/smoke-install.ts --local
+  EXPECT: NOLI_RELEASE_INSTALL_OK
+- [ ] RV2: Published v0.4.0 installation verifies its native-control contract without requiring the v0.5.0 reference-read contract.
+  CHECK: bun scripts/smoke-install.ts v0.4.0
+  EXPECT: NOLI_RELEASE_INSTALL_OK
+- [ ] RV3: Regression coverage and pinned SDK type compatibility remain intact.
+  CHECK: bun test && bun run typecheck
+  EXPECT: tsc --noEmit
+- [ ] RV4: Installation invokes the checkout's pinned official CLI, not a PATH-selected global OMP; skill formatting has no consecutive blank lines.
+  EVIDENCE: Source edits resolve the pinned SDK manifest/bin and invoke its CLI with the resolved Bun command (not process.execPath, which may identify compiled OMP); the reported duplicate skill blank line was removed. Awaiting parent smoke verification; delegated worker ran no checks.
+
+- [ ] RV5: In-place Hindsight scoping changes reject in-flight previous-scope results even when session identity, revision and config object are unchanged.
+  CHECK: bun test test/native-controls.test.ts && bun run typecheck
+  EXPECT: tsc --noEmit
+  EVIDENCE: Awaiting parent review and verification of Sourcery discussion_r4202897066 correction.
+
+- [ ] RV6: Hindsight scoping is captured at operation entry and checked across the asynchronous native status step before recall can start.
+  CHECK: bun test test/native-controls.test.ts && bun run typecheck
+  EXPECT: tsc --noEmit
+  EVIDENCE: Awaiting parent review and verification of Greptile discussion_r4202968419 correction.
+
