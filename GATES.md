@@ -77,3 +77,8 @@ Scope: One authenticated host-tool surface, main-agent enforcement, deferred lif
   EXPECT: tsc --noEmit
   EVIDENCE: Awaiting parent review and verification of Sourcery discussion_r4202897066 correction.
 
+- [ ] RV6: Hindsight scoping is captured at operation entry and checked across the asynchronous native status step before recall can start.
+  CHECK: bun test test/native-controls.test.ts && bun run typecheck
+  EXPECT: tsc --noEmit
+  EVIDENCE: Awaiting parent review and verification of Greptile discussion_r4202968419 correction.
+

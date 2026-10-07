@@ -17,6 +17,7 @@ interface MemoryIdentity {
 	state: HindsightSessionState | undefined;
 	aliasOf: HindsightSessionState | undefined;
 	stateSessionId: string | undefined;
+	scoping: HindsightSessionState["config"]["scoping"] | undefined;
 }
 const memorySnapshots = new WeakMap<ExtensionContext, MemoryIdentity & { session: AgentSession; status: MemoryBackendStatus }>();
 function hindsightState(session: AgentSession): HindsightSessionState | undefined {
@@ -24,11 +25,11 @@ function hindsightState(session: AgentSession): HindsightSessionState | undefine
 }
 function memoryIdentity(session: AgentSession): MemoryIdentity {
 	const state = hindsightState(session);
-	return { revision: session.settings?.revision, sessionId: session.sessionManager?.getSessionId(), cwd: session.sessionManager?.getCwd(), state, aliasOf: state?.aliasOf, stateSessionId: state?.sessionId };
+	return { revision: session.settings?.revision, sessionId: session.sessionManager?.getSessionId(), cwd: session.sessionManager?.getCwd(), state, aliasOf: state?.aliasOf, stateSessionId: state?.sessionId, scoping: state?.config.scoping };
 }
 function sameMemoryIdentity(session: AgentSession, before: MemoryIdentity): boolean {
 	const after = memoryIdentity(session);
-	return !session.isDisposed && !session.isSessionTransitioning && after.revision === before.revision && after.sessionId === before.sessionId && after.cwd === before.cwd && after.state === before.state && after.aliasOf === before.aliasOf && after.stateSessionId === before.stateSessionId
+	return !session.isDisposed && !session.isSessionTransitioning && after.revision === before.revision && after.sessionId === before.sessionId && after.cwd === before.cwd && after.state === before.state && after.aliasOf === before.aliasOf && after.stateSessionId === before.stateSessionId && after.scoping === before.scoping
 		&& (!before.aliasOf || before.aliasOf.session.getHindsightSessionState() === before.aliasOf);
 }
 async function memoryStatus(ctx: ExtensionContext, session: AgentSession): Promise<MemoryBackendStatus> {
@@ -128,7 +129,6 @@ async function search(params: Record<string, unknown>, ctx: ExtensionContext, se
 	const tags = state.recallTags?.slice();
 	const tagsMatch = state.recallTagsMatch;
 	const config = state.config;
-	const scoping = config.scoping;
 	const budget = config.recallBudget;
 	const maxTokens = config.recallMaxTokens;
 	const types = config.recallTypes.slice();
@@ -139,7 +139,7 @@ async function search(params: Record<string, unknown>, ctx: ExtensionContext, se
 		// Native HTTP errors may echo server-provided secrets; do not expose their body.
 		throw new BridgeError("internal", "Native Hindsight recall failed");
 	}
-	if (!sameMemoryIdentity(session, before) || state.client !== client || state.bankId !== bankId || state.config !== config || config.scoping !== scoping || state.recallTagsMatch !== tagsMatch || JSON.stringify(state.recallTags) !== JSON.stringify(tags) || config.recallBudget !== budget || config.recallMaxTokens !== maxTokens || JSON.stringify(config.recallTypes) !== JSON.stringify(types)) throw new BridgeError("stale_session", "Native Hindsight scope changed during search");
+	if (!sameMemoryIdentity(session, before) || state.client !== client || state.bankId !== bankId || state.config !== config || state.recallTagsMatch !== tagsMatch || JSON.stringify(state.recallTags) !== JSON.stringify(tags) || config.recallBudget !== budget || config.recallMaxTokens !== maxTokens || JSON.stringify(config.recallTypes) !== JSON.stringify(types)) throw new BridgeError("stale_session", "Native Hindsight scope changed during search");
 	if (!response || !Array.isArray(response.results) || response.results.some(item => !item || typeof item.text !== "string")) throw new BridgeError("internal", "Native Hindsight returned invalid recall results");
 	const items = response.results.slice(0, limit as number | undefined).map(item => ({ content: item.text,
 		...(typeof item.id === "string" ? { id: item.id } : {}),

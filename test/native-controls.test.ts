@@ -135,6 +135,30 @@ describe("supplemental public native APIs", () => {
 		gate.resolve({ results: [{ text: "previous-scope result must not escape" }] });
 		await expect(result).rejects.toMatchObject({ body: { code: "stale_session" } });
 	});
+	test("in-place Hindsight scoping changes during native status reject search before recall", async () => {
+		const { ctx, session, state, recalled } = hindsightFixture();
+		const config = state.config;
+		config.scoping = "global";
+		const identity = { getSessionId: () => "same-session", getCwd: () => "/same-project" };
+		Object.assign(session, { sessionManager: identity, settings: { revision: 0 } });
+		const entered = Promise.withResolvers<void>();
+		const gate = Promise.withResolvers<void>();
+		Object.assign(ctx.memory!, { status: async () => {
+			entered.resolve();
+			await gate.promise;
+			return { backend: "hindsight", active: true, searchable: false, writable: false };
+		} });
+		const result = nativeControl("memory.search", { query: "q" }, ctx, session);
+		await entered.promise;
+		config.scoping = "per-project-tagged";
+		expect(state.config).toBe(config);
+		expect(session.getHindsightSessionState()).toBe(state);
+		expect(session.sessionManager === identity).toBe(true);
+		expect(session.settings.revision).toBe(0);
+		gate.resolve();
+		await expect(result).rejects.toMatchObject({ body: { code: "stale_session" } });
+		expect(recalled).toHaveLength(0);
+	});
 	test("Hindsight replaced state, in-place scope changes and disposal invalidate in-flight recall", async () => {
 		for (const change of ["state", "bank", "tags", "disposed", "session", "cwd", "revision", "config", "types", "stateSession", "alias"]) {
 			const { ctx, session, state, replace } = hindsightFixture();
