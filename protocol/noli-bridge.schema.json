@@ -341,6 +341,7 @@
       "enum": [
         "agents.list",
         "host.thread_read",
+        "host.thread_open",
         "agents.list.persisted",
         "agents.output",
         "agents.steer",
@@ -430,6 +431,7 @@
       "required": [
         "agents.list",
         "host.thread_read",
+        "host.thread_open",
         "agents.list.persisted",
         "agents.output",
         "agents.steer",
@@ -464,6 +466,9 @@
               }
             }
           ]
+        },
+        "host.thread_open": {
+          "$ref": "#/$defs/CapabilityState"
         },
         "agents.list.persisted": {
           "$ref": "#/$defs/CapabilityState"
