@@ -237,6 +237,7 @@ test("thread-read negotiation advertises only reference_id main-only-v2 and trac
 	expect(omp.host.capabilities()["host.thread_read"]).toMatchObject({ available: false, api: "main-only-v2", reason: "not_ready" });
 	omp.adopt(ctx);
 	registry.refs.delete("Main");
+	omp.adopt(ctx);
 	expect(omp.host.capabilities()["host.thread_read"]).toMatchObject({ available: false, api: "main-only-v2", reason: "not_ready" });
 });
 

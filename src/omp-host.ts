@@ -786,6 +786,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			telemetryTimer = undefined;
 			for (const key of ["prewalk", "cost", "input", "output", "context-threshold", "throughput"]) current?.ui.setStatus(`noli.${key}`, undefined);
 			current = undefined;
+			capabilities = probeAll();
 		},
 	};
 }

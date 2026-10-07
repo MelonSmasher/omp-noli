@@ -23,7 +23,7 @@ export function installThreadControl(pi: ExtensionAPI, authenticated: (sessionId
 		if (!available(ctx, event.toolName)) return { block: true, reason: "Authenticated Noli thread control is unavailable for this session" };
 		const keys = Object.keys(event.input);
 		if (event.toolName === "noli_thread_read") {
-			if (keys.some(key => !["reference_id", "before", "limit"].includes(key)) || typeof event.input.reference_id !== "string" || !event.input.reference_id || event.input.reference_id.length > 512 || (event.input.before !== undefined && (typeof event.input.before !== "string" || event.input.before.length > 4096)) || (event.input.limit !== undefined && (!Number.isInteger(event.input.limit) || Number(event.input.limit) < 1 || Number(event.input.limit) > 50))) return { block: true, reason: "Invalid referenced-thread read arguments" };
+			if (keys.some(key => !["reference_id", "before", "limit"].includes(key)) || typeof event.input.reference_id !== "string" || !event.input.reference_id || event.input.reference_id.length > 256 || (event.input.before !== undefined && (typeof event.input.before !== "string" || event.input.before.length > 4096)) || (event.input.limit !== undefined && (!Number.isInteger(event.input.limit) || Number(event.input.limit) < 1 || Number(event.input.limit) > 50))) return { block: true, reason: "Invalid referenced-thread read arguments" };
 		} else {
 			const valid = event.toolName === "noli_thread_get" ? keys.length === 0 : event.toolName === "noli_attach_file"
 				? keys.every(key => key === "path" || key === "caption") && typeof event.input.path === "string" && event.input.path.trim().length > 0 && (event.input.caption === undefined || typeof event.input.caption === "string")

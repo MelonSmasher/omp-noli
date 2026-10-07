@@ -118,10 +118,10 @@ describe("current-thread host tool guard", () => {
 	test("only reference IDs and bounded pagination are accepted; no legacy alias or authority fields", () => {
 		const h = harness();
 		const event = { ...h.event, toolName: "noli_thread_read" };
-		for (const input of [{ reference_id: "reference" }, { reference_id: "r".repeat(512), before: "c".repeat(4096), limit: 1 }, { reference_id: "reference", limit: 50 }]) {
+		for (const input of [{ reference_id: "reference" }, { reference_id: "r".repeat(256), before: "c".repeat(4096), limit: 1 }, { reference_id: "reference", limit: 50 }]) {
 			expect(h.call({ ...event, input }, h.ctx())).toBeUndefined();
 		}
-		for (const input of [{}, { thread_id: "target" }, { reference_id: "reference", thread_id: "target" }, { reference_id: "" }, { reference_id: "r".repeat(513) }, { reference_id: 7 }, { reference_id: "reference", before: 7 }, { reference_id: "reference", before: "c".repeat(4097) }, ...[0, 51, 1.5, "20", null, NaN, Infinity].map(limit => ({ reference_id: "reference", limit })), ...["action", "caller", "server_id", "machine_id", "endpoint", "token", "grant"].map(key => ({ reference_id: "reference", [key]: "forbidden" }))]) {
+		for (const input of [{}, { thread_id: "target" }, { reference_id: "reference", thread_id: "target" }, { reference_id: "" }, { reference_id: "r".repeat(257) }, { reference_id: 7 }, { reference_id: "reference", before: 7 }, { reference_id: "reference", before: "c".repeat(4097) }, ...[0, 51, 1.5, "20", null, NaN, Infinity].map(limit => ({ reference_id: "reference", limit })), ...["action", "caller", "server_id", "machine_id", "endpoint", "token", "grant"].map(key => ({ reference_id: "reference", [key]: "forbidden" }))]) {
 			expect(h.call({ ...event, input }, h.ctx())?.block).toBe(true);
 		}
 	});
