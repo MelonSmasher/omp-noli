@@ -19,6 +19,7 @@ export const PROTOCOL_VERSION = 1;
 export const CAPABILITY_NAMES = [
 	"agents.list",
 	"host.thread_read",
+	"host.thread_open",
 	"agents.list.persisted",
 	"agents.output",
 	"agents.steer",

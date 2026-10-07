@@ -20,6 +20,7 @@ if (selection === "--verify") {
 	const expectedVersion = process.argv[4]!;
 	const [major, minor] = expectedVersion.split(".").map(Number);
 	const referenceReads = major! > 0 || minor! >= 5;
+	const threadOpening = major! > 0 || minor! >= 6;
 	const installed = (await getEnabledPlugins(dir, { home: dir })).filter(plugin => plugin.name === "omp-noli");
 	assert.equal(installed.length, 1, "Official discovery finds one enabled installed plugin");
 	const plugin = installed[0]!;
@@ -84,6 +85,17 @@ if (selection === "--verify") {
 		assert.equal((await runtime.emitToolCall({ ...call, input: { thread_id: "legacy" } }))?.block, true);
 		assert.equal((await runtime.emitToolCall({ ...call, input: { ...call.input, endpoint: "forbidden" } }))?.block, true);
 		assert.equal((await runtime.emitToolCall(call, undefined, { kind: "sub", id: "child", name: "child", depth: 1, parentId: "Main" }))?.block, true);
+		if (threadOpening) {
+			assert.equal(schema.$defs.Capabilities.properties["host.thread_open"].allOf[1].properties.api.const, "main-only-v1");
+			assert.equal(advertised.capabilities?.["host.thread_open"]?.api, "main-only-v1");
+			assert.equal(advertised.capabilities?.["host.thread_open"]?.available, true);
+			const opening = { type: "tool_call" as const, toolName: "noli_thread_open", toolCallId: "installed-open", input: { title: "Investigate", problem: "A self-contained problem", mode: "propose" } };
+			assert.equal((await runtime.emitToolCall(opening))?.block, true, "Unregistered opening tool is denied");
+			await created.session.refreshRpcHostTools([...hostTools, { name: "noli_thread_open", label: "Open thread", description: "Policy smoke", parameters: type({ title: "string", problem: "string", mode: "string" }), execute: async () => { throw new Error("Smoke must not create a real thread"); } }]);
+			assert.equal((await runtime.emitToolCall(opening))?.block, undefined, "Actual installed authenticated main may propose a thread");
+			assert.equal((await runtime.emitToolCall(opening, undefined, { kind: "sub", id: "child", name: "child", depth: 1, parentId: "Main" }))?.block, true, "Actual child cannot open or propose threads");
+			assert.equal((await runtime.emitToolCall({ ...opening, input: { ...opening.input, thread_id: "foreign" } }))?.block, true);
+		}
 		console.log("NOLI_RELEASE_INSTALL_OK");
 	} finally {
 		socket?.destroy();

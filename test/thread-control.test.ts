@@ -10,7 +10,7 @@ function harness() {
 	let authed = true;
 	let session = "owning-session";
 	let source = "sdk";
-	let tools = ["noli_thread_get", "noli_thread_finish", "noli_attach_file", "noli_thread_read"];
+	let tools = ["noli_thread_get", "noli_thread_finish", "noli_attach_file", "noli_thread_read", "noli_thread_open"];
 	let readSource: string | undefined = "sdk";
 	const lifecycle = new Map<string, () => void>();
 	// Test seam supplies only the API members the guard consumes.
@@ -31,6 +31,36 @@ function harness() {
 }
 
 describe("current-thread host tool guard", () => {
+	test("thread opening rejects unauthorized callers and malformed evidence while preserving backend outcome", () => {
+		const h = harness();
+		const event = { ...h.event, toolName: "noli_thread_open", input: { title: "Investigate", problem: "Find the cause", mode: "propose" } };
+		for (const kind of ["sub", "advisor", "unknown"]) expect(h.call(event, h.ctx(kind))?.block).toBe(true);
+		h.setAuth(false); expect(h.call(event, h.ctx())?.block).toBe(true);
+		h.setAuth(true); h.setSource("extension"); expect(h.call(event, h.ctx())?.block).toBe(true);
+		h.setSource("sdk");
+		for (const input of [
+			{ ...event.input, mode: "force" }, { ...event.input, thread_id: "foreign" },
+			{ ...event.input, authorization: { turn_id: "u", quote: "open", caller: "main" } },
+			{ ...event.input, authorization: { turn_id: 3, quote: "open" } },
+		]) expect(h.call({ ...event, input }, h.ctx())?.block).toBe(true);
+		expect(h.call(event, h.ctx())).toBeUndefined();
+		expect(h.result({ ...h.reply, ...event, type: "tool_result", details: { status: "pending_proposal", requestId: "p" } }, h.ctx())).toBeUndefined();
+		h.call(event, h.ctx()); h.lifecycle.get("session_switch")!();
+		expect(h.result({ ...h.reply, ...event, type: "tool_result" }, h.ctx())?.isError).toBe(true);
+	});
+	test("opening acknowledgements distinguish persisted outcomes from unknown success", () => {
+		const h = harness();
+		const event = { ...h.event, toolName: "noli_thread_open", input: { title: "Investigate", problem: "Find the cause", mode: "request" } };
+		for (const details of [undefined, {}, { status: "created", requestId: "p" }, { status: "pending_proposal", requestId: "" }, { status: "created", requestId: "p", threadId: "child", initialPromptStatus: "started" }]) {
+			h.call(event, h.ctx());
+			const rejected = h.result({ ...h.reply, ...event, type: "tool_result", details }, h.ctx());
+			expect(rejected?.isError).toBe(true);
+			const block = rejected?.content?.[0];
+			expect(block?.type === "text" ? block.text : "").toContain("Do not retry automatically");
+		}
+		h.call(event, h.ctx());
+		expect(h.result({ ...h.reply, ...event, type: "tool_result", details: { status: "created", requestId: "p", threadId: "child", initialPromptStatus: "queued" } }, h.ctx())).toBeUndefined();
+	});
 	test("children and advisors cannot mutate or inspect the parent", () => {
 		const h = harness();
 		for (const kind of ["sub", "advisor", "unknown"]) for (const toolName of ["noli_thread_get", "noli_thread_finish", "noli_attach_file"]) {
