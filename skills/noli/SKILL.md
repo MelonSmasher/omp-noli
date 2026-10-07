@@ -25,7 +25,6 @@ hide: true
 - This is read-only: pages contain 1–50 timeline items, bounded to 128 KiB. Pass the backend's opaque cursor as `before` for older items. Noli owns both local and already-connected remote access, authorization, durable submission activation and revocation; the extension cannot create access or dial another server.
 - Captured text is a snapshot, not live access. Draft/unsent references grant nothing. On denial, offline/unavailable source, cancellation or revoked access, report the actual error; do not claim an empty page proves an empty thread, retry an unknown outcome automatically, or mutate the referenced thread.
 
-
 ## Closing the thread
 
 - `noli_thread_get()` reads the current thread's identity, lifecycle state, permitted actions and pending lifecycle request. Only the owning session's main agent may use Noli control; children and advisors must report back to the main agent.

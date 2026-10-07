@@ -57,3 +57,18 @@ Scope: One authenticated host-tool surface, main-agent enforcement, deferred lif
   CHECK: bun run typecheck && bun run schema:check && bun run extension:check
   EXPECT: EXTENSION LOAD PASSED
   EVIDENCE: Parent typecheck, schema:check (SCHEMA CURRENT), extension:check (EXTENSION LOAD PASSED) passed.
+
+## PR 11 installation review fixes
+
+- [ ] RV1: Bootstrap reference-read negotiation precedes SDK host-tool registration; calls remain denied until authenticated SDK registration.
+  CHECK: bun scripts/smoke-install.ts --local
+  EXPECT: NOLI_RELEASE_INSTALL_OK
+- [ ] RV2: Published v0.4.0 installation verifies its native-control contract without requiring the v0.5.0 reference-read contract.
+  CHECK: bun scripts/smoke-install.ts v0.4.0
+  EXPECT: NOLI_RELEASE_INSTALL_OK
+- [ ] RV3: Regression coverage and pinned SDK type compatibility remain intact.
+  CHECK: bun test && bun run typecheck
+  EXPECT: tsc --noEmit
+- [ ] RV4: Installation invokes the checkout's pinned official CLI, not a PATH-selected global OMP; skill formatting has no consecutive blank lines.
+  EVIDENCE: Source edits resolve the pinned SDK manifest/bin and invoke its CLI with the resolved Bun command (not process.execPath, which may identify compiled OMP); the reported duplicate skill blank line was removed. Awaiting parent smoke verification; delegated worker ran no checks.
+
