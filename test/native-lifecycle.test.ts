@@ -9,8 +9,8 @@ import type { Socket } from "bun";
 import { z } from "@oh-my-pi/pi-coding-agent";
 import { assertValidFrame } from "./schema";
 
-const responseSchema = z.object({ type: z.literal("response"), ok: z.boolean(), result: z.object({ cancelled: z.boolean().optional(), backend: z.string().optional(), count: z.number().optional(), stored: z.number().optional() }).passthrough().optional() }).passthrough();
-interface NativeResponse { type: "response"; ok: boolean; result?: { cancelled?: boolean; backend?: string; count?: number; stored?: number } }
+const responseSchema = z.object({ type: z.literal("response"), ok: z.boolean(), result: z.object({ cancelled: z.boolean().optional(), backend: z.string().optional(), count: z.number().optional(), stored: z.number().optional() }).passthrough().optional(), error: z.object({ code: z.string() }).passthrough().optional() }).passthrough();
+interface NativeResponse { type: "response"; ok: boolean; result?: { cancelled?: boolean; backend?: string; count?: number; stored?: number }; error?: { code: string } }
 test("official extension tree event preserves authenticated same-session navigation response", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "noli-native-lifecycle-"));
 	const oldDir = process.env.NOLI_BRIDGE_DIR;
@@ -38,13 +38,13 @@ test("official extension tree event preserves authenticated same-session navigat
 		expect(result.result?.cancelled).toBe(false);
 		expect((await call("memory.status", {})).ok).toBe(true);
 		const searched = await call("memory.search", { query: "real socket", limit: 1 });
-		expect(searched.ok).toBe(true);
-		expect(searched.result?.backend).toBe("off");
-		expect(searched.result?.count).toBe(0);
+		expect(searched.ok).toBe(false);
+		expect(searched.error?.code).toBe("capability_unavailable");
+		expect(searched.result).toBeUndefined();
 		const saved = await call("memory.save", { content: "real socket" });
-		expect(saved.ok).toBe(true);
-		expect(saved.result?.backend).toBe("off");
-		expect(saved.result?.stored).toBe(0);
+		expect(saved.ok).toBe(false);
+		expect(saved.error?.code).toBe("capability_unavailable");
+		expect(saved.result).toBeUndefined();
 	} finally {
 		socket?.terminate();
 		await session?.dispose();

@@ -42,3 +42,18 @@ Scope: One authenticated host-tool surface, main-agent enforcement, deferred lif
   EVIDENCE: bun run smoke:native passed; native leaf recall and identity preserved, goal budget persisted/removed, off memory returns stored 0, local memory stored 1 and independent learned.md content assertion passed.
 - [ ] NC5: Review and Ubuntu/macOS CI pass on the aligned release commit before stable publication; isolated published-release installation succeeds.
 
+
+## Automatic native memory backend search (unreleased)
+
+- [x] NM1: Hindsight recalls through OMP's owned authenticated native client using configured bank, project tags and recall tuning; native failures cannot become empty success.
+  CHECK: bun run smoke:native
+  EXPECT: OFFICIAL NATIVE SMOKE PASSED
+  EVIDENCE: Parent bun run smoke:native passed on official OMP 18.6.1; authenticated ephemeral loopback recall verified configured bank, project tags and recall tuning, upstream failure rejected; local save persisted independently. No production credentials or model prompts.
+- [x] NM2: Disabled/unsupported operations fail honestly without memory warning notices, supported backends delegate, limits and stale scope/lifecycle changes have regression coverage.
+  CHECK: bun test
+  EXPECT: 0 fail
+  EVIDENCE: Parent bun test passed: 224 pass, 0 fail, 841 assertions; host warning negative checks retain non-memory warning positive control.
+- [x] NM3: Pinned SDK types, protocol-v1 schema and official extension loading remain compatible.
+  CHECK: bun run typecheck && bun run schema:check && bun run extension:check
+  EXPECT: EXTENSION LOAD PASSED
+  EVIDENCE: Parent typecheck, schema:check (SCHEMA CURRENT), extension:check (EXTENSION LOAD PASSED) passed.

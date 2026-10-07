@@ -39,7 +39,6 @@ describe("schema matches src/protocol.ts", () => {
 			expect(() => assertValidFrame(frame("main-only-v1"))).toThrow();
 		}
 	});
-
 });
 
 describe("schema rejects frames that would leak host internals or drift", () => {
