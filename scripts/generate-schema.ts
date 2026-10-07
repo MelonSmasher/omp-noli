@@ -50,6 +50,7 @@ for (const [name, values] of Object.entries({ CapabilityName: CAPABILITY_NAMES, 
 schema.$defs.Capabilities.required = CAPABILITY_NAMES.filter(name => name !== "host.attach_file");
 schema.$defs.Capabilities.properties = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { $ref: "#/$defs/CapabilityState" }]));
 schema.$defs.Capabilities.properties["host.thread_read"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", properties: { api: { const: "main-only-v2" } } }] };
+schema.$defs.Capabilities.properties["host.thread_open"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", required: ["api"], properties: { api: { const: "main-only-v1" } } }] };
 schema.$defs.CapabilityApi = { enum: ["public", "internal", "main-only-v1", "main-only-v2"] };
 const output = schema.$defs.AgentOutputResult;
 output.properties.nextOffset = { type: ["integer", "null"], minimum: 0 };

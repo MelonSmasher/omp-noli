@@ -86,6 +86,7 @@ if (selection === "--verify") {
 		assert.equal((await runtime.emitToolCall({ ...call, input: { ...call.input, endpoint: "forbidden" } }))?.block, true);
 		assert.equal((await runtime.emitToolCall(call, undefined, { kind: "sub", id: "child", name: "child", depth: 1, parentId: "Main" }))?.block, true);
 		if (threadOpening) {
+			assert.equal(schema.$defs.Capabilities.properties["host.thread_open"].allOf[1].properties.api.const, "main-only-v1");
 			assert.equal(advertised.capabilities?.["host.thread_open"]?.api, "main-only-v1");
 			assert.equal(advertised.capabilities?.["host.thread_open"]?.available, true);
 			const opening = { type: "tool_call" as const, toolName: "noli_thread_open", toolCallId: "installed-open", input: { title: "Investigate", problem: "A self-contained problem", mode: "propose" } };

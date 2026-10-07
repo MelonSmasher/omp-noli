@@ -468,7 +468,22 @@
           ]
         },
         "host.thread_open": {
-          "$ref": "#/$defs/CapabilityState"
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "main-only-v1"
+                }
+              }
+            }
+          ]
         },
         "agents.list.persisted": {
           "$ref": "#/$defs/CapabilityState"

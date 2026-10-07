@@ -58,6 +58,16 @@ export function installThreadControl(pi: ExtensionAPI, authenticated: (sessionId
 				return { content: [{ type: "text", text: "Noli did not acknowledge scheduling this lifecycle request; outcome unknown, inspect Noli before retrying" }], isError: true };
 			}
 		}
+		if (!event.isError && event.toolName === "noli_thread_open") {
+			const ack = event.details;
+			if (!ack || typeof ack !== "object"
+				|| !("requestId" in ack) || typeof ack.requestId !== "string" || !ack.requestId
+				|| !("status" in ack) || (ack.status !== "created" && ack.status !== "pending_proposal")
+				|| (ack.status === "created" && (!("threadId" in ack) || typeof ack.threadId !== "string" || !ack.threadId
+					|| !("initialPromptStatus" in ack) || ack.initialPromptStatus !== "queued"))) {
+				return { content: [{ type: "text", text: "Noli did not acknowledge creating a thread or retaining a proposal; outcome unknown. The operation may already be persisted. Do not retry automatically; inspect Noli before retrying." }], isError: true };
+			}
+		}
 		if (!event.isError && event.toolName === "noli_attach_file") {
 			const ack = event.details;
 			if (!ack || typeof ack !== "object" || !("status" in ack) || ack.status !== "attached" || !("attachmentId" in ack) || typeof ack.attachmentId !== "string" || !ack.attachmentId) {

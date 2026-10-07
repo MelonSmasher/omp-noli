@@ -44,9 +44,22 @@ describe("current-thread host tool guard", () => {
 			{ ...event.input, authorization: { turn_id: 3, quote: "open" } },
 		]) expect(h.call({ ...event, input }, h.ctx())?.block).toBe(true);
 		expect(h.call(event, h.ctx())).toBeUndefined();
-		expect(h.result({ ...h.reply, ...event, type: "tool_result", details: { status: "proposed", requestId: "p" } }, h.ctx())).toBeUndefined();
+		expect(h.result({ ...h.reply, ...event, type: "tool_result", details: { status: "pending_proposal", requestId: "p" } }, h.ctx())).toBeUndefined();
 		h.call(event, h.ctx()); h.lifecycle.get("session_switch")!();
 		expect(h.result({ ...h.reply, ...event, type: "tool_result" }, h.ctx())?.isError).toBe(true);
+	});
+	test("opening acknowledgements distinguish persisted outcomes from unknown success", () => {
+		const h = harness();
+		const event = { ...h.event, toolName: "noli_thread_open", input: { title: "Investigate", problem: "Find the cause", mode: "request" } };
+		for (const details of [undefined, {}, { status: "created", requestId: "p" }, { status: "pending_proposal", requestId: "" }, { status: "created", requestId: "p", threadId: "child", initialPromptStatus: "started" }]) {
+			h.call(event, h.ctx());
+			const rejected = h.result({ ...h.reply, ...event, type: "tool_result", details }, h.ctx());
+			expect(rejected?.isError).toBe(true);
+			const block = rejected?.content?.[0];
+			expect(block?.type === "text" ? block.text : "").toContain("Do not retry automatically");
+		}
+		h.call(event, h.ctx());
+		expect(h.result({ ...h.reply, ...event, type: "tool_result", details: { status: "created", requestId: "p", threadId: "child", initialPromptStatus: "queued" } }, h.ctx())).toBeUndefined();
 	});
 	test("children and advisors cannot mutate or inspect the parent", () => {
 		const h = harness();

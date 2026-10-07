@@ -32,11 +32,19 @@ describe("schema matches src/protocol.ts", () => {
 		expect([...(caps.required ?? [])].sort()).toEqual(CAPABILITY_NAMES.filter(name => name !== "host.attach_file").sort());
 	});
 	test("thread-read capabilities validate v2 and reject legacy v1 for available and unavailable states", () => {
-		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: "public", detail: "public" }]));
+		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: name === "host.thread_open" ? "main-only-v1" : "public", detail: "public" }]));
 		for (const state of [{ available: true, detail: "reference reads" }, { available: false, reason: "not_ready", detail: "not ready" }]) {
 			const frame = (api: string) => ({ type: "event", event: "capabilities.changed", sessionId: "s", capabilities: { ...capabilities, "host.thread_read": { ...state, api } } });
 			expect(() => assertValidFrame(frame("main-only-v2"))).not.toThrow();
 			expect(() => assertValidFrame(frame("main-only-v1"))).toThrow();
+		}
+	});
+	test("thread-opening rejects incompatible APIs even while unavailable", () => {
+		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: name === "host.thread_read" ? "main-only-v2" : "public", detail: "public" }]));
+		for (const state of [{ available: true, detail: "opening" }, { available: false, reason: "not_ready", detail: "not ready" }]) {
+			const frame = (api: string) => ({ type: "event", event: "capabilities.changed", sessionId: "s", capabilities: { ...capabilities, "host.thread_open": { ...state, api } } });
+			expect(() => assertValidFrame(frame("main-only-v1"))).not.toThrow();
+			for (const api of ["public", "internal", "main-only-v2"]) expect(() => assertValidFrame(frame(api))).toThrow();
 		}
 	});
 });
