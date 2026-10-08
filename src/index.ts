@@ -3,6 +3,7 @@ import { type Bridge, startBridge } from "./bridge";
 import { installImagePublisher } from "./images";
 import { createOmpHost } from "./omp-host";
 import { installThreadControl } from "./thread-control";
+import { registerGateway } from "./gateway";
 
 /** Set by the launching app. Without both, the extension stays inert. */
 export const ENV_DIR = "NOLI_BRIDGE_DIR";
@@ -14,8 +15,10 @@ export default function noli(pi: ExtensionAPI): void {
 	installThreadControl(pi, sessionId => bridge?.hasAuthenticatedSession(sessionId) ?? false);
 	const dir = process.env[ENV_DIR];
 	const token = process.env[ENV_TOKEN];
+    delete process.env[ENV_TOKEN];
 	if (!dir || !token) return;
 	installImagePublisher(pi, sessionId => bridge?.hasAuthenticatedSession(sessionId) ?? false);
+    const gateway = registerGateway(pi, dir);
 
 	const omp = createOmpHost(pi);
 
@@ -27,7 +30,7 @@ export default function noli(pi: ExtensionAPI): void {
 		boundSession = sessionId;
 		bridge?.invalidateAuthentication();
 		omp.adopt(ctx);
-		bridge ??= startBridge({ dir, token, host: omp.host });
+        bridge ??= startBridge({ dir, token, host: omp.host, gateway });
 	};
 
 	pi.on("session_start", (_event, ctx) => adopt(ctx));

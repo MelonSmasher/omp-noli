@@ -19,7 +19,8 @@ test("official extension tree event preserves authenticated same-session navigat
 	let socket: Socket<undefined> | undefined;
 	try {
 		process.env.NOLI_BRIDGE_DIR = dir;
-		process.env.NOLI_BRIDGE_TOKEN = crypto.randomUUID();
+        const bootstrap = crypto.randomUUID();
+        process.env.NOLI_BRIDGE_TOKEN = bootstrap;
 		const manager = SessionManager.create(dir, join(dir, "sessions"));
 		const created = await createAgentSession({ cwd: dir, agentDir: join(dir, "agent"), sessionManager: manager, settings: Settings.isolated({ "memory.backend": "off" }), toolNames: [], enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, additionalExtensionPaths: [join(import.meta.dir, "../src/index.ts")], cacheWarming: false });
 		session = created.session;
@@ -32,7 +33,8 @@ test("official extension tree event preserves authenticated same-session navigat
 		const pending: Array<(frame: NativeResponse) => void> = [];
 		socket = await Bun.connect({ unix: join(dir, `omp-${process.pid}.sock`), socket: { data(_socket, bytes) { buffer += bytes.toString(); for (;;) { const end = buffer.indexOf("\n"); if (end < 0) break; const parsed: unknown = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1); assertValidFrame(parsed); const response = responseSchema.safeParse(parsed); if (response.success) pending.shift()?.(response.data); } } } });
 		const call = (method: string, params: Record<string, unknown>) => new Promise<NativeResponse>(resolve => { pending.push(resolve); socket!.write(`${JSON.stringify({ id: pending.length, method, params, sessionId: manager.getSessionId() })}\n`); });
-		expect((await call("hello", { token: process.env.NOLI_BRIDGE_TOKEN })).ok).toBe(true);
+        expect(process.env.NOLI_BRIDGE_TOKEN).toBeUndefined();
+        expect((await call("hello", { token: bootstrap })).ok).toBe(true);
 		const result = await call("tree.navigate", { targetId: target, summarize: false });
 		expect(result.ok).toBe(true);
 		expect(result.result?.cancelled).toBe(false);

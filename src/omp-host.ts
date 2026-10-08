@@ -263,6 +263,7 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			return result.ok ? available("internal", result.detail) : unavailable("internal", result.reason, result.detail);
 		};
 		return {
+            "gateway.bind": available("public", "Private in-memory gateway capability binding with one-time bootstrap"),
 			...nativeCapabilities(current, mainSession() as AgentSession | undefined),
 			// Bootstrap support: Noli must negotiate v2 before registering its SDK host tool.
 			// installThreadControl separately requires authenticated SDK provenance at call time.

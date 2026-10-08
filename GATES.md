@@ -82,3 +82,19 @@ Scope: One authenticated host-tool surface, main-agent enforcement, deferred lif
   EXPECT: tsc --noEmit
   EVIDENCE: Awaiting parent review and verification of Greptile discussion_r4202968419 correction.
 
+
+## Gateway binding 0.7.0
+
+- [x] GW74-BIND: One-use bootstrap authenticates one transport; gateway bind acknowledgement installs the key before prompt admission; adoption refreshes it and close revokes it.
+  CHECK: bun test
+  EXPECT: 0 fail
+  EVIDENCE: Pinned SDK 18.8.2 suite passed 240 tests and 1006 assertions, including bind/rebind/revoke and bootstrap replay rejection.
+- [x] GW74-KEY: Re-registering a provider updates credentials for an existing SDK model object without writing either key to profile files or auth storage; the picker contains only gateway providers.
+  CHECK: bun test test/gateway.test.ts
+  EXPECT: 0 fail
+  EVIDENCE: Included in the passing suite above; noli-codex retains its native openai-codex-responses transport and origin base URL.
+- [x] GW74-SDK: Types, generated schema, extension loading, native controllers and isolated local plugin installation work on the pinned official runtime.
+  CHECK: bun run typecheck && bun run schema:check && bun run extension:check && bun run smoke:native && bun scripts/smoke-install.ts --local
+  EXPECT: NOLI_RELEASE_INSTALL_OK
+  EVIDENCE: All commands passed. The load-only install probe and actual session receive independent bootstrap inputs after one-use environment removal. No external model provider or production credential was used.
+- [ ] GW74-RELEASE: Independent review and Ubuntu/macOS CI pass before the orchestrator publishes the stable tag; published installation is verified separately.

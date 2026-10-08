@@ -8,7 +8,7 @@ import type { AgentSession, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { Server } from "bun";
 import { nativeControl } from "../src/native-controls";
 
-assert.equal(VERSION, "18.6.1");
+assert.equal(VERSION, "18.8.2");
 const dir = mkdtempSync(join(tmpdir(), "noli-native-smoke-"));
 let session: AgentSession | undefined;
 let server: Server<undefined> | undefined;

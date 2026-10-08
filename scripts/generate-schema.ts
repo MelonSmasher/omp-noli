@@ -41,7 +41,7 @@ function generate(type: ts.Type): Schema {
 	}
 	throw new Error(`Unsupported protocol type: ${checker.typeToString(type)}`);
 }
-for (const name of ["AgentView", "AgentOutputParams", "AgentOutputResult", "NavigateTreeParams", "GoalBudgetParams", "MemorySearchParams", "MemorySaveParams", "NativeControlResult"]) {
+for (const name of ["GatewayBindParams", "GatewayBindResult", "GatewayReadyResult", "GatewayBindRequest", "AgentView", "AgentOutputParams", "AgentOutputResult", "NavigateTreeParams", "GoalBudgetParams", "MemorySearchParams", "MemorySaveParams", "NativeControlResult"]) {
 	const declaration = declarations.get(name);
 	if (!declaration) throw new Error(`Missing ${name}`);
 	schema.$defs[name] = generate(checker.getTypeAtLocation(declaration));
@@ -60,6 +60,10 @@ schema.$defs.AgentOutputParams.properties.limit = { type: "integer", minimum: 1,
 const results = schema.$defs.Result.anyOf;
 if (!results.some((result: Schema) => result.$ref === "#/$defs/AgentOutputResult")) results.push({ $ref: "#/$defs/AgentOutputResult" });
 if (!results.some((result: Schema) => result.$ref === "#/$defs/NativeControlResult")) results.push({ $ref: "#/$defs/NativeControlResult" });
+for (const name of ["GatewayBindResult", "GatewayReadyResult"]) {
+    if (!results.some((result: Schema) => result.$ref === `#/$defs/${name}`)) results.push({ $ref: `#/$defs/${name}` });
+}
+if (!schema.$defs.ServerFrame.oneOf.some((frame: Schema) => frame.$ref === "#/$defs/GatewayBindRequest")) schema.$defs.ServerFrame.oneOf.push({ $ref: "#/$defs/GatewayBindRequest" });
 schema.$defs.GoalBudgetParams.properties.tokenBudget = { anyOf: [{ type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, { type: "null" }] };
 schema.$defs.MemorySearchParams.properties.limit = { type: "integer", minimum: 1, maximum: 1000 };
 schema.$defs.NativeControlResult.additionalProperties = true;

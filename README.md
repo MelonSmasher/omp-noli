@@ -4,11 +4,15 @@ An OMP extension that gives Noli a private local control channel. It runs next t
 
 ## Runtime and loading
 
-Requires official OMP **18.6.1 or newer** and **Bun 1.4.2 or newer in the OMP runtime**; verified against official OMP 18.6.1. No custom build is needed. Missing host APIs disable the affected capability with an explicit reason. Install development dependencies with `bun install`. Load the package root with `omp -e /path/to/omp-noli --mode rpc-ui`, or through the package's `omp.extensions` declaration.
+Requires official OMP **18.8.2 or newer** and **Bun 1.4.2 or newer in the OMP runtime**; verified against official OMP 18.8.2. No custom build is needed. Missing host APIs disable the affected capability with an explicit reason. Install development dependencies with `bun install`. Load the package root with `omp -e /path/to/omp-noli --mode rpc-ui`, or through the package's `omp.extensions` declaration.
 
 This checkout contains v0.6.0. Restart OMP sessions after updating. Package version is `0.6.0`; protocol version 1 is unchanged. Thread opening requires the matching Noli server/client update and negotiated `host.thread_open` capability. Stable publication and published-tag installation are verified separately from checkout checks.
 
-The launcher passes `NOLI_BRIDGE_DIR` and `NOLI_BRIDGE_TOKEN` in the child process environment. If either is missing, the extension does nothing. Use a fresh private directory for each OMP process and a cryptographically random token. Don't log the token or put it on the command line. The extension never writes the token to disk or sends it over RPC.
+The launcher passes `NOLI_BRIDGE_DIR` and the one-use `NOLI_BRIDGE_TOKEN` in the child process environment. If either is missing, the extension does nothing. Use a fresh private directory for each OMP process and a cryptographically random bootstrap token. The extension removes it from the environment at factory time and rejects it after the first authenticated hello. Don't log it or put it on the command line. The authenticated Unix transport stays open across session changes; Noli uses `session.adopt` instead of reusing hello.
+
+For managed Gateway sessions, Noli writes secret-free `gateway-providers.json` and the routing overlay before launch. The extension registers that catalog at factory time with `noli-pending`, then requests `gateway.bind {sessionId}` on the authenticated transport. Noli replies with `{token, expires_ms}`; SDK 18.8.2 provider re-registration replaces the in-memory key even for an existing model object. `gateway.ready` acknowledges installation before the first prompt. Session adoption and expiry refresh replace the key; disconnect and shutdown clear it. No Gateway credential is written to configuration or credential storage. The native Codex subscription provider remains `noli-codex` / `openai-codex-responses`, never API Responses.
+
+`test/gateway.test.ts` exercises the pinned real SDK registry, availability and auth storage before bind, after two keys and after revoke, and checks all temporary profile files for credential bytes. Bridge fixtures cover one-use hello, bind acknowledgement, stale-session rejection and rebind/revoke. The Noli repository owns the mock-upstream managed-process security smoke and actual Gateway 429 classifier fixture.
 
 ## v0.6.0 authorized thread opening and referenced images
 

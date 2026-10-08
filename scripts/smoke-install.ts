@@ -28,10 +28,14 @@ if (selection === "--verify") {
 	if (process.argv[5] === "--local") assert.equal(realpathSync(plugin.path), realpathSync(root), "Local installer links exactly the prepared source");
 	else assert.notEqual(realpathSync(plugin.path), realpathSync(root), "Published install loads downloaded source, not this checkout");
 	const entries = resolvePluginExtensionPaths(plugin);
+	const bootstrap = process.env.NOLI_BRIDGE_TOKEN;
 	assert.equal(entries.length, 1, "Installed manifest resolves one extension");
 	const loaded = await loadExtensions(entries, dir);
 	assert.deepEqual(loaded.errors, []);
 	assert.equal(loaded.extensions.length, 1);
+	// The load-only probe above consumes its bootstrap. The real session below
+	// independently initializes the installed factory with a fresh launcher input.
+	if (bootstrap !== undefined) process.env.NOLI_BRIDGE_TOKEN = bootstrap;
 	assert(loaded.extensions[0]!.handlers.has("tool_call"), "Installed extension initializes host-tool policy with authenticated bootstrap environment");
 	// Runtime-selected installed package path must not resolve to this checkout's protocol module.
 	const protocol = await import(join(plugin.path, "src/protocol.ts"));
@@ -70,7 +74,7 @@ if (selection === "--verify") {
 				clearTimeout(timeout);
 				resolveFrame(JSON.parse(buffered.slice(0, newline)) as ServerFrame);
 			});
-			socket.once("connect", () => socket!.write(`${JSON.stringify({ id: 1, method: "hello", params: { token: process.env.NOLI_BRIDGE_TOKEN } })}\n`));
+			socket.once("connect", () => socket!.write(`${JSON.stringify({ id: 1, method: "hello", params: { token: bootstrap } })}\n`));
 		});
 		assert(hello.type === "response" && hello.ok);
 		const advertised = hello.result as { capabilities?: Record<string, { api: string; available: boolean }> };

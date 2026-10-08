@@ -17,6 +17,7 @@ export const PROTOCOL_VERSION = 1;
 // ---------------------------------------------------------------- capabilities
 
 export const CAPABILITY_NAMES = [
+    "gateway.bind",
 	"agents.list",
 	"host.thread_read",
 	"host.thread_open",
@@ -256,6 +257,10 @@ export interface HelloResult {
 	pid: number;
 	capabilities: Capabilities;
 }
+export interface GatewayBindParams { sessionId: string }
+export interface GatewayBindResult { token: string; expires_ms: number }
+export interface GatewayReadyResult { bound: boolean }
+export interface GatewayBindRequest { type: "request"; id: string; method: "gateway.bind"; params: GatewayBindParams }
 
 // ---------------------------------------------------------------------- errors
 
