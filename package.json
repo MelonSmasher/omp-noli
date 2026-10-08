@@ -1,6 +1,6 @@
 {
   "name": "omp-noli",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": true,
   "type": "module",
   "description": "Session-scoped Noli control bridge for Oh My Pi",
