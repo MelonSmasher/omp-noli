@@ -6,7 +6,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { registerGateway } from "../src/gateway";
+import { registerGateway, rejoinGateway } from "../src/gateway";
 
 const model = { id: "gateway-test", name: "Gateway fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 512 };
 
@@ -39,5 +39,26 @@ test("pinned SDK re-register refreshes existing model credentials only in memory
 			expect(bytes.includes(Buffer.from(first))).toBe(false);
 			expect(bytes.includes(Buffer.from(second))).toBe(false);
 		}
+	} finally { auth.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a subagent factory re-registers the root's current credential after the SDK clears the source", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "noli-provider-"));
+	const auth = await AuthStorage.create(join(dir, "agent.db"));
+	try {
+		writeFileSync(join(dir, "gateway-providers.json"), JSON.stringify({ providers: {
+			"noli-openai": { baseUrl: "http://127.0.0.1:12345", api: "openai-completions", models: [model] },
+		} }));
+		const registry = new ModelRegistry(auth, join(dir, "models.yml"), { settings: Settings.isolated({ enabledModels: ["noli-*/*"] }) });
+		const pi = { registerProvider: (name, config) => registry.registerProvider(name, config, "noli-test") } as Pick<ExtensionAPI, "registerProvider"> as ExtensionAPI;
+		const token = "c".repeat(43);
+		registerGateway(pi, dir)!.bind({ token, expires_ms: Date.now() + 60_000 });
+		// What createAgentSession does for a subagent: clear this extension's registrations, then apply the child's.
+		registry.clearSourceRegistrations("noli-test");
+		expect(registry.find("noli-openai", model.id)).toBeUndefined();
+		rejoinGateway(pi);
+		const child = registry.find("noli-openai", model.id)!;
+		expect(child.baseUrl).toBe("http://127.0.0.1:12345/v1");
+		expect(await registry.getApiKey(child)).toBe(token);
 	} finally { auth.close(); rmSync(dir, { recursive: true, force: true }); }
 });

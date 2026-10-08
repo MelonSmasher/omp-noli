@@ -8,6 +8,20 @@ export interface GatewayProviders {
 	revoke(): void;
 }
 
+/**
+ * The root session's catalog and current credential, kept in memory only.
+ * Subagent sessions in the same process re-run every extension factory, and the
+ * SDK clears this extension's provider registrations before applying the new
+ * session's. The bootstrap is consumed by then, so a child re-registers from here.
+ */
+let current: { providers: [string, ProviderConfig][]; apiKey: string } | undefined;
+
+/** Re-register the root's Gateway providers for a subagent session; no-op without a bound root. */
+export function rejoinGateway(pi: ExtensionAPI): void {
+	if (!current) return;
+	for (const [name, config] of current.providers) pi.registerProvider(name, { ...config, apiKey: current.apiKey });
+}
+
 /** Factory-time catalog registration precedes OMP's initial model selection. */
 export function registerGateway(pi: ExtensionAPI, dir: string): GatewayProviders | undefined {
 	let text: string;
@@ -31,6 +45,8 @@ export function registerGateway(pi: ExtensionAPI, dir: string): GatewayProviders
 		return [name, { baseUrl: config.baseUrl + suffix, api: config.api, models: config.models }];
 	});
 	const register = (apiKey: string): void => {
+		current = { providers, apiKey };
+		// The registry is shared with subagent sessions, so this also refreshes their credential.
 		for (const [name, config] of providers) pi.registerProvider(name, { ...config, apiKey });
 	};
 	register("noli-pending");

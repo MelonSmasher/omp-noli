@@ -5,7 +5,7 @@ import { type Bridge, startBridge } from "./bridge";
 import { installImagePublisher } from "./images";
 import { createOmpHost } from "./omp-host";
 import { installThreadControl } from "./thread-control";
-import { registerGateway } from "./gateway";
+import { registerGateway, rejoinGateway } from "./gateway";
 
 /** Set by the launcher; a directory and bootstrap input enable Bridge and Gateway setup. */
 export const ENV_DIR = "NOLI_BRIDGE_DIR";
@@ -33,7 +33,8 @@ export default function noli(pi: ExtensionAPI): void {
 	const legacyToken = process.env.NOLI_BRIDGE_TOKEN;
 	delete process.env[ENV_TOKEN_FILE];
 	delete process.env.NOLI_BRIDGE_TOKEN;
-	if (!dir || (!tokenFile && !legacyToken)) return;
+	// A subagent session re-runs this factory after the root consumed the bootstrap; it only needs the Gateway models.
+	if (!dir || (!tokenFile && !legacyToken)) { rejoinGateway(pi); return; }
 	if (!tokenFile && existsSync(join(dir, "gateway-providers.json"))) {
 		throw new Error("Noli gateway binding requires NOLI_BRIDGE_TOKEN_FILE");
 	}

@@ -334,7 +334,7 @@ test("entrypoint registers no image tool unless both bridge launch variables exi
 	const dir = mkdtempSync(join(tmpdir(), "noli-image-bootstrap-"));
 	const tokenFile = join(dir, "bootstrap-token");
 	const names: string[] = [];
-	const pi = { ...f.pi, registerTool: (tool: ToolDefinition) => names.push(tool.name), pi: {}, events: { on: () => {} } } as unknown as ExtensionAPI;
+	const pi = { ...f.pi, registerTool: (tool: ToolDefinition) => names.push(tool.name), registerProvider: () => {}, pi: {}, events: { on: () => {} } } as unknown as ExtensionAPI;
 	try {
 		for (const [bridgeDir, file] of [[undefined, undefined], [dir, undefined], [undefined, tokenFile]]) {
 			if (bridgeDir) process.env[ENV_DIR] = bridgeDir; else delete process.env[ENV_DIR];
