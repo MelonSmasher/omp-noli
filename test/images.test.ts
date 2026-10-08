@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
-import noli, { ENV_DIR, ENV_TOKEN } from "../src/index";
+import noli, { ENV_DIR, ENV_TOKEN_FILE } from "../src/index";
 import { IMAGE_FETCH_TIMEOUT_MS, MAX_IMAGE_BYTES, installImagePublisher } from "../src/images";
 
 type ImageTool = ToolDefinition<zod.ZodLikeSchema<{ source: string; caption?: string }>, { status: string }>;
@@ -327,25 +327,29 @@ test("authenticated main request discovers the tool without persisted instructio
 	expect(f.published).toHaveLength(0);
 });
 
-test("entrypoint registers no image tool unless both bridge environment variables exist", () => {
+test("entrypoint registers no image tool unless both bridge launch variables exist", () => {
 	const f = fixture();
 	const originalDir = process.env[ENV_DIR];
-	const originalToken = process.env[ENV_TOKEN];
+	const originalTokenFile = process.env[ENV_TOKEN_FILE];
+	const dir = mkdtempSync(join(tmpdir(), "noli-image-bootstrap-"));
+	const tokenFile = join(dir, "bootstrap-token");
 	const names: string[] = [];
 	const pi = { ...f.pi, registerTool: (tool: ToolDefinition) => names.push(tool.name), pi: {}, events: { on: () => {} } } as unknown as ExtensionAPI;
 	try {
-		for (const [dir, token] of [[undefined, undefined], ["/tmp/bridge", undefined], [undefined, "test-token"]]) {
-			if (dir) process.env[ENV_DIR] = dir; else delete process.env[ENV_DIR];
-			if (token) process.env[ENV_TOKEN] = token; else delete process.env[ENV_TOKEN];
+		for (const [bridgeDir, file] of [[undefined, undefined], [dir, undefined], [undefined, tokenFile]]) {
+			if (bridgeDir) process.env[ENV_DIR] = bridgeDir; else delete process.env[ENV_DIR];
+			if (file) process.env[ENV_TOKEN_FILE] = file; else delete process.env[ENV_TOKEN_FILE];
 			noli(pi);
 		}
 		expect(names).toHaveLength(0);
-		process.env[ENV_DIR] = "/tmp/bridge";
-		process.env[ENV_TOKEN] = "test-token";
+		process.env[ENV_DIR] = dir;
+		writeFileSync(tokenFile, "test-token", { mode: 0o600 });
+		process.env[ENV_TOKEN_FILE] = tokenFile;
 		noli(pi);
 		expect(names).toEqual(["noli_show_image"]);
 	} finally {
 		if (originalDir === undefined) delete process.env[ENV_DIR]; else process.env[ENV_DIR] = originalDir;
-		if (originalToken === undefined) delete process.env[ENV_TOKEN]; else process.env[ENV_TOKEN] = originalToken;
+		if (originalTokenFile === undefined) delete process.env[ENV_TOKEN_FILE]; else process.env[ENV_TOKEN_FILE] = originalTokenFile;
+		rmSync(dir, { recursive: true, force: true });
 	}
 });

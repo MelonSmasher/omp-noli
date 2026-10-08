@@ -12,6 +12,9 @@
         },
         {
           "$ref": "#/$defs/EventFrame"
+        },
+        {
+          "$ref": "#/$defs/GatewayBindRequest"
         }
       ]
     },
@@ -109,6 +112,12 @@
         },
         {
           "$ref": "#/$defs/NativeControlResult"
+        },
+        {
+          "$ref": "#/$defs/GatewayBindResult"
+        },
+        {
+          "$ref": "#/$defs/GatewayReadyResult"
         }
       ]
     },
@@ -339,6 +348,7 @@
     },
     "CapabilityName": {
       "enum": [
+        "gateway.bind",
         "agents.list",
         "host.thread_read",
         "host.thread_open",
@@ -429,6 +439,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "gateway.bind",
         "agents.list",
         "host.thread_read",
         "host.thread_open",
@@ -449,6 +460,9 @@
         "memory.save"
       ],
       "properties": {
+        "gateway.bind": {
+          "$ref": "#/$defs/CapabilityState"
+        },
         "agents.list": {
           "$ref": "#/$defs/CapabilityState"
         },
@@ -1215,6 +1229,86 @@
           }
         }
       ]
+    },
+    "GatewayBindParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId"
+      ],
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      }
+    },
+    "GatewayBindResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "token",
+        "expires_ms"
+      ],
+      "properties": {
+        "token": {
+          "type": "string"
+        },
+        "expires_ms": {
+          "type": "number"
+        }
+      }
+    },
+    "GatewayReadyResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bound"
+      ],
+      "properties": {
+        "bound": {
+          "type": "boolean"
+        },
+        "renewalError": {
+          "anyOf": [
+            {
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "GatewayBindRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "type": {
+          "const": "request"
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "const": "gateway.bind"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sessionId"
+          ],
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            }
+          }
+        }
+      }
     }
   }
 }

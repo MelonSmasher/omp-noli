@@ -18,6 +18,8 @@ interface Frame {
 	error?: { code: string; message: string; capability?: string; reason?: string };
 	event?: string;
 	capabilities?: Capabilities;
+    method?: string;
+    params?: { sessionId: string };
 }
 
 function view(over: Partial<AgentView>): AgentView {
@@ -234,7 +236,9 @@ test("agent control authentication is revoked on adoption and disconnect", async
 	bridge.invalidateAuthentication();
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(false);
 	const replacement = await Client.connect(bridge.socketPath);
-	await replacement.call({ id: 2, method: "hello", params: { token: TOKEN } });
+	expect((await replacement.call({ id: 2, method: "hello", params: { token: TOKEN } })).ok).toBe(true);
+	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
+    expect((await call(client, "session.adopt", { sessionId: "sess-1" })).ok).toBe(true);
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
 	bridge.close();
 	await replacement.closedPromise;
@@ -252,6 +256,13 @@ async function authed(): Promise<Client> {
 	expect(hello.ok).toBe(true);
 	return client;
 }
+
+test("authenticated id-less response without a pending bind fails safely", async () => {
+	const client = await authed();
+	client.raw(`${JSON.stringify({ type: "response", ok: true })}\n`);
+	expect((await client.next()).error?.code).toBe("bad_request");
+	expect((await call(client, "capabilities.get")).ok).toBe(true);
+});
 
 function call(client: Client, method: string, params: Record<string, unknown> = {}, sessionId = h.session): Promise<Frame> {
 	return client.call({ id: 2, sessionId, method, params });
@@ -615,19 +626,19 @@ describe("events and shutdown", () => {
 		expect(first.error?.code).toBe("unauthorized");
 	});
 
-	test.each(["session switch", "same-session adoption"])("%s revokes both event streams until a fresh hello", async reason => {
+    test.each(["session switch", "same-session adoption"])("%s revokes events until authenticated transport adopts", async reason => {
 		const old = await authed();
 		if (reason === "session switch") h.session = "sess-2";
 		bridge.invalidateAuthentication();
-		const current = await authed();
+        for (const listener of h.listeners) listener(view({ id: "not-adopted", state: "idle" }));
+        expect((await call(old, "capabilities.get")).error?.code).toBe("stale_session");
+        expect((await call(old, "session.adopt", { sessionId: h.session })).ok).toBe(true);
+        const current = old;
 		for (const listener of h.listeners) listener(view({ id: "new-session-child", state: "idle" }));
 		for (const listener of h.capabilityListeners) listener(h.caps);
 		expect((await current.next()).event).toBe("agent.changed");
 		expect((await current.next()).event).toBe("capabilities.changed");
-		// The reply is a stream ordering barrier: leaked events would precede it.
-		const barrier = await call(old, "capabilities.get");
-		expect(barrier.event).toBeUndefined();
-		expect(barrier.error?.code).toBe("stale_session");
+        expect((await call(current, "capabilities.get")).ok).toBe(true);
 	});
 
 	test("close removes the socket and unsubscribes", () => {
@@ -662,4 +673,31 @@ describe("child output requests", () => {
 		expect(reply.error).toMatchObject({ code: "capability_unavailable", capability: "agents.output", reason: "export_missing" });
 		expect(h.calls).toEqual([]);
 	});
+});
+
+test("gateway binds after hello, refreshes on adoption and revokes on close", async () => {
+    bridge.close();
+    const credentials: string[] = [];
+    let revocations = 0;
+    bridge = startBridge({ dir, token: TOKEN, host: h.host, gateway: {
+        bind: value => { credentials.push(value.token); }, revoke: () => { revocations++; },
+    } });
+    const client = await authed();
+    const request = await client.next();
+    expect(request.method).toBe("gateway.bind");
+    expect(request.params).toEqual({ sessionId: "sess-1" });
+    client.raw(`${JSON.stringify({ type: "response", id: request.id, ok: true, result: { token: "a".repeat(43), expires_ms: Date.now() + 3_600_000 } })}\n`);
+    expect((await call(client, "gateway.ready")).result).toEqual({ bound: true });
+    expect(credentials).toEqual(["a".repeat(43)]);
+    h.session = "sess-2";
+    bridge.invalidateAuthentication();
+    client.raw(`${JSON.stringify({ id: 3, method: "session.adopt", sessionId: "sess-1", params: { sessionId: "sess-2" } })}\n`);
+    const rebound = await client.next();
+    expect(rebound.params).toEqual({ sessionId: "sess-2" });
+    client.raw(`${JSON.stringify({ type: "response", id: rebound.id, ok: true, result: { token: "b".repeat(43), expires_ms: Date.now() + 3_600_000 } })}\n`);
+    expect((await client.next()).result).toEqual({ bound: true });
+    expect(credentials).toEqual(["a".repeat(43), "b".repeat(43)]);
+    const before = revocations;
+    bridge.close();
+    expect(revocations).toBeGreaterThan(before);
 });

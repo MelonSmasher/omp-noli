@@ -82,3 +82,69 @@ Scope: One authenticated host-tool surface, main-agent enforcement, deferred lif
   EXPECT: tsc --noEmit
   EVIDENCE: Awaiting parent review and verification of Greptile discussion_r4202968419 correction.
 
+
+## Gateway binding 0.7.0
+
+- [x] GW74-BIND: One-use bootstrap authenticates one transport; gateway bind acknowledgement installs the key before prompt admission; adoption refreshes it and close revokes it.
+  CHECK: bun test
+  EXPECT: 0 fail
+  EVIDENCE: Pinned SDK 18.8.2 suite passed 240 tests and 1006 assertions, including bind/rebind/revoke and bootstrap replay rejection.
+- [x] GW74-KEY: Re-registering a provider updates credentials for an existing SDK model object without writing either key to profile files or auth storage; the picker contains only gateway providers.
+  CHECK: bun test test/gateway.test.ts
+  EXPECT: 0 fail
+  EVIDENCE: Included in the passing suite above; noli-codex retains its native openai-codex-responses transport and origin base URL.
+- [x] GW74-SDK: Types, generated schema, extension loading, native controllers and isolated local plugin installation work on the pinned official runtime.
+  CHECK: bun run typecheck && bun run schema:check && bun run extension:check && bun run smoke:native && bun scripts/smoke-install.ts --local
+  EXPECT: NOLI_RELEASE_INSTALL_OK
+  EVIDENCE: All commands passed. The load-only install probe and actual session receive independent bootstrap inputs after one-use environment removal. No external model provider or production credential was used.
+- [ ] GW74-RELEASE: Independent review and Ubuntu/macOS CI pass before the orchestrator publishes the stable tag; published installation is verified separately.
+
+## Gateway binding review corrections
+
+- [x] GW74-RV-COMPAT: Legacy clients may reconnect/re-hello without a Gateway catalog; catalog-backed hello remains one-use.
+  CHECK: bun test
+  EXPECT: 0 fail
+  EVIDENCE: bun test passed 250 tests, 0 failures, 1076 assertions on Bun 1.4.2 / SDK 18.8.2; separate legacy replacement-hello and catalog replay-rejection fixtures passed.
+- [x] GW74-RV-RENEW: Unexpired keys remain installed during renewal; failures/timeouts back off, actual expiry revokes, successful retry atomically replaces the key.
+  CHECK: bun test
+  EXPECT: 0 fail
+  EVIDENCE: Same passing suite covers delayed reply, rejected renewal with 1s/2s backoff, timeout, actual expiry, ignored late reply and successful replacement using the real SDK registry.
+- [x] GW74-RV-BOOTSTRAP: Process-launched factory consumes a private bootstrap file before implicit Bun children can retrieve the secret.
+  CHECK: bun test
+  EXPECT: 0 fail
+  EVIDENCE: Same passing suite launches Bun with only NOLI_BRIDGE_TOKEN_FILE, loads the actual factory and proves the file is gone and implicit child inheritance exposes neither bootstrap env secret nor readable bootstrap path. Symlink/mode rejection and native factory/session lifecycle also pass.
+- [x] GW74-RV-INSTALL: Frozen dependencies install without lockfile updates.
+  CHECK: bun install --frozen-lockfile
+  EXPECT: bun install
+  EVIDENCE: bun install --frozen-lockfile passed: 133 installs / 157 packages checked, no changes.
+- [x] GW74-RV-TYPES: Pinned TypeScript interfaces accept the completed correction.
+  CHECK: bun run typecheck
+  EXPECT: tsc --noEmit
+  EVIDENCE: bun run typecheck passed (tsc --noEmit).
+- [x] GW74-RV-SCHEMA: Protocol schema remains current.
+  CHECK: bun run schema:check
+  EXPECT: SCHEMA CURRENT
+  EVIDENCE: bun run schema:check passed (SCHEMA CURRENT).
+- [x] GW74-RV-LOAD: Official SDK loads the extension and consumes its bootstrap file.
+  CHECK: bun run extension:check
+  EXPECT: EXTENSION LOAD PASSED
+  EVIDENCE: bun run extension:check passed (EXTENSION LOAD PASSED).
+
+
+- [x] GW74-RV-LEGACY-LAUNCH: Non-Gateway launchers retain the released environment-token contract; Gateway catalogs refuse it before registration or bridge startup.
+  CHECK: bun test
+  EXPECT: 0 fail
+  EVIDENCE: bun install --frozen-lockfile, bun test (250 pass / 0 fail / 1076 assertions), typecheck, schema:check and extension:check all passed after this correction; the copied real SDK legacy-launch regression and explicit Gateway refusal fixture passed.
+
+
+- [x] GW74-PR13: Readiness tracks installed-key expiry, renewal health is safe and visible, long timers respect absolute deadlines, typed bind frames match the schema, and legacy launch authenticates without advertising unavailable binding.
+  CHECK: bun test && bun run typecheck && bun run schema:check && bun run extension:check
+  EXPECT: EXTENSION LOAD PASSED
+  EVIDENCE: bun install --frozen-lockfile passed unchanged. bun test passed 252 tests, 0 failures and 1093 assertions. Typecheck, schema:check (SCHEMA CURRENT) and extension:check (EXTENSION LOAD PASSED) passed. Codacy's one medium/one minor complexity-only findings are non-blocking under project policy; no complexity-only refactor was performed.
+
+
+- [x] GW74-PR13-R2: A bind reply and same-session adoption in one read share installation and cancellable renewal/expiry timers; id-less unmatched responses fail safely; unconfigured Gateway remains unavailable without false warnings.
+  CHECK: bun test && bun run typecheck && bun run schema:check && bun run extension:check
+  EXPECT: EXTENSION LOAD PASSED
+  EVIDENCE: bun install --frozen-lockfile passed unchanged; bun test passed 254 tests, 0 failures, 1104 assertions. Typecheck, schema:check and extension:check passed. One-write reply/adoption regression proves one renewal/expiry pair and no timer left after invalidation; id-less response regression proves a safe bad_request and subsequent successful request. Warning negative assertions retain the missing-read-tool positive control. README and bootstrap comment now describe disabled setup rather than claiming no guards install.
+

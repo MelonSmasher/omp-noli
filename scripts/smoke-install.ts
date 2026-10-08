@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -28,10 +28,18 @@ if (selection === "--verify") {
 	if (process.argv[5] === "--local") assert.equal(realpathSync(plugin.path), realpathSync(root), "Local installer links exactly the prepared source");
 	else assert.notEqual(realpathSync(plugin.path), realpathSync(root), "Published install loads downloaded source, not this checkout");
 	const entries = resolvePluginExtensionPaths(plugin);
+	const tokenFile = process.env.NOLI_BRIDGE_TOKEN_FILE;
+	const bootstrap = tokenFile === undefined ? undefined : readFileSync(tokenFile, "utf8");
 	assert.equal(entries.length, 1, "Installed manifest resolves one extension");
 	const loaded = await loadExtensions(entries, dir);
 	assert.deepEqual(loaded.errors, []);
 	assert.equal(loaded.extensions.length, 1);
+	// The load-only probe above consumes its bootstrap. The real session below
+	// independently initializes the installed factory with a fresh launcher input.
+	if (bootstrap !== undefined && tokenFile !== undefined) {
+		writeFileSync(tokenFile, bootstrap, { mode: 0o600 });
+		process.env.NOLI_BRIDGE_TOKEN_FILE = tokenFile;
+	}
 	assert(loaded.extensions[0]!.handlers.has("tool_call"), "Installed extension initializes host-tool policy with authenticated bootstrap environment");
 	// Runtime-selected installed package path must not resolve to this checkout's protocol module.
 	const protocol = await import(join(plugin.path, "src/protocol.ts"));
@@ -70,7 +78,7 @@ if (selection === "--verify") {
 				clearTimeout(timeout);
 				resolveFrame(JSON.parse(buffered.slice(0, newline)) as ServerFrame);
 			});
-			socket.once("connect", () => socket!.write(`${JSON.stringify({ id: 1, method: "hello", params: { token: process.env.NOLI_BRIDGE_TOKEN } })}\n`));
+			socket.once("connect", () => socket!.write(`${JSON.stringify({ id: 1, method: "hello", params: { token: bootstrap } })}\n`));
 		});
 		assert(hello.type === "response" && hello.ok);
 		const advertised = hello.result as { capabilities?: Record<string, { api: string; available: boolean }> };
@@ -126,7 +134,9 @@ if (selection === "--verify") {
 		const install = Bun.spawn([...cli, "plugin", "install", spec], { cwd: dir, env, stdout: "pipe", stderr: "pipe" });
 		const [out, err, exit] = await Promise.all([new Response(install.stdout).text(), new Response(install.stderr).text(), install.exited]);
 		assert.equal(exit, 0, `Official isolated installation failed: ${out}\n${err}`);
-		const verify = Bun.spawn([bun, import.meta.path, "--verify", dir, expectedVersion, local ? "--local" : "--published"], { cwd: dir, env: { ...env, NOLI_BRIDGE_DIR: bridgeDir, NOLI_BRIDGE_TOKEN: crypto.randomUUID() }, stdout: "pipe", stderr: "pipe" });
+		const tokenFile = join(bridgeDir, "bootstrap-token");
+		writeFileSync(tokenFile, crypto.randomUUID(), { mode: 0o600 });
+		const verify = Bun.spawn([bun, import.meta.path, "--verify", dir, expectedVersion, local ? "--local" : "--published"], { cwd: dir, env: { ...env, NOLI_BRIDGE_DIR: bridgeDir, NOLI_BRIDGE_TOKEN_FILE: tokenFile }, stdout: "pipe", stderr: "pipe" });
 		const [verified, failure, code] = await Promise.all([new Response(verify.stdout).text(), new Response(verify.stderr).text(), verify.exited]);
 		assert.equal(code, 0, `Installed extension verification failed: ${verified}\n${failure}`);
 		assert(verified.includes("NOLI_RELEASE_INSTALL_OK"));

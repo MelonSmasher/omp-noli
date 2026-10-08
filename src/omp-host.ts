@@ -140,7 +140,7 @@ export interface OmpHost {
 }
 
 /** Adapt the owning OMP SDK session into bridge operations and probed capability policy. */
-export function createOmpHost(pi: ExtensionAPI): OmpHost {
+export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpHost {
 	const exportsRecord: Record<string, unknown> = pi.pi;
 	const hasExport = (name: string): boolean => exportsRecord[name] !== undefined && exportsRecord[name] !== null;
 	const { AgentRegistry, discoverAgents, finalizeSubagentLifecycle, runSubagentFollowUpTurn, USER_INTERRUPT_LABEL } = pi.pi;
@@ -263,6 +263,9 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 			return result.ok ? available("internal", result.detail) : unavailable("internal", result.reason, result.detail);
 		};
 		return {
+			"gateway.bind": gatewayConfigured
+				? available("public", "Private in-memory gateway capability binding with one-time bootstrap")
+				: unavailable("public", "not_ready", "No Noli gateway catalog configured"),
 			...nativeCapabilities(current, mainSession() as AgentSession | undefined),
 			// Bootstrap support: Noli must negotiate v2 before registering its SDK host tool.
 			// installThreadControl separately requires authenticated SDK provenance at call time.
@@ -293,9 +296,9 @@ export function createOmpHost(pi: ExtensionAPI): OmpHost {
 	};
 	let capabilities = probeAll();
 
-	/** Warn for broken visible features; unsupported memory controls are silently omitted. */
+	/** Warn for broken visible features; unconfigured Gateway and unsupported memory controls are silently omitted. */
 	const warnUnavailable = (): void => {
-		const down = CAPABILITY_NAMES.filter(n => !n.startsWith("memory.") && !capabilities[n].available);
+		const down = CAPABILITY_NAMES.filter(n => !n.startsWith("memory.") && !(n === "gateway.bind" && !gatewayConfigured) && !capabilities[n].available);
 		const signature = down.map(n => `${n}:${capabilities[n].detail}`).join("|");
 		if (signature === warned) return;
 		warned = signature;

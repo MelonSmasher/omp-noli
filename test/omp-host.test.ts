@@ -471,6 +471,9 @@ describe("mapping OMP data onto the protocol", () => {
 			ctx.memory = undefined;
 			expect(omp.host.refreshCapabilities()["memory.status"].available).toBe(false);
 			expect(omp.host.refreshCapabilities()["memory.save"].available).toBe(false);
+			expect(omp.host.refreshCapabilities()["gateway.bind"].available).toBe(false);
+			expect(notices.every(notice => !notice.includes("gateway.bind"))).toBe(true);
+			expect(writes.every(message => !message.includes("gateway.bind"))).toBe(true);
 			expect(notices.every(notice => !notice.includes("memory."))).toBe(true);
 			expect(writes.every(message => !message.includes("memory."))).toBe(true);
 			const original = mainSession.getToolByName;

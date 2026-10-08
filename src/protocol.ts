@@ -17,6 +17,7 @@ export const PROTOCOL_VERSION = 1;
 // ---------------------------------------------------------------- capabilities
 
 export const CAPABILITY_NAMES = [
+    "gateway.bind",
 	"agents.list",
 	"host.thread_read",
 	"host.thread_open",
@@ -49,7 +50,7 @@ export const CAPABILITY_REASONS = [
 	"hook_changed",
 	/** The hook passed its shape check but misbehaved when used. */
 	"runtime_failure",
-	/** No top-level session yet. */
+	/** Required session or launcher configuration is not established. */
 	"not_ready",
 ] as const;
 export type CapabilityReason = (typeof CAPABILITY_REASONS)[number];
@@ -256,6 +257,10 @@ export interface HelloResult {
 	pid: number;
 	capabilities: Capabilities;
 }
+export interface GatewayBindParams { sessionId: string }
+export interface GatewayBindResult { token: string; expires_ms: number }
+export interface GatewayReadyResult { bound: boolean; /** Safe diagnostic while a working key is retained and renewal retries. */ renewalError?: string }
+export interface GatewayBindRequest { type: "request"; id: string; method: "gateway.bind"; params: GatewayBindParams }
 
 // ---------------------------------------------------------------------- errors
 
@@ -299,4 +304,4 @@ export type EventFrame =
 	| { type: "event"; event: "agent.changed"; sessionId: string; agent: AgentView }
 	| { type: "event"; event: "capabilities.changed"; sessionId: string; capabilities: Capabilities };
 
-export type ServerFrame = ResponseFrame | EventFrame;
+export type ServerFrame = ResponseFrame | EventFrame | GatewayBindRequest;

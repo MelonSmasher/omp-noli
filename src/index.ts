@@ -1,23 +1,47 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { type Bridge, startBridge } from "./bridge";
 import { installImagePublisher } from "./images";
 import { createOmpHost } from "./omp-host";
 import { installThreadControl } from "./thread-control";
+import { registerGateway } from "./gateway";
 
-/** Set by the launching app. Without both, the extension stays inert. */
+/** Set by the launcher; a directory and bootstrap input enable Bridge and Gateway setup. */
 export const ENV_DIR = "NOLI_BRIDGE_DIR";
-export const ENV_TOKEN = "NOLI_BRIDGE_TOKEN";
+export const ENV_TOKEN_FILE = "NOLI_BRIDGE_TOKEN_FILE";
+
+/** The launch environment contains only a path; Bun children cannot inherit secret bytes. */
+function consumeBootstrap(path: string): string {
+	const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+	try {
+		const stat = fstatSync(fd);
+		if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600
+			|| (typeof process.getuid === "function" && stat.uid !== process.getuid())
+			|| stat.size < 1 || stat.size > 4096) throw new Error("Invalid Noli bootstrap file");
+		try { return readFileSync(fd, "utf8"); }
+		finally { unlinkSync(path); }
+	} finally { closeSync(fd); }
+}
 
 export default function noli(pi: ExtensionAPI): void {
 	let bridge: Bridge | undefined;
 	let boundSession: string | undefined;
 	installThreadControl(pi, sessionId => bridge?.hasAuthenticatedSession(sessionId) ?? false);
 	const dir = process.env[ENV_DIR];
-	const token = process.env[ENV_TOKEN];
-	if (!dir || !token) return;
+	const tokenFile = process.env[ENV_TOKEN_FILE];
+	const legacyToken = process.env.NOLI_BRIDGE_TOKEN;
+	delete process.env[ENV_TOKEN_FILE];
+	delete process.env.NOLI_BRIDGE_TOKEN;
+	if (!dir || (!tokenFile && !legacyToken)) return;
+	if (!tokenFile && existsSync(join(dir, "gateway-providers.json"))) {
+		throw new Error("Noli gateway binding requires NOLI_BRIDGE_TOKEN_FILE");
+	}
+	const token = tokenFile ? consumeBootstrap(tokenFile) : legacyToken!;
 	installImagePublisher(pi, sessionId => bridge?.hasAuthenticatedSession(sessionId) ?? false);
+    const gateway = registerGateway(pi, dir);
 
-	const omp = createOmpHost(pi);
+	const omp = createOmpHost(pi, gateway !== undefined);
 
 	const adopt = (ctx: ExtensionContext): void => {
 		if (ctx.agent.kind !== "main") return;
@@ -27,7 +51,7 @@ export default function noli(pi: ExtensionAPI): void {
 		boundSession = sessionId;
 		bridge?.invalidateAuthentication();
 		omp.adopt(ctx);
-		bridge ??= startBridge({ dir, token, host: omp.host });
+        bridge ??= startBridge({ dir, token, host: omp.host, gateway });
 	};
 
 	pi.on("session_start", (_event, ctx) => adopt(ctx));

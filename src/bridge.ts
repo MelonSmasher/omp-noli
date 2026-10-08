@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { Socket, SocketListener } from "bun";
+import type { GatewayCredential, GatewayProviders } from "./gateway";
 import {
 	type AgentOutputParams,
 	type AgentOutputResult,
@@ -78,6 +79,16 @@ interface ConnectionState {
 	closed: boolean;
 	outbound: Buffer;
 	authenticatedSession?: string;
+	gatewayReady?: Promise<void>;
+	gatewayReply?: { id: string; resolve(value: GatewayCredential): void; reject(error: Error): void };
+	renewal?: NodeJS.Timeout;
+	expiry?: NodeJS.Timeout;
+	bindingTimeout?: NodeJS.Timeout;
+	bindingGeneration?: number;
+	retryDelay?: number;
+	installedExpiry?: number;
+	renewalError?: string;
+	installingCredential?: boolean;
 }
 
 /** The attachment policy is bootstrap permission, not proof that a client registered its tool. */
@@ -90,9 +101,10 @@ function clientCapabilities(capabilities: Capabilities, hostTools = false): Omit
 export interface BridgeOptions {
 	/** Directory that will contain the socket. Created 0700; must be owned by us and inaccessible to others. */
 	dir: string;
-	/** Shared secret the launching app passes through the environment. */
+	/** Shared bootstrap secret read from the launcher's private one-use file. */
 	token: string;
 	host: BridgeHost;
+    gateway?: GatewayProviders;
 }
 
 export interface Bridge {
@@ -144,6 +156,8 @@ export function startBridge(options: BridgeOptions): Bridge {
 
 	const sockets = new Set<Socket<ConnectionState>>();
 	const turnsInFlight = new Set<string>();
+    let bootstrapAvailable = true;
+    let bindingSequence = 0;
 
 	const flush = (socket: Socket<ConnectionState>): void => {
 		if (socket.data.closed || !socket.data.outbound.length) return;
@@ -159,6 +173,80 @@ export function startBridge(options: BridgeOptions): Bridge {
 		}
 		socket.data.outbound = Buffer.concat([socket.data.outbound, bytes]);
 		flush(socket);
+	};
+	// Node timers cannot represent delays beyond 2^31-1; re-arm against the absolute deadline.
+	const scheduleCredentialTimer = (socket: Socket<ConnectionState>, field: "renewal" | "expiry", deadline: number, action: () => void): void => {
+		const tick = (): void => {
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) { action(); return; }
+			socket.data[field] = setTimeout(tick, Math.min(remaining, 2_147_483_647));
+			socket.data[field]!.unref();
+		};
+		tick();
+	};
+	const revoke = (socket: Socket<ConnectionState>): void => {
+		clearTimeout(socket.data.renewal);
+		clearTimeout(socket.data.expiry);
+		clearTimeout(socket.data.bindingTimeout);
+		socket.data.bindingGeneration = (socket.data.bindingGeneration ?? 0) + 1;
+		socket.data.gatewayReply?.reject(new Error("Noli gateway connection closed"));
+		socket.data.gatewayReply = undefined;
+		socket.data.gatewayReady = undefined;
+		socket.data.retryDelay = undefined;
+		socket.data.installedExpiry = undefined;
+		socket.data.renewalError = undefined;
+		socket.data.installingCredential = false;
+		options.gateway?.revoke();
+	};
+	const bind = (socket: Socket<ConnectionState>): Promise<void> => {
+		if (!options.gateway) return Promise.resolve();
+		if (socket.data.gatewayReply || socket.data.installingCredential) return socket.data.gatewayReady!;
+		clearTimeout(socket.data.renewal);
+		const sessionId = host.sessionId();
+		const generation = socket.data.bindingGeneration ?? 0;
+		const current = (): boolean => !socket.data.closed && (socket.data.bindingGeneration ?? 0) === generation
+			&& socket.data.authenticatedSession === sessionId && host.sessionId() === sessionId;
+		const ready = new Promise<GatewayCredential>((resolve, reject) => {
+			const id = `gateway:${++bindingSequence}`;
+			socket.data.gatewayReply = { id, resolve, reject };
+			socket.data.bindingTimeout = setTimeout(() => {
+				if (socket.data.gatewayReply?.id !== id) return;
+				socket.data.gatewayReply = undefined;
+				reject(new Error("Noli gateway binding timed out"));
+			}, 10_000);
+			socket.data.bindingTimeout.unref();
+			send(socket, { type: "request", id, method: "gateway.bind", params: { sessionId } });
+		}).then(credential => {
+			if (!current()) throw new Error("Noli gateway session changed");
+			// Same-session renewal leaves the working key installed until this synchronous replacement.
+			options.gateway!.bind(credential);
+			clearTimeout(socket.data.renewal);
+			clearTimeout(socket.data.expiry);
+			socket.data.retryDelay = undefined;
+			socket.data.installedExpiry = credential.expires_ms;
+			socket.data.renewalError = undefined;
+			socket.data.installingCredential = false;
+			const lifetime = credential.expires_ms - Date.now();
+			scheduleCredentialTimer(socket, "renewal", credential.expires_ms - Math.min(60_000, lifetime / 2), () => { void bind(socket); });
+			scheduleCredentialTimer(socket, "expiry", credential.expires_ms, () => {
+				if (!current()) return;
+				options.gateway!.revoke();
+			});
+		}).catch(error => {
+			if (current()) {
+				socket.data.installingCredential = false;
+				socket.data.renewalError = "Noli gateway binding failed; retrying";
+				const delay = socket.data.retryDelay ?? 1_000;
+				socket.data.retryDelay = Math.min(delay * 2, 30_000);
+				socket.data.renewal = setTimeout(() => { void bind(socket); }, delay);
+				socket.data.renewal.unref();
+			}
+			throw error;
+		});
+		// RPC gateway.ready receives the failure; never emit credentials or an unhandled rejection.
+		void ready.catch(() => {});
+		socket.data.gatewayReady = ready;
+		return ready;
 	};
 
 	const requireCapability = (name: CapabilityName): void => {
@@ -288,28 +376,64 @@ export function startBridge(options: BridgeOptions): Bridge {
 			closeIfUnauthed();
 			return;
 		}
+		const pending = socket.data.gatewayReply;
+		if (socket.data.authed && record.type === "response" && pending && record.id === pending.id) {
+            socket.data.gatewayReply = undefined;
+			clearTimeout(socket.data.bindingTimeout);
+			if (record.ok === true) {
+				socket.data.installingCredential = true;
+				pending.resolve(record.result as GatewayCredential);
+			}
+            else pending.reject(new Error("Noli gateway binding was rejected"));
+            return;
+        }
 
 		if (!socket.data.authed) {
 			const helloParams = record.params && typeof record.params === "object" && "token" in record.params ? record.params : undefined;
-			if (record.method !== "hello" || !tokenMatches(token, helloParams?.token)) {
+			if ((options.gateway && !bootstrapAvailable) || record.method !== "hello" || !tokenMatches(token, helloParams?.token)) {
 				fail({ code: "unauthorized", message: "hello with a valid token is required" });
 				socket.data.closed = true;
 				socket.end();
 				return;
 			}
+			if (options.gateway) bootstrapAvailable = false;
 			socket.data.authed = true;
 			socket.data.authenticatedSession = host.sessionId();
 			const hello = { protocol: PROTOCOL_VERSION, sessionId: host.sessionId(), pid: process.pid, capabilities: clientCapabilities(host.refreshCapabilities()) };
 			send(socket, Buffer.from(`${JSON.stringify({ type: "response", id, ok: true, result: hello })}\n`));
+            void bind(socket);
 			return;
 		}
 
 		if (typeof record.method !== "string") return fail({ code: "bad_request", message: "method must be a string" });
+        if (record.method === "session.adopt") {
+            const params = record.params as Params | undefined;
+            if (params?.sessionId !== host.sessionId()) return fail({ code: "stale_session", message: "Cannot adopt a foreign session" });
+			if (socket.data.authenticatedSession !== host.sessionId()) revoke(socket);
+            socket.data.authenticatedSession = host.sessionId();
+            try {
+                await bind(socket);
+                send(socket, { type: "response", id, ok: true, result: { bound: true } });
+            } catch { fail({ code: "not_ready", message: "Noli gateway binding failed" }); }
+            return;
+        }
 		if (socket.data.authenticatedSession !== host.sessionId() || record.sessionId !== host.sessionId()) {
 			return fail({ code: "stale_session", message: "connection or request targets a different session; authenticate again" });
 		}
 		try {
 			const params = record.params && typeof record.params === "object" && !Array.isArray(record.params) ? (record.params as Params) : {};
+            if (record.method === "gateway.ready") {
+				if (!options.gateway) throw new BridgeError("not_ready", "Noli gateway is not configured");
+				if ((socket.data.installedExpiry === undefined || socket.data.installingCredential) && socket.data.gatewayReady) {
+					try { await socket.data.gatewayReady; } catch { /* Report installed-key state below, not attempt state. */ }
+				}
+				if (socket.data.authenticatedSession !== host.sessionId()) throw new BridgeError("stale_session", "Noli gateway session changed");
+				if ((socket.data.installedExpiry ?? 0) <= Date.now()) {
+					throw new BridgeError("not_ready", socket.data.renewalError ?? "Noli gateway has no unexpired credential");
+				}
+				send(socket, { type: "response", id, ok: true, result: { bound: true, ...(socket.data.renewalError ? { renewalError: socket.data.renewalError } : {}) } });
+                return;
+            }
 			const result = await dispatch(record.method, params);
 			const responseBytes = Buffer.from(`${JSON.stringify({ type: "response", id, ok: true, result })}\n`);
 			if ((NATIVE_METHODS as readonly string[]).includes(record.method) && responseBytes.length > MAX_FRAME_BYTES) throw new BridgeError("frame_too_large", "Native result exceeds the negotiated frame limit; outcome may already be applied, do not replay mutations");
@@ -372,10 +496,12 @@ export function startBridge(options: BridgeOptions): Bridge {
 			},
 			close(socket) {
 				socket.data.closed = true;
+                if (socket.data.authed) revoke(socket);
 				sockets.delete(socket);
 			},
 			error(socket) {
 				socket.data.closed = true;
+                if (socket.data.authed) revoke(socket);
 				sockets.delete(socket);
 			},
 		},
@@ -391,12 +517,12 @@ export function startBridge(options: BridgeOptions): Bridge {
 			return false;
 		},
 		invalidateAuthentication() {
-			for (const socket of sockets) socket.data.authenticatedSession = undefined;
+            for (const socket of sockets) { socket.data.authenticatedSession = undefined; revoke(socket); }
 		},
 		close() {
 			unsubscribeAgents();
 			unsubscribeCapabilities();
-			for (const socket of sockets) socket.end();
+            for (const socket of sockets) { revoke(socket); socket.end(); }
 			sockets.clear();
 			listener.stop(true);
 			try {
