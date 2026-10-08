@@ -50,6 +50,46 @@ class Client {
   }
   async call(frame: object) { this.send(frame); return this.next(); }
 }
+
+test("review: bind reply and same-session adoption share one installation and cancellable timer", async () => {
+  const f = await fixture();
+  const bridge = startBridge({ dir: f.dir, token: bootstrap, host: host(() => "session"), gateway: f.gateway });
+  const client = new Client(bridge.socketPath);
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const realNow = Date.now;
+  const now = realNow();
+  const timers = new Map<NodeJS.Timeout | number, number | undefined>();
+  Date.now = () => now;
+  globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+    const timer = realSetTimeout(handler, delay, ...args);
+    timers.set(timer, delay);
+    return timer;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((timer: NodeJS.Timeout | number | undefined) => {
+    if (timer) timers.delete(timer);
+    realClearTimeout(timer);
+  }) as typeof clearTimeout;
+  try {
+    await client.call({ id: 1, method: "hello", params: { token: bootstrap } });
+    const initial = await client.next();
+    // One write forces the bridge's synchronous frame loop to see adoption before promise installation.
+    client.socket.write([
+      { type: "response", id: initial.id, ok: true, result: { token: first, expires_ms: now + 3_600_000 } },
+      { id: 2, method: "session.adopt", sessionId: "session", params: { sessionId: "session" } },
+    ].map(frame => JSON.stringify(frame)).join("\n") + "\n");
+    const adoption = await client.next();
+    expect(adoption.method).toBeUndefined();
+    expect(adoption.ok).toBe(true);
+    expect([...timers.values()].filter(delay => delay === 3_540_000)).toHaveLength(1);
+    expect([...timers.values()].filter(delay => delay === 3_600_000)).toHaveLength(1);
+    bridge.invalidateAuthentication();
+    expect(timers.size).toBe(0);
+  } finally {
+    client.socket.destroy(); bridge.close(); f.dispose();
+    globalThis.setTimeout = realSetTimeout; globalThis.clearTimeout = realClearTimeout; Date.now = realNow;
+  }
+});
 function host(session: () => string): BridgeHost {
   const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, available("public", "review")])) as Capabilities;
   return { sessionId: session, capabilities: () => capabilities, refreshCapabilities: () => capabilities,

@@ -200,7 +200,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 	};
 	const bind = (socket: Socket<ConnectionState>): Promise<void> => {
 		if (!options.gateway) return Promise.resolve();
-		if (socket.data.gatewayReply) return socket.data.gatewayReady!;
+		if (socket.data.gatewayReply || socket.data.installingCredential) return socket.data.gatewayReady!;
 		clearTimeout(socket.data.renewal);
 		const sessionId = host.sessionId();
 		const generation = socket.data.bindingGeneration ?? 0;
@@ -220,6 +220,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 			if (!current()) throw new Error("Noli gateway session changed");
 			// Same-session renewal leaves the working key installed until this synchronous replacement.
 			options.gateway!.bind(credential);
+			clearTimeout(socket.data.renewal);
 			clearTimeout(socket.data.expiry);
 			socket.data.retryDelay = undefined;
 			socket.data.installedExpiry = credential.expires_ms;
@@ -375,8 +376,8 @@ export function startBridge(options: BridgeOptions): Bridge {
 			closeIfUnauthed();
 			return;
 		}
-        if (socket.data.authed && record.type === "response" && record.id === socket.data.gatewayReply?.id) {
-            const pending = socket.data.gatewayReply!;
+		const pending = socket.data.gatewayReply;
+		if (socket.data.authed && record.type === "response" && pending && record.id === pending.id) {
             socket.data.gatewayReply = undefined;
 			clearTimeout(socket.data.bindingTimeout);
 			if (record.ok === true) {

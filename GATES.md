@@ -142,3 +142,9 @@ Scope: One authenticated host-tool surface, main-agent enforcement, deferred lif
   EXPECT: EXTENSION LOAD PASSED
   EVIDENCE: bun install --frozen-lockfile passed unchanged. bun test passed 252 tests, 0 failures and 1093 assertions. Typecheck, schema:check (SCHEMA CURRENT) and extension:check (EXTENSION LOAD PASSED) passed. Codacy's one medium/one minor complexity-only findings are non-blocking under project policy; no complexity-only refactor was performed.
 
+
+- [x] GW74-PR13-R2: A bind reply and same-session adoption in one read share installation and cancellable renewal/expiry timers; id-less unmatched responses fail safely; unconfigured Gateway remains unavailable without false warnings.
+  CHECK: bun test && bun run typecheck && bun run schema:check && bun run extension:check
+  EXPECT: EXTENSION LOAD PASSED
+  EVIDENCE: bun install --frozen-lockfile passed unchanged; bun test passed 254 tests, 0 failures, 1104 assertions. Typecheck, schema:check and extension:check passed. One-write reply/adoption regression proves one renewal/expiry pair and no timer left after invalidation; id-less response regression proves a safe bad_request and subsequent successful request. Warning negative assertions retain the missing-read-tool positive control. README and bootstrap comment now describe disabled setup rather than claiming no guards install.
+

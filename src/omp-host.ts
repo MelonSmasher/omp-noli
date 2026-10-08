@@ -296,9 +296,9 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 	};
 	let capabilities = probeAll();
 
-	/** Warn for broken visible features; unsupported memory controls are silently omitted. */
+	/** Warn for broken visible features; unconfigured Gateway and unsupported memory controls are silently omitted. */
 	const warnUnavailable = (): void => {
-		const down = CAPABILITY_NAMES.filter(n => !n.startsWith("memory.") && !capabilities[n].available);
+		const down = CAPABILITY_NAMES.filter(n => !n.startsWith("memory.") && !(n === "gateway.bind" && !gatewayConfigured) && !capabilities[n].available);
 		const signature = down.map(n => `${n}:${capabilities[n].detail}`).join("|");
 		if (signature === warned) return;
 		warned = signature;

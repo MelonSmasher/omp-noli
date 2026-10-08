@@ -7,7 +7,7 @@ import { createOmpHost } from "./omp-host";
 import { installThreadControl } from "./thread-control";
 import { registerGateway } from "./gateway";
 
-/** Set by the launching app. Without a directory and bootstrap input, the extension stays inert. */
+/** Set by the launcher; a directory and bootstrap input enable Bridge and Gateway setup. */
 export const ENV_DIR = "NOLI_BRIDGE_DIR";
 export const ENV_TOKEN_FILE = "NOLI_BRIDGE_TOKEN_FILE";
 

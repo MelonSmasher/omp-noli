@@ -50,7 +50,7 @@ export const CAPABILITY_REASONS = [
 	"hook_changed",
 	/** The hook passed its shape check but misbehaved when used. */
 	"runtime_failure",
-	/** No top-level session yet. */
+	/** Required session or launcher configuration is not established. */
 	"not_ready",
 ] as const;
 export type CapabilityReason = (typeof CAPABILITY_REASONS)[number];

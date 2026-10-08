@@ -257,6 +257,13 @@ async function authed(): Promise<Client> {
 	return client;
 }
 
+test("authenticated id-less response without a pending bind fails safely", async () => {
+	const client = await authed();
+	client.raw(`${JSON.stringify({ type: "response", ok: true })}\n`);
+	expect((await client.next()).error?.code).toBe("bad_request");
+	expect((await call(client, "capabilities.get")).ok).toBe(true);
+});
+
 function call(client: Client, method: string, params: Record<string, unknown> = {}, sessionId = h.session): Promise<Frame> {
 	return client.call({ id: 2, sessionId, method, params });
 }
