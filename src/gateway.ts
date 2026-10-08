@@ -13,24 +13,35 @@ export interface GatewayProviders {
  * Subagent sessions in the same process re-run every extension factory, and the
  * SDK clears this extension's provider registrations before applying the new
  * session's. The bootstrap is consumed by then, so a child re-registers from here.
- * `dir` scopes it to the root's own Noli launch: other factories get nothing.
+ *
+ * Noli issues one capability per managed OMP launch, identified by NOLI_BRIDGE_DIR.
+ * Every session in that process (task subagents, /tan, commit and compaction
+ * agents) is that launch's own work, so a factory for the same directory may use it;
+ * a factory for any other or no directory gets nothing.
  */
 let current: { dir: string; providers: [string, ProviderConfig][]; apiKey: string } | undefined;
+/** Sessions that rejoined, so a bind or revoke also reaches ones with their own registry. */
+const joined = new Set<ExtensionAPI>();
 
-/**
- * Re-register the bound root's Gateway providers for one of its subagent sessions.
- * The SDK queues factory registrations and applies them later, so the child also
- * re-applies the binding when its session starts: a bind or revoke that landed in
- * between is never overwritten by the queued copy.
- */
+function install(pi: ExtensionAPI, dir: string): void {
+	if (current?.dir !== dir) return;
+	for (const [name, config] of current.providers) {
+		// The SDK queues a factory's registrations and applies them after clearing this
+		// source, so the key is read then, never captured now: a bind or revoke in between,
+		// or a startup that is later cancelled, can't install a stale credential.
+		pi.registerProvider(name, Object.defineProperty({ ...config }, "apiKey", {
+			enumerable: true,
+			get: () => current?.dir === dir ? current.apiKey : "noli-pending",
+		}));
+	}
+}
+
+/** Re-register the bound launch's Gateway providers for another session in this process. */
 export function rejoinGateway(pi: ExtensionAPI, dir: string | undefined): void {
 	if (!dir || current?.dir !== dir) return;
-	const apply = (): void => {
-		if (current?.dir !== dir) return;
-		for (const [name, config] of current.providers) pi.registerProvider(name, { ...config, apiKey: current.apiKey });
-	};
-	apply();
-	pi.on("session_start", apply);
+	install(pi, dir);
+	joined.add(pi);
+	pi.on("session_shutdown", () => { joined.delete(pi); });
 }
 
 /** Factory-time catalog registration precedes OMP's initial model selection. */
@@ -57,8 +68,9 @@ export function registerGateway(pi: ExtensionAPI, dir: string): GatewayProviders
 	});
 	const register = (apiKey: string): void => {
 		current = { dir, providers, apiKey };
-		// The registry is shared with subagent sessions, so this also refreshes their credential.
 		for (const [name, config] of providers) pi.registerProvider(name, { ...config, apiKey });
+		// Sessions sharing the root's registry already see this; ones with their own need it pushed.
+		for (const other of joined) install(other, dir);
 	};
 	register("noli-pending");
 	return {

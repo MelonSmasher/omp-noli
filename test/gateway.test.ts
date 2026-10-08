@@ -44,25 +44,20 @@ test("pinned SDK re-register refreshes existing model credentials only in memory
 
 /**
  * A child session's factory API with SDK 18.8.2 ordering: registrations made while the
- * factory runs are queued (loader.ts); createAgentSession clears this source and applies
- * the queue (sdk.ts); from then on the runner applies registrations immediately
- * (runner.ts), and session_start fires.
+ * factory runs are queued (loader.ts); createAgentSession later clears this source and
+ * applies the queue (sdk.ts). A cancelled startup never reaches session_start.
  */
 function childSession(registry: ModelRegistry) {
 	const queued: [string, ProviderConfig][] = [];
-	const starts: (() => void)[] = [];
-	let live = false;
 	const pi = {
-		registerProvider: (name: string, config: ProviderConfig) => live ? registry.registerProvider(name, config, "noli-test") : queued.push([name, config]),
-		on: (event: string, handler: () => void) => { if (event === "session_start") starts.push(handler); },
+		registerProvider: (name: string, config: ProviderConfig) => queued.push([name, config]),
+		on: () => {},
 	} as unknown as ExtensionAPI;
 	return {
 		pi,
-		initialize() {
+		applyQueue() {
 			registry.clearSourceRegistrations("noli-test");
 			for (const [name, config] of queued.splice(0)) registry.registerProvider(name, config, "noli-test");
-			live = true;
-			for (const start of starts) start();
 		},
 	};
 }
@@ -87,13 +82,13 @@ test("a subagent of the bound root gets the Gateway models with the root's curre
 		root.gateway.bind({ token, expires_ms: Date.now() + 60_000 });
 		const child = childSession(root.registry);
 		rejoinGateway(child.pi, root.dir);
-		child.initialize();
+		child.applyQueue();
 		expect(root.registry.find("noli-openai", model.id)?.baseUrl).toBe("http://127.0.0.1:12345/v1");
 		expect(await root.key()).toBe(token);
 	} finally { root.close(); }
 });
 
-test("a bind or revoke between a child's factory and its session start is never overwritten by the queued copy", async () => {
+test("a bind or revoke between a child's factory and the SDK applying its queue is what gets installed", async () => {
 	const root = await rootGateway();
 	try {
 		root.gateway.bind({ token: "d".repeat(43), expires_ms: Date.now() + 60_000 });
@@ -101,12 +96,13 @@ test("a bind or revoke between a child's factory and its session start is never 
 		rejoinGateway(renewed.pi, root.dir);
 		const fresh = "e".repeat(43);
 		root.gateway.bind({ token: fresh, expires_ms: Date.now() + 60_000 });
-		renewed.initialize();
+		// Applying the queue is the last thing a cancelled startup does; no later event repairs it.
+		renewed.applyQueue();
 		expect(await root.key()).toBe(fresh);
 		const revoked = childSession(root.registry);
 		rejoinGateway(revoked.pi, root.dir);
 		root.gateway.revoke();
-		revoked.initialize();
+		revoked.applyQueue();
 		expect(await root.key()).toBe("noli-pending");
 	} finally { root.close(); }
 });
@@ -122,4 +118,28 @@ test("a factory outside the bound root's launch never receives its credential", 
 			expect(registered).toEqual([]);
 		}
 	} finally { root.close(); }
+});
+
+test("a session of the same launch with its own registry follows later binds and stops after shutdown", async () => {
+	const root = await rootGateway();
+	const auth = await AuthStorage.create(join(root.dir, "other.db"));
+	try {
+		const registry = new ModelRegistry(auth, join(root.dir, "other-models.yml"), { settings: Settings.isolated({ enabledModels: ["noli-*/*"] }) });
+		let shutdown = () => {};
+		const pi = {
+			registerProvider: (name: string, config: ProviderConfig) => registry.registerProvider(name, config, "noli-test"),
+			on: (event: string, handler: () => void) => { if (event === "session_shutdown") shutdown = handler; },
+		} as unknown as ExtensionAPI;
+		root.gateway.bind({ token: "g".repeat(43), expires_ms: Date.now() + 60_000 });
+		rejoinGateway(pi, root.dir);
+		const key = async () => await registry.getApiKey(registry.find("noli-openai", model.id)!);
+		expect(await key()).toBe("g".repeat(43));
+		root.gateway.bind({ token: "h".repeat(43), expires_ms: Date.now() + 60_000 });
+		expect(await key()).toBe("h".repeat(43));
+		root.gateway.revoke();
+		expect(await key()).toBe("noli-pending");
+		shutdown();
+		root.gateway.bind({ token: "i".repeat(43), expires_ms: Date.now() + 60_000 });
+		expect(await key()).toBe("noli-pending");
+	} finally { auth.close(); root.close(); }
 });
