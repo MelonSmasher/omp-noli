@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentSession, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
@@ -14,13 +14,15 @@ interface NativeResponse { type: "response"; ok: boolean; result?: { cancelled?:
 test("official extension tree event preserves authenticated same-session navigation response", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "noli-native-lifecycle-"));
 	const oldDir = process.env.NOLI_BRIDGE_DIR;
-	const oldToken = process.env.NOLI_BRIDGE_TOKEN;
+	const oldTokenFile = process.env.NOLI_BRIDGE_TOKEN_FILE;
 	let session: AgentSession | undefined;
 	let socket: Socket<undefined> | undefined;
 	try {
 		process.env.NOLI_BRIDGE_DIR = dir;
         const bootstrap = crypto.randomUUID();
-        process.env.NOLI_BRIDGE_TOKEN = bootstrap;
+		const tokenFile = join(dir, "bootstrap-token");
+		writeFileSync(tokenFile, bootstrap, { mode: 0o600 });
+		process.env.NOLI_BRIDGE_TOKEN_FILE = tokenFile;
 		const manager = SessionManager.create(dir, join(dir, "sessions"));
 		const created = await createAgentSession({ cwd: dir, agentDir: join(dir, "agent"), sessionManager: manager, settings: Settings.isolated({ "memory.backend": "off" }), toolNames: [], enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, additionalExtensionPaths: [join(import.meta.dir, "../src/index.ts")], cacheWarming: false });
 		session = created.session;
@@ -33,7 +35,8 @@ test("official extension tree event preserves authenticated same-session navigat
 		const pending: Array<(frame: NativeResponse) => void> = [];
 		socket = await Bun.connect({ unix: join(dir, `omp-${process.pid}.sock`), socket: { data(_socket, bytes) { buffer += bytes.toString(); for (;;) { const end = buffer.indexOf("\n"); if (end < 0) break; const parsed: unknown = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1); assertValidFrame(parsed); const response = responseSchema.safeParse(parsed); if (response.success) pending.shift()?.(response.data); } } } });
 		const call = (method: string, params: Record<string, unknown>) => new Promise<NativeResponse>(resolve => { pending.push(resolve); socket!.write(`${JSON.stringify({ id: pending.length, method, params, sessionId: manager.getSessionId() })}\n`); });
-        expect(process.env.NOLI_BRIDGE_TOKEN).toBeUndefined();
+		expect(process.env.NOLI_BRIDGE_TOKEN_FILE).toBeUndefined();
+		expect(existsSync(tokenFile)).toBe(false);
         expect((await call("hello", { token: bootstrap })).ok).toBe(true);
 		const result = await call("tree.navigate", { targetId: target, summarize: false });
 		expect(result.ok).toBe(true);
@@ -51,7 +54,7 @@ test("official extension tree event preserves authenticated same-session navigat
 		socket?.terminate();
 		await session?.dispose();
 		if (oldDir === undefined) delete process.env.NOLI_BRIDGE_DIR; else process.env.NOLI_BRIDGE_DIR = oldDir;
-		if (oldToken === undefined) delete process.env.NOLI_BRIDGE_TOKEN; else process.env.NOLI_BRIDGE_TOKEN = oldToken;
+		if (oldTokenFile === undefined) delete process.env.NOLI_BRIDGE_TOKEN_FILE; else process.env.NOLI_BRIDGE_TOKEN_FILE = oldTokenFile;
 		rmSync(dir, { recursive: true, force: true });
 	}
 }, 30_000);

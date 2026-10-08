@@ -291,12 +291,14 @@ try {
 	});
 	writeFileSync(join(agentDir, "models.yml"), JSON.stringify({ providers: { [provider]: { api: "openai-completions", baseUrl: `http://127.0.0.1:${endpoint.port}/v1`, apiKey: "CHILD_SMOKE_LOCAL_KEY", models: [rootModel, childModel].map(id => ({ id, name: id, reasoning: true, thinking: { mode: "effort", efforts: ["low", "medium", "high"] }, input: ["text"], contextWindow: id === rootModel ? 32768 : 65536, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, compat: { supportsReasoningEffort: true, supportsStrictMode: false, supportsDeveloperRole: false, supportsStore: false } })) } } }));
 	writeFileSync(join(agentDir, "config.yml"), JSON.stringify({ modelRoles: { default: `${provider}/${rootModel}:low`, smol: `${provider}/${rootModel}:low` }, task: { agentIdleTtlMs: 1800, batch: true, prewalk: false, isolation: { enabled: false } }, async: { enabled: false }, providers: { cacheWarming: "off" }, advisor: { enabled: false }, memory: { backend: "off" }, compaction: { enabled: false }, browser: { enabled: false }, mcp: { enabled: false }, telemetry: { enabled: false } }));
+	const tokenFile = join(bridgeDir, "bootstrap-token");
+	writeFileSync(tokenFile, bridgeToken, { mode: 0o600 });
 	// Explicit allowlist: inherited credentials, gateway/profile/overlay variables cannot escape.
 	const environment: Record<string, string> = {
 		PATH: process.env.PATH ?? "", HOME: home, TMPDIR: temporary, XDG_CONFIG_HOME: join(home, ".config"), XDG_CACHE_HOME: join(home, ".cache"), XDG_DATA_HOME: join(home, ".local", "share"),
 		LANG: "en_US.UTF-8", TERM: "dumb", NO_COLOR: "1", CI: "1", PI_NO_PTY: "1", PI_PYTHON_SKIP_CHECK: "1",
 		CHILD_SMOKE_LOCAL_KEY: "local-fixture-not-a-credential", CHILD_SMOKE_OBSERVER_SOCKET: observerSocket,
-		NOLI_BRIDGE_DIR: bridgeDir, NOLI_BRIDGE_TOKEN: bridgeToken,
+		NOLI_BRIDGE_DIR: bridgeDir, NOLI_BRIDGE_TOKEN_FILE: tokenFile,
 	};
 	subprocess = Bun.spawn([binary, "--mode", "rpc", "--no-ui", "--profile", profile, "--cwd", workdir, "--model", `${provider}/${rootModel}`, "--thinking", "low", "--no-lsp", "--no-pty", "--no-title", "--no-skills", "--no-rules", "--no-extensions", "--approval-mode", "yolo", "--tools", "read,task,child_smoke_gate", "-e", packageRoot, "-e", join(scriptDir, "fixtures", "child-observer.ts")], { cwd: workdir, env: environment, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
 	rpc = new JsonClient(text => { subprocess!.stdin.write(text); subprocess!.stdin.flush(); });

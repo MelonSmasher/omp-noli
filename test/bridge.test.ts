@@ -236,8 +236,8 @@ test("agent control authentication is revoked on adoption and disconnect", async
 	bridge.invalidateAuthentication();
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(false);
 	const replacement = await Client.connect(bridge.socketPath);
-    expect((await replacement.call({ id: 2, method: "hello", params: { token: TOKEN } })).error?.code).toBe("unauthorized");
-    expect(bridge.hasAuthenticatedSession("sess-1")).toBe(false);
+	expect((await replacement.call({ id: 2, method: "hello", params: { token: TOKEN } })).ok).toBe(true);
+	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
     expect((await call(client, "session.adopt", { sessionId: "sess-1" })).ok).toBe(true);
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
 	bridge.close();

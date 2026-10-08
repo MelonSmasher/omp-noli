@@ -79,9 +79,13 @@ interface ConnectionState {
 	closed: boolean;
 	outbound: Buffer;
 	authenticatedSession?: string;
-    gatewayReady?: Promise<void>;
-    gatewayReply?: { id: string; resolve(value: GatewayCredential): void; reject(error: Error): void };
-    renewal?: NodeJS.Timeout;
+	gatewayReady?: Promise<void>;
+	gatewayReply?: { id: string; resolve(value: GatewayCredential): void; reject(error: Error): void };
+	renewal?: NodeJS.Timeout;
+	expiry?: NodeJS.Timeout;
+	bindingTimeout?: NodeJS.Timeout;
+	bindingGeneration?: number;
+	retryDelay?: number;
 }
 
 /** The attachment policy is bootstrap permission, not proof that a client registered its tool. */
@@ -94,7 +98,7 @@ function clientCapabilities(capabilities: Capabilities, hostTools = false): Omit
 export interface BridgeOptions {
 	/** Directory that will contain the socket. Created 0700; must be owned by us and inaccessible to others. */
 	dir: string;
-	/** Shared secret the launching app passes through the environment. */
+	/** Shared bootstrap secret read from the launcher's private one-use file. */
 	token: string;
 	host: BridgeHost;
     gateway?: GatewayProviders;
@@ -167,31 +171,62 @@ export function startBridge(options: BridgeOptions): Bridge {
 		socket.data.outbound = Buffer.concat([socket.data.outbound, bytes]);
 		flush(socket);
 	};
-    const revoke = (socket: Socket<ConnectionState>): void => {
-        clearTimeout(socket.data.renewal);
-        socket.data.gatewayReply?.reject(new Error("Noli gateway connection closed"));
-        socket.data.gatewayReply = undefined;
-        options.gateway?.revoke();
-    };
-    const bind = (socket: Socket<ConnectionState>): Promise<void> => {
-        if (!options.gateway) return Promise.resolve();
-        revoke(socket);
-        const sessionId = host.sessionId();
-        const ready = new Promise<GatewayCredential>((resolve, reject) => {
-            const id = `gateway:${++bindingSequence}`;
-            socket.data.gatewayReply = { id, resolve, reject };
-            send(socket, Buffer.from(`${JSON.stringify({ type: "request", id, method: "gateway.bind", params: { sessionId } })}\n`));
-        }).then(credential => {
-            if (socket.data.closed || socket.data.authenticatedSession !== sessionId || host.sessionId() !== sessionId) throw new Error("Noli gateway session changed");
-            options.gateway!.bind(credential);
-            socket.data.renewal = setTimeout(() => { socket.data.gatewayReady = bind(socket); }, Math.max(1, credential.expires_ms - Date.now() - 60_000));
-            socket.data.renewal.unref();
-        });
-        // RPC gateway.ready receives the failure; never emit credentials or an unhandled rejection.
-        void ready.catch(() => {});
-        socket.data.gatewayReady = ready;
-        return ready;
-    };
+	const revoke = (socket: Socket<ConnectionState>): void => {
+		clearTimeout(socket.data.renewal);
+		clearTimeout(socket.data.expiry);
+		clearTimeout(socket.data.bindingTimeout);
+		socket.data.bindingGeneration = (socket.data.bindingGeneration ?? 0) + 1;
+		socket.data.gatewayReply?.reject(new Error("Noli gateway connection closed"));
+		socket.data.gatewayReply = undefined;
+		socket.data.gatewayReady = undefined;
+		socket.data.retryDelay = undefined;
+		options.gateway?.revoke();
+	};
+	const bind = (socket: Socket<ConnectionState>): Promise<void> => {
+		if (!options.gateway) return Promise.resolve();
+		if (socket.data.gatewayReply) return socket.data.gatewayReady!;
+		clearTimeout(socket.data.renewal);
+		const sessionId = host.sessionId();
+		const generation = socket.data.bindingGeneration ?? 0;
+		const current = (): boolean => !socket.data.closed && (socket.data.bindingGeneration ?? 0) === generation
+			&& socket.data.authenticatedSession === sessionId && host.sessionId() === sessionId;
+		const ready = new Promise<GatewayCredential>((resolve, reject) => {
+			const id = `gateway:${++bindingSequence}`;
+			socket.data.gatewayReply = { id, resolve, reject };
+			socket.data.bindingTimeout = setTimeout(() => {
+				if (socket.data.gatewayReply?.id !== id) return;
+				socket.data.gatewayReply = undefined;
+				reject(new Error("Noli gateway binding timed out"));
+			}, 10_000);
+			socket.data.bindingTimeout.unref();
+			send(socket, Buffer.from(`${JSON.stringify({ type: "request", id, method: "gateway.bind", params: { sessionId } })}\n`));
+		}).then(credential => {
+			if (!current()) throw new Error("Noli gateway session changed");
+			// Same-session renewal leaves the working key installed until this synchronous replacement.
+			options.gateway!.bind(credential);
+			clearTimeout(socket.data.expiry);
+			socket.data.retryDelay = undefined;
+			const lifetime = credential.expires_ms - Date.now();
+			socket.data.renewal = setTimeout(() => { void bind(socket); }, Math.max(1, lifetime - Math.min(60_000, lifetime / 2)));
+			socket.data.renewal.unref();
+			socket.data.expiry = setTimeout(() => {
+				if (current()) options.gateway!.revoke();
+			}, Math.max(1, lifetime));
+			socket.data.expiry.unref();
+		}).catch(error => {
+			if (current()) {
+				const delay = socket.data.retryDelay ?? 1_000;
+				socket.data.retryDelay = Math.min(delay * 2, 30_000);
+				socket.data.renewal = setTimeout(() => { void bind(socket); }, delay);
+				socket.data.renewal.unref();
+			}
+			throw error;
+		});
+		// RPC gateway.ready receives the failure; never emit credentials or an unhandled rejection.
+		void ready.catch(() => {});
+		socket.data.gatewayReady = ready;
+		return ready;
+	};
 
 	const requireCapability = (name: CapabilityName): void => {
 		const state = host.capabilities()[name];
@@ -323,6 +358,7 @@ export function startBridge(options: BridgeOptions): Bridge {
         if (socket.data.authed && record.type === "response" && record.id === socket.data.gatewayReply?.id) {
             const pending = socket.data.gatewayReply!;
             socket.data.gatewayReply = undefined;
+			clearTimeout(socket.data.bindingTimeout);
             if (record.ok === true) pending.resolve(record.result as GatewayCredential);
             else pending.reject(new Error("Noli gateway binding was rejected"));
             return;
@@ -330,13 +366,13 @@ export function startBridge(options: BridgeOptions): Bridge {
 
 		if (!socket.data.authed) {
 			const helloParams = record.params && typeof record.params === "object" && "token" in record.params ? record.params : undefined;
-            if (!bootstrapAvailable || record.method !== "hello" || !tokenMatches(token, helloParams?.token)) {
+			if ((options.gateway && !bootstrapAvailable) || record.method !== "hello" || !tokenMatches(token, helloParams?.token)) {
 				fail({ code: "unauthorized", message: "hello with a valid token is required" });
 				socket.data.closed = true;
 				socket.end();
 				return;
 			}
-            bootstrapAvailable = false;
+			if (options.gateway) bootstrapAvailable = false;
 			socket.data.authed = true;
 			socket.data.authenticatedSession = host.sessionId();
 			const hello = { protocol: PROTOCOL_VERSION, sessionId: host.sessionId(), pid: process.pid, capabilities: clientCapabilities(host.refreshCapabilities()) };
@@ -349,6 +385,7 @@ export function startBridge(options: BridgeOptions): Bridge {
         if (record.method === "session.adopt") {
             const params = record.params as Params | undefined;
             if (params?.sessionId !== host.sessionId()) return fail({ code: "stale_session", message: "Cannot adopt a foreign session" });
+			if (socket.data.authenticatedSession !== host.sessionId()) revoke(socket);
             socket.data.authenticatedSession = host.sessionId();
             try {
                 await bind(socket);
