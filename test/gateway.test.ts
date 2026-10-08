@@ -120,26 +120,48 @@ test("a factory outside the bound root's launch never receives its credential", 
 	} finally { root.close(); }
 });
 
-test("a session of the same launch with its own registry follows later binds and stops after shutdown", async () => {
+test("a session of the same launch with its own registry follows later binds once started, and stops after shutdown", async () => {
 	const root = await rootGateway();
 	const auth = await AuthStorage.create(join(root.dir, "other.db"));
 	try {
 		const registry = new ModelRegistry(auth, join(root.dir, "other-models.yml"), { settings: Settings.isolated({ enabledModels: ["noli-*/*"] }) });
-		let shutdown = () => {};
+		// SDK 18.8.2: queued during the factory (loader.ts), drained at session creation (sdk.ts),
+		// then applied to the live registry (runner.ts) once the runner is initialized.
+		const queued: [string, ProviderConfig][] = [];
+		let live = false;
+		const handlers = new Map<string, () => void>();
 		const pi = {
-			registerProvider: (name: string, config: ProviderConfig) => registry.registerProvider(name, config, "noli-test"),
-			on: (event: string, handler: () => void) => { if (event === "session_shutdown") shutdown = handler; },
+			registerProvider: (name: string, config: ProviderConfig) => live ? registry.registerProvider(name, config, "noli-test") : queued.push([name, config]),
+			on: (event: string, handler: () => void) => handlers.set(event, handler),
 		} as unknown as ExtensionAPI;
 		root.gateway.bind({ token: "g".repeat(43), expires_ms: Date.now() + 60_000 });
 		rejoinGateway(pi, root.dir);
+		for (const [name, config] of queued.splice(0)) registry.registerProvider(name, config, "noli-test");
+		live = true;
+		handlers.get("session_start")!();
 		const key = async () => await registry.getApiKey(registry.find("noli-openai", model.id)!);
 		expect(await key()).toBe("g".repeat(43));
 		root.gateway.bind({ token: "h".repeat(43), expires_ms: Date.now() + 60_000 });
 		expect(await key()).toBe("h".repeat(43));
 		root.gateway.revoke();
 		expect(await key()).toBe("noli-pending");
-		shutdown();
+		handlers.get("session_shutdown")!();
 		root.gateway.bind({ token: "i".repeat(43), expires_ms: Date.now() + 60_000 });
 		expect(await key()).toBe("noli-pending");
 	} finally { auth.close(); root.close(); }
+});
+
+test("a session whose startup is cancelled is never retained for later binds", async () => {
+	const root = await rootGateway();
+	try {
+		let calls = 0;
+		const pi = { registerProvider: () => { calls++; }, on: () => {} } as unknown as ExtensionAPI;
+		root.gateway.bind({ token: "j".repeat(43), expires_ms: Date.now() + 60_000 });
+		rejoinGateway(pi, root.dir);
+		const queuedAtFactory = calls;
+		// Cancelled: neither session_start nor session_shutdown ever fires.
+		root.gateway.bind({ token: "k".repeat(43), expires_ms: Date.now() + 60_000 });
+		root.gateway.revoke();
+		expect(calls).toBe(queuedAtFactory);
+	} finally { root.close(); }
 });

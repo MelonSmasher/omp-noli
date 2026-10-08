@@ -40,7 +40,10 @@ function install(pi: ExtensionAPI, dir: string): void {
 export function rejoinGateway(pi: ExtensionAPI, dir: string | undefined): void {
 	if (!dir || current?.dir !== dir) return;
 	install(pi, dir);
-	joined.add(pi);
+	// The queued registration's live key covers everything until the session starts. Only a
+	// started session joins, so a cancelled startup (which never starts or shuts down) is not
+	// retained. Once started, OMP's runner applies registerProvider to the live registry.
+	pi.on("session_start", () => { joined.add(pi); });
 	pi.on("session_shutdown", () => { joined.delete(pi); });
 }
 
