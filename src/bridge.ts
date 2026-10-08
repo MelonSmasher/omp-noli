@@ -86,6 +86,9 @@ interface ConnectionState {
 	bindingTimeout?: NodeJS.Timeout;
 	bindingGeneration?: number;
 	retryDelay?: number;
+	installedExpiry?: number;
+	renewalError?: string;
+	installingCredential?: boolean;
 }
 
 /** The attachment policy is bootstrap permission, not proof that a client registered its tool. */
@@ -171,6 +174,16 @@ export function startBridge(options: BridgeOptions): Bridge {
 		socket.data.outbound = Buffer.concat([socket.data.outbound, bytes]);
 		flush(socket);
 	};
+	// Node timers cannot represent delays beyond 2^31-1; re-arm against the absolute deadline.
+	const scheduleCredentialTimer = (socket: Socket<ConnectionState>, field: "renewal" | "expiry", deadline: number, action: () => void): void => {
+		const tick = (): void => {
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) { action(); return; }
+			socket.data[field] = setTimeout(tick, Math.min(remaining, 2_147_483_647));
+			socket.data[field]!.unref();
+		};
+		tick();
+	};
 	const revoke = (socket: Socket<ConnectionState>): void => {
 		clearTimeout(socket.data.renewal);
 		clearTimeout(socket.data.expiry);
@@ -180,6 +193,9 @@ export function startBridge(options: BridgeOptions): Bridge {
 		socket.data.gatewayReply = undefined;
 		socket.data.gatewayReady = undefined;
 		socket.data.retryDelay = undefined;
+		socket.data.installedExpiry = undefined;
+		socket.data.renewalError = undefined;
+		socket.data.installingCredential = false;
 		options.gateway?.revoke();
 	};
 	const bind = (socket: Socket<ConnectionState>): Promise<void> => {
@@ -199,22 +215,26 @@ export function startBridge(options: BridgeOptions): Bridge {
 				reject(new Error("Noli gateway binding timed out"));
 			}, 10_000);
 			socket.data.bindingTimeout.unref();
-			send(socket, Buffer.from(`${JSON.stringify({ type: "request", id, method: "gateway.bind", params: { sessionId } })}\n`));
+			send(socket, { type: "request", id, method: "gateway.bind", params: { sessionId } });
 		}).then(credential => {
 			if (!current()) throw new Error("Noli gateway session changed");
 			// Same-session renewal leaves the working key installed until this synchronous replacement.
 			options.gateway!.bind(credential);
 			clearTimeout(socket.data.expiry);
 			socket.data.retryDelay = undefined;
+			socket.data.installedExpiry = credential.expires_ms;
+			socket.data.renewalError = undefined;
+			socket.data.installingCredential = false;
 			const lifetime = credential.expires_ms - Date.now();
-			socket.data.renewal = setTimeout(() => { void bind(socket); }, Math.max(1, lifetime - Math.min(60_000, lifetime / 2)));
-			socket.data.renewal.unref();
-			socket.data.expiry = setTimeout(() => {
-				if (current()) options.gateway!.revoke();
-			}, Math.max(1, lifetime));
-			socket.data.expiry.unref();
+			scheduleCredentialTimer(socket, "renewal", credential.expires_ms - Math.min(60_000, lifetime / 2), () => { void bind(socket); });
+			scheduleCredentialTimer(socket, "expiry", credential.expires_ms, () => {
+				if (!current()) return;
+				options.gateway!.revoke();
+			});
 		}).catch(error => {
 			if (current()) {
+				socket.data.installingCredential = false;
+				socket.data.renewalError = "Noli gateway binding failed; retrying";
 				const delay = socket.data.retryDelay ?? 1_000;
 				socket.data.retryDelay = Math.min(delay * 2, 30_000);
 				socket.data.renewal = setTimeout(() => { void bind(socket); }, delay);
@@ -359,7 +379,10 @@ export function startBridge(options: BridgeOptions): Bridge {
             const pending = socket.data.gatewayReply!;
             socket.data.gatewayReply = undefined;
 			clearTimeout(socket.data.bindingTimeout);
-            if (record.ok === true) pending.resolve(record.result as GatewayCredential);
+			if (record.ok === true) {
+				socket.data.installingCredential = true;
+				pending.resolve(record.result as GatewayCredential);
+			}
             else pending.reject(new Error("Noli gateway binding was rejected"));
             return;
         }
@@ -399,10 +422,15 @@ export function startBridge(options: BridgeOptions): Bridge {
 		try {
 			const params = record.params && typeof record.params === "object" && !Array.isArray(record.params) ? (record.params as Params) : {};
             if (record.method === "gateway.ready") {
-                if (!options.gateway || !socket.data.gatewayReady) throw new BridgeError("not_ready", "Noli gateway is not configured");
-                await socket.data.gatewayReady;
-                if (socket.data.authenticatedSession !== host.sessionId()) throw new BridgeError("stale_session", "Noli gateway session changed");
-                send(socket, { type: "response", id, ok: true, result: { bound: true } });
+				if (!options.gateway) throw new BridgeError("not_ready", "Noli gateway is not configured");
+				if ((socket.data.installedExpiry === undefined || socket.data.installingCredential) && socket.data.gatewayReady) {
+					try { await socket.data.gatewayReady; } catch { /* Report installed-key state below, not attempt state. */ }
+				}
+				if (socket.data.authenticatedSession !== host.sessionId()) throw new BridgeError("stale_session", "Noli gateway session changed");
+				if ((socket.data.installedExpiry ?? 0) <= Date.now()) {
+					throw new BridgeError("not_ready", socket.data.renewalError ?? "Noli gateway has no unexpired credential");
+				}
+				send(socket, { type: "response", id, ok: true, result: { bound: true, ...(socket.data.renewalError ? { renewalError: socket.data.renewalError } : {}) } });
                 return;
             }
 			const result = await dispatch(record.method, params);

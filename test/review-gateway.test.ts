@@ -19,7 +19,7 @@ import noli from "../src/index";
 const bootstrap = "review-bootstrap-not-a-live-secret";
 const first = "a".repeat(43), second = "b".repeat(43);
 const model = { id: "gateway-review", name: "Review", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 512 };
-type Frame = { id: string | number; method?: string; ok?: boolean; error?: { code: string } };
+type Frame = { id: string | number; method?: string; ok?: boolean; error?: { code: string }; result?: { bound?: boolean; renewalError?: string; capabilities?: Capabilities } };
 class Client {
   readonly socket: Socket;
   private buffer = "";
@@ -132,16 +132,22 @@ test("review: renewal keeps the unexpired credential usable until its replacemen
     expect(Date.now()).toBeLessThan(now + 3_600_000);
     // Main, child and background inference retain the still-valid key while renewal is pending.
     expect(await f.registry.getApiKey(existing) === "noli-pending").toBe(false);
+    expect((await client.call({ id: 10, method: "gateway.ready", sessionId: "session", params: {} })).ok).toBe(true);
     client.send({ type: "response", id: renewal.id, ok: false, error: { code: "not_ready" } });
     const retry = await client.next();
     expect(retry.method).toBe("gateway.bind");
     expect(await f.registry.getApiKey(existing) === first).toBe(true);
+    const degraded = await client.call({ id: 11, method: "gateway.ready", sessionId: "session", params: {} });
+    expect(degraded.ok).toBe(true);
+    expect(degraded.result?.renewalError).toBe("Noli gateway binding failed; retrying");
     client.send({ type: "response", id: retry.id, ok: false, error: { code: "not_ready" } });
     const secondRetry = await client.next();
     expect(retryDelays).toEqual([1_000, 2_000]);
     expect(await f.registry.getApiKey(existing) === first).toBe(true);
     client.send({ type: "response", id: secondRetry.id, ok: true, result: { token: second, expires_ms: Date.now() + 3_600_000 } });
-    expect((await client.call({ id: 3, method: "gateway.ready", sessionId: "session", params: {} })).ok).toBe(true);
+    const recovered = await client.call({ id: 3, method: "gateway.ready", sessionId: "session", params: {} });
+    expect(recovered.ok).toBe(true);
+    expect(recovered.result?.renewalError).toBeUndefined();
     expect(await f.registry.getApiKey(existing) === second).toBe(true);
   } finally { Date.now = realNow; globalThis.setTimeout = realSetTimeout; client.socket.destroy(); bridge.close(); f.dispose(); }
 });
@@ -178,6 +184,7 @@ test("review: failed and timed-out renewals revoke only at actual expiry and rec
     clock = now + 3_600_000;
     timers.find(timer => timer.delay === 3_600_000)!.run();
     expect(await f.registry.getApiKey(existing) === "noli-pending").toBe(true);
+    expect((await client.call({ id: 12, method: "gateway.ready", sessionId: "session", params: {} })).error?.code).toBe("not_ready");
     timers.find(timer => timer.delay === 1_000)!.run();
     const retry = await client.next();
     // A late reply to the timed-out request cannot install a key or satisfy the retry.
@@ -187,6 +194,48 @@ test("review: failed and timed-out renewals revoke only at actual expiry and rec
     // Ignore the bad_request response for the deliberately stale reverse-RPC reply.
     expect(ack.ok === true || (await client.next()).ok === true).toBe(true);
     expect(await f.registry.getApiKey(existing) === second).toBe(true);
+  } finally { Date.now = realNow; globalThis.setTimeout = realSetTimeout; client.socket.destroy(); bridge.close(); f.dispose(); }
+});
+
+test("review: long-lived keys wait for absolute deadlines beyond the timer limit", async () => {
+  const f = await fixture();
+  const existing = f.registry.find("noli-openai", model.id)!;
+  const bridge = startBridge({ dir: f.dir, token: bootstrap, host: host(() => "session"), gateway: f.gateway });
+  const client = new Client(bridge.socketPath);
+  const realNow = Date.now;
+  const realSetTimeout = globalThis.setTimeout;
+  const now = realNow();
+  let clock = now;
+  const lifetime = 30 * 24 * 60 * 60 * 1_000;
+  const maximum = 2_147_483_647;
+  const timers: Array<{ delay: number | undefined; run(): void }> = [];
+  Date.now = () => clock;
+  globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+    timers.push({ delay, run() { if (typeof handler === "function") handler(...args); } });
+    return realSetTimeout(() => {}, maximum);
+  }) as unknown as typeof setTimeout;
+  try {
+    await client.call({ id: 1, method: "hello", params: { token: bootstrap } });
+    const initial = await client.next();
+    client.send({ type: "response", id: initial.id, ok: true, result: { token: first, expires_ms: now + lifetime } });
+    expect((await client.call({ id: 2, method: "gateway.ready", sessionId: "session", params: {} })).ok).toBe(true);
+    const [renewal, expiry] = timers.filter(timer => timer.delay === maximum);
+    expect(timers.every(timer => timer.delay! <= maximum)).toBe(true);
+    clock = now + maximum;
+    renewal!.run(); expiry!.run();
+    expect(await f.registry.getApiKey(existing) === first).toBe(true);
+    expect((await client.call({ id: 3, method: "gateway.ready", sessionId: "session", params: {} })).ok).toBe(true);
+    const remainingRenewal = timers.at(-2)!;
+    const remainingExpiry = timers.at(-1)!;
+    expect(remainingRenewal.delay).toBe(lifetime - 60_000 - maximum);
+    expect(remainingExpiry.delay).toBe(lifetime - maximum);
+    clock = now + lifetime - 60_000;
+    remainingRenewal.run();
+    expect((await client.next()).method).toBe("gateway.bind");
+    clock = now + lifetime;
+    remainingExpiry.run();
+    expect(await f.registry.getApiKey(existing) === "noli-pending").toBe(true);
+    expect((await client.call({ id: 4, method: "gateway.ready", sessionId: "session", params: {} })).error?.code).toBe("not_ready");
   } finally { Date.now = realNow; globalThis.setTimeout = realSetTimeout; client.socket.destroy(); bridge.close(); f.dispose(); }
 });
 

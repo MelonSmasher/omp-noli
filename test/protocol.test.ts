@@ -11,8 +11,13 @@ import {
 	JOB_KINDS,
 } from "../src/protocol";
 import { assertValidFrame, schema } from "./schema";
+import type { ServerFrame } from "../src/protocol";
 
 describe("schema matches src/protocol.ts", () => {
+	test("typed server frames include reverse gateway bind requests", () => {
+		const frame: ServerFrame = { type: "request", id: "gateway:1", method: "gateway.bind", params: { sessionId: "s" } };
+		expect(() => assertValidFrame(frame)).not.toThrow();
+	});
 	test.each([
 		["CapabilityName", CAPABILITY_NAMES],
 		["CapabilityReason", CAPABILITY_REASONS],

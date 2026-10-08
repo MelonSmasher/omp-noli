@@ -1267,6 +1267,13 @@
       "properties": {
         "bound": {
           "type": "boolean"
+        },
+        "renewalError": {
+          "anyOf": [
+            {
+              "type": "string"
+            }
+          ]
         }
       }
     },

@@ -136,3 +136,9 @@ Scope: One authenticated host-tool surface, main-agent enforcement, deferred lif
   EXPECT: 0 fail
   EVIDENCE: bun install --frozen-lockfile, bun test (250 pass / 0 fail / 1076 assertions), typecheck, schema:check and extension:check all passed after this correction; the copied real SDK legacy-launch regression and explicit Gateway refusal fixture passed.
 
+
+- [x] GW74-PR13: Readiness tracks installed-key expiry, renewal health is safe and visible, long timers respect absolute deadlines, typed bind frames match the schema, and legacy launch authenticates without advertising unavailable binding.
+  CHECK: bun test && bun run typecheck && bun run schema:check && bun run extension:check
+  EXPECT: EXTENSION LOAD PASSED
+  EVIDENCE: bun install --frozen-lockfile passed unchanged. bun test passed 252 tests, 0 failures and 1093 assertions. Typecheck, schema:check (SCHEMA CURRENT) and extension:check (EXTENSION LOAD PASSED) passed. Codacy's one medium/one minor complexity-only findings are non-blocking under project policy; no complexity-only refactor was performed.
+

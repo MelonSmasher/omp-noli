@@ -41,7 +41,7 @@ export default function noli(pi: ExtensionAPI): void {
 	installImagePublisher(pi, sessionId => bridge?.hasAuthenticatedSession(sessionId) ?? false);
     const gateway = registerGateway(pi, dir);
 
-	const omp = createOmpHost(pi);
+	const omp = createOmpHost(pi, gateway !== undefined);
 
 	const adopt = (ctx: ExtensionContext): void => {
 		if (ctx.agent.kind !== "main") return;

@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { createAgentSession, SessionManager, Settings, type AgentSession } from "@oh-my-pi/pi-coding-agent";
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
 import noli from "../src/index";
+import { connect, type Socket } from "node:net";
+import type { HelloResult, ServerFrame } from "../src/protocol";
 
 test("review: non-gateway Noli launcher still starts the bridge using its existing bootstrap contract", async () => {
   const dir = mkdtempSync(join(tmpdir(), "noli-review-legacy-launch-"));
@@ -12,6 +14,7 @@ test("review: non-gateway Noli launcher still starts the bridge using its existi
   const oldToken = process.env.NOLI_BRIDGE_TOKEN;
   const oldFile = process.env.NOLI_BRIDGE_TOKEN_FILE;
   let session: AgentSession | undefined;
+  let socket: Socket | undefined;
   try {
     // The non-gateway Noli launcher has no catalog and supplies the released v0.6.0 environment contract.
     process.env.NOLI_BRIDGE_DIR = dir;
@@ -27,7 +30,23 @@ test("review: non-gateway Noli launcher still starts the bridge using its existi
     expect(process.env.NOLI_BRIDGE_TOKEN).toBeUndefined();
     await initializeExtensions(session, { reportSendError: (_action, error) => { throw error; }, reportRuntimeError: error => { throw new Error(error.error); } });
     expect(existsSync(join(dir, `omp-${process.pid}.sock`))).toBe(true);
+    const hello = await new Promise<ServerFrame>((resolve, reject) => {
+      socket = connect(join(dir, `omp-${process.pid}.sock`));
+      socket.once("error", reject);
+      socket.setTimeout(5_000, () => reject(new Error("legacy hello timed out")));
+      let buffer = "";
+      socket.on("data", bytes => {
+        buffer += bytes.toString();
+        const end = buffer.indexOf("\n");
+        if (end >= 0) resolve(JSON.parse(buffer.slice(0, end)) as ServerFrame);
+      });
+      socket.once("connect", () => socket!.write(`${JSON.stringify({ id: 1, method: "hello", params: { token: "synthetic-legacy-bootstrap" } })}\n`));
+    });
+    expect(hello.type).toBe("response");
+    if (hello.type !== "response" || !hello.ok) throw new Error("legacy bootstrap did not authenticate");
+    expect((hello.result as HelloResult).capabilities["gateway.bind"].available).toBe(false);
   } finally {
+    socket?.destroy();
     await session?.dispose();
     if (oldDir === undefined) delete process.env.NOLI_BRIDGE_DIR; else process.env.NOLI_BRIDGE_DIR = oldDir;
     if (oldToken === undefined) delete process.env.NOLI_BRIDGE_TOKEN; else process.env.NOLI_BRIDGE_TOKEN = oldToken;
