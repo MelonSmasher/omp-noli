@@ -9,17 +9,28 @@ export interface GatewayProviders {
 }
 
 /**
- * The root session's catalog and current credential, kept in memory only.
+ * The bound root session's catalog and current credential, kept in memory only.
  * Subagent sessions in the same process re-run every extension factory, and the
  * SDK clears this extension's provider registrations before applying the new
  * session's. The bootstrap is consumed by then, so a child re-registers from here.
+ * `dir` scopes it to the root's own Noli launch: other factories get nothing.
  */
-let current: { providers: [string, ProviderConfig][]; apiKey: string } | undefined;
+let current: { dir: string; providers: [string, ProviderConfig][]; apiKey: string } | undefined;
 
-/** Re-register the root's Gateway providers for a subagent session; no-op without a bound root. */
-export function rejoinGateway(pi: ExtensionAPI): void {
-	if (!current) return;
-	for (const [name, config] of current.providers) pi.registerProvider(name, { ...config, apiKey: current.apiKey });
+/**
+ * Re-register the bound root's Gateway providers for one of its subagent sessions.
+ * The SDK queues factory registrations and applies them later, so the child also
+ * re-applies the binding when its session starts: a bind or revoke that landed in
+ * between is never overwritten by the queued copy.
+ */
+export function rejoinGateway(pi: ExtensionAPI, dir: string | undefined): void {
+	if (!dir || current?.dir !== dir) return;
+	const apply = (): void => {
+		if (current?.dir !== dir) return;
+		for (const [name, config] of current.providers) pi.registerProvider(name, { ...config, apiKey: current.apiKey });
+	};
+	apply();
+	pi.on("session_start", apply);
 }
 
 /** Factory-time catalog registration precedes OMP's initial model selection. */
@@ -45,7 +56,7 @@ export function registerGateway(pi: ExtensionAPI, dir: string): GatewayProviders
 		return [name, { baseUrl: config.baseUrl + suffix, api: config.api, models: config.models }];
 	});
 	const register = (apiKey: string): void => {
-		current = { providers, apiKey };
+		current = { dir, providers, apiKey };
 		// The registry is shared with subagent sessions, so this also refreshes their credential.
 		for (const [name, config] of providers) pi.registerProvider(name, { ...config, apiKey });
 	};

@@ -33,8 +33,8 @@ export default function noli(pi: ExtensionAPI): void {
 	const legacyToken = process.env.NOLI_BRIDGE_TOKEN;
 	delete process.env[ENV_TOKEN_FILE];
 	delete process.env.NOLI_BRIDGE_TOKEN;
-	// A subagent session re-runs this factory after the root consumed the bootstrap; it only needs the Gateway models.
-	if (!dir || (!tokenFile && !legacyToken)) { rejoinGateway(pi); return; }
+	// A subagent of the bound root re-runs this factory after the bootstrap was consumed; it only needs the Gateway models.
+	if (!dir || (!tokenFile && !legacyToken)) { rejoinGateway(pi, dir); return; }
 	if (!tokenFile && existsSync(join(dir, "gateway-providers.json"))) {
 		throw new Error("Noli gateway binding requires NOLI_BRIDGE_TOKEN_FILE");
 	}
