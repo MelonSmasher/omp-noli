@@ -1,16 +1,15 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { connect } from "node:net";
-import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { getEnabledPlugins, resolvePluginExtensionPaths } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/loader";
 import { createAgentSession, SessionManager, Settings } from "@oh-my-pi/pi-coding-agent";
-import type { ServerFrame } from "../src/protocol";
 import { type } from "@oh-my-pi/omptype";
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
+import { ForgeClient } from "./fixtures/forge-client";
+import { verifyForgeRuntime } from "./fixtures/forge-runtime";
 
 const selection = process.argv[2];
 const root = resolve(import.meta.dir, "..");
@@ -46,6 +45,12 @@ if (selection === "--verify") {
 	assert.equal(protocol.PROTOCOL_VERSION, 1);
 	assert.deepEqual(protocol.NATIVE_METHODS, ["tree.navigate", "goal.budget", "memory.status", "memory.search", "memory.save"]);
 	const schema = await Bun.file(join(plugin.path, "protocol/noli-bridge.schema.json")).json();
+	const forgeResources = protocol.CAPABILITY_NAMES.includes("host.forge_resource");
+	if (process.argv[5] === "--local") assert(forgeResources, "Prepared checkout contains the forge guard, unlike released v0.7.1");
+	if (forgeResources) {
+		assert(!schema.$defs.Capabilities.required.includes("host.forge_resource"), "Forge bootstrap marker is optional in protocol 1");
+		assert.equal(schema.$defs.Capabilities.properties["host.forge_resource"].allOf[1].properties.api.const, "main-only-v1");
+	}
 	if (referenceReads) {
 		assert(protocol.CAPABILITY_NAMES.includes("host.thread_read"));
 		assert(schema.$defs.CapabilityApi.enum.includes("main-only-v2"));
@@ -54,7 +59,7 @@ if (selection === "--verify") {
 		assert(!schema.$defs.CapabilityApi.enum.includes("main-only-v2"), "Older native-control releases do not require the reference-read v2 contract");
 	}
 	const created = await createAgentSession({ cwd: dir, agentDir: join(dir, "runtime-agent"), sessionManager: SessionManager.create(dir, join(dir, "sessions")), settings: Settings.isolated({ "memory.backend": "off" }), toolNames: [], enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: false, preloadedExtensionPaths: entries });
-	let socket: Socket | undefined;
+	let client: ForgeClient | undefined;
 	try {
 		const runtime = created.session.extensionRunner;
 		assert(runtime);
@@ -64,22 +69,12 @@ if (selection === "--verify") {
 		await initializeExtensions(created.session, { reportSendError: (_action, error) => { throw error; }, reportRuntimeError: error => { throw new Error(error.error); } });
 		const call = { type: "tool_call" as const, toolName: referenceReads ? "noli_thread_read" : "noli_thread_get", toolCallId: "installed-policy", input: referenceReads ? { reference_id: "public-smoke-reference", limit: 1 } : {} };
 		assert.equal((await runtime.emitToolCall(call))?.block, true, "Before authenticated hello even real main is denied");
+		if (forgeResources) assert.equal((await runtime.emitToolCall({ type: "tool_call", toolName: "noli_forge_resource", toolCallId: "installed-forge-before-auth", input: { action: "resolve_review", number: "42" } }))?.block, true);
 		await created.session.refreshRpcHostTools([]);
 		// Negotiate with no registered host tools: Noli discovers support before set_host_tools.
-		const hello = await new Promise<ServerFrame>((resolveFrame, reject) => {
-			const timeout = setTimeout(() => reject(new Error("Installed bridge hello timed out")), 5000);
-			let buffered = "";
-			socket = connect(join(process.env.NOLI_BRIDGE_DIR!, `omp-${process.pid}.sock`));
-			socket.once("error", error => { clearTimeout(timeout); reject(error); });
-			socket.on("data", data => {
-				buffered += data.toString();
-				const newline = buffered.indexOf("\n");
-				if (newline === -1) return;
-				clearTimeout(timeout);
-				resolveFrame(JSON.parse(buffered.slice(0, newline)) as ServerFrame);
-			});
-			socket.once("connect", () => socket!.write(`${JSON.stringify({ id: 1, method: "hello", params: { token: bootstrap } })}\n`));
-		});
+		assert(bootstrap !== undefined);
+		client = new ForgeClient(join(process.env.NOLI_BRIDGE_DIR!, `omp-${process.pid}.sock`), bootstrap, () => created.session.sessionId);
+		const hello = await client.connect();
 		assert(hello.type === "response" && hello.ok);
 		const advertised = hello.result as { capabilities?: Record<string, { api: string; available: boolean }> };
 		if (referenceReads) {
@@ -104,9 +99,17 @@ if (selection === "--verify") {
 			assert.equal((await runtime.emitToolCall(opening, undefined, { kind: "sub", id: "child", name: "child", depth: 1, parentId: "Main" }))?.block, true, "Actual child cannot open or propose threads");
 			assert.equal((await runtime.emitToolCall({ ...opening, input: { ...opening.input, thread_id: "foreign" } }))?.block, true);
 		}
+		if (forgeResources) {
+			await created.session.refreshRpcHostTools([]);
+			await verifyForgeRuntime(created.session, (method, params) => client!.request(method, params), () => client!.reconnect(), async () => {
+				const secondary = new ForgeClient(join(process.env.NOLI_BRIDGE_DIR!, `omp-${process.pid}.sock`), bootstrap, () => created.session.sessionId);
+				await secondary.connect(); return secondary;
+			});
+			console.log("NOLI_INSTALLED_FORGE_GUARD_OK");
+		}
 		console.log("NOLI_RELEASE_INSTALL_OK");
 	} finally {
-		socket?.destroy();
+		await client?.disconnect();
 		await created.session.dispose();
 	}
 } else {
@@ -141,6 +144,7 @@ if (selection === "--verify") {
 		assert.equal(code, 0, `Installed extension verification failed: ${verified}\n${failure}`);
 		assert(verified.includes("NOLI_RELEASE_INSTALL_OK"));
 		console.log(`NOLI_RELEASE_INSTALL_OK: ${local ? "prepared local checkout" : selection}, ${version.trim()}, pinned SDK ${sdk.version} CLI and extension loader, isolated disposable HOME/profile, enabled plugin discovery, extension initialization and release-specific host-tool negotiation`);
+		if (verified.includes("NOLI_INSTALLED_FORGE_GUARD_OK")) console.log("NOLI_INSTALLED_FORGE_GUARD_OK: installed plugin authenticated owning-main native RPC guard, backend denial/cancellation and stale-result revocation exercised");
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

@@ -1,9 +1,9 @@
 {
   "name": "omp-noli",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
-  "description": "Session-scoped Noli control bridge for Oh My Pi",
+  "description": "Session-scoped Noli control and read-only native forge host-tool bridge for Oh My Pi",
   "license": "MIT",
   "author": "Alex Markessinis <alex@markessinis.me>",
   "repository": {
@@ -20,7 +20,9 @@
     "schema:check": "bun scripts/generate-schema.ts --check",
     "extension:check": "bun scripts/check-extension.ts",
     "smoke:child": "bun scripts/smoke-child.ts",
-    "smoke:native": "bun scripts/smoke-native.ts"
+    "smoke:native": "bun scripts/smoke-native.ts",
+    "smoke:forge": "bun scripts/smoke-forge.ts",
+    "smoke:install": "bun scripts/smoke-install.ts --local"
   },
   "devDependencies": {
     "@oh-my-pi/omptype": "18.8.2",

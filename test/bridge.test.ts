@@ -3,6 +3,8 @@ import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Socket } from "bun";
+import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult, ToolResultEvent, ToolResultEventResult } from "@oh-my-pi/pi-coding-agent";
+import { installThreadControl } from "../src/thread-control";
 import { type Bridge, type BridgeHost, startBridge } from "../src/bridge";
 import { available, unavailable } from "../src/capabilities";
 import { type AgentView, type Capabilities, CAPABILITY_NAMES, type CapabilityName, type CapabilityReason, type TurnResult } from "../src/protocol";
@@ -49,7 +51,7 @@ function view(over: Partial<AgentView>): AgentView {
 }
 
 function allAvailable(): Capabilities {
-	return Object.fromEntries(CAPABILITY_NAMES.map(name => [name, available(name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" ? "main-only-v1" : "public", "test")])) as Capabilities; // Every key is filled from CAPABILITY_NAMES.
+	return Object.fromEntries(CAPABILITY_NAMES.map(name => [name, available(name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" || name === "host.forge_resource" ? "main-only-v1" : "public", "test")])) as Capabilities; // Every key is filled from CAPABILITY_NAMES.
 }
 
 interface Harness {
@@ -209,6 +211,11 @@ class Client {
 		this.raw(`${JSON.stringify(frame)}\n`);
 		return this.next();
 	}
+
+	async disconnect(): Promise<void> {
+		this.#socket?.end();
+		await this.closedPromise;
+	}
 }
 
 let dir: string;
@@ -232,17 +239,77 @@ test("agent control authentication is revoked on adoption and disconnect", async
 	const client = await Client.connect(bridge.socketPath);
 	await client.call({ id: 1, method: "hello", params: { token: TOKEN } });
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
+	const admittedGeneration = bridge.authenticatedGeneration("sess-1");
+	expect(typeof admittedGeneration).toBe("number");
 	expect(bridge.hasAuthenticatedSession("sess-2")).toBe(false);
 	bridge.invalidateAuthentication();
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(false);
+	expect(bridge.authenticatedGeneration("sess-1")).toBeUndefined();
 	const replacement = await Client.connect(bridge.socketPath);
 	expect((await replacement.call({ id: 2, method: "hello", params: { token: TOKEN } })).ok).toBe(true);
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
+	expect(bridge.authenticatedGeneration("sess-1")).not.toBe(admittedGeneration);
     expect((await call(client, "session.adopt", { sessionId: "sess-1" })).ok).toBe(true);
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
 	bridge.close();
 	await replacement.closedPromise;
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(false);
+});
+
+/** A guarded consumer call uses real socket authentication, not a capability-only mock. */
+function forgeConsumer() {
+	let call!: (event: ToolCallEvent, ctx: ExtensionContext) => ToolCallEventResult | undefined;
+	let result!: (event: ToolResultEvent, ctx: ExtensionContext) => ToolResultEventResult | undefined;
+	const pi = {
+		on(name: string, handler: unknown) { if (name === "tool_call") call = handler as typeof call; if (name === "tool_result") result = handler as typeof result; },
+		getAllTools: () => [{ name: "noli_forge_resource", sourceInfo: { source: "sdk" } }],
+	} as unknown as ExtensionAPI;
+	installThreadControl(pi, sessionId => bridge.authenticatedGeneration(sessionId));
+	const ctx = { agent: { kind: "main" }, sessionManager: { getSessionId: () => h.session } } as unknown as ExtensionContext;
+	const request: ToolCallEvent = { type: "tool_call", toolName: "noli_forge_resource", toolCallId: "pending-forge-read", input: { action: "resolve_review", number: "42" } };
+	const reply: ToolResultEvent = { ...request, type: "tool_result", content: [{ type: "text", text: "bounded current provider content" }], details: { snapshot: "current account snapshot" }, isError: false };
+	return { admit: () => call(request, ctx), reply: (isError = false) => result({ ...reply, isError }, ctx) };
+}
+
+test.each([false, true])("review forge reads survive unrelated secondary hello and disconnect, preconnected=%s", async preconnected => {
+	const waiting = preconnected ? await Client.connect(bridge.socketPath) : undefined;
+	const owner = await Client.connect(bridge.socketPath);
+	await owner.call({ id: 1, method: "hello", params: { token: TOKEN } });
+	const consumer = forgeConsumer();
+	expect(consumer.admit()).toBeUndefined();
+	const ownerGeneration = bridge.authenticatedGeneration(h.session);
+	const secondary = waiting ?? await Client.connect(bridge.socketPath);
+	await secondary.call({ id: 2, method: "hello", params: { token: TOKEN } });
+	expect(bridge.authenticatedGeneration(h.session)).toBe(ownerGeneration);
+	expect(consumer.reply()).toBeUndefined();
+	expect(consumer.admit()).toBeUndefined();
+	await secondary.disconnect();
+	await owner.call({ id: 3, method: "capabilities.get", sessionId: h.session });
+	expect(bridge.authenticatedGeneration(h.session)).toBe(ownerGeneration);
+	expect(consumer.reply()).toBeUndefined();
+});
+
+test("review forge owner disconnect revokes success and error despite a remaining authenticated socket", async () => {
+	const owner = await Client.connect(bridge.socketPath);
+	await owner.call({ id: 1, method: "hello", params: { token: TOKEN } });
+	const secondary = await Client.connect(bridge.socketPath);
+	await secondary.call({ id: 2, method: "hello", params: { token: TOKEN } });
+	const consumer = forgeConsumer();
+	expect(consumer.admit()).toBeUndefined();
+	const ownerGeneration = bridge.authenticatedGeneration(h.session);
+	await owner.disconnect();
+	await secondary.call({ id: 3, method: "capabilities.get", sessionId: h.session });
+	expect(bridge.hasAuthenticatedSession(h.session)).toBe(true);
+	expect(bridge.authenticatedGeneration(h.session)).not.toBe(ownerGeneration);
+	const stale = consumer.reply();
+	expect(stale?.isError).toBe(true); expect(stale?.details).toEqual({});
+	expect(consumer.admit()).toBeUndefined();
+	bridge.invalidateAuthentication();
+	await secondary.call({ id: 4, method: "session.adopt", params: { sessionId: h.session } });
+	expect(bridge.hasAuthenticatedSession(h.session)).toBe(true);
+	const staleError = consumer.reply(true);
+	expect(staleError?.isError).toBe(true); expect(staleError?.details).toEqual({});
+	expect(JSON.stringify(staleError)).not.toContain("bounded current provider content");
 });
 
 afterEach(() => {
@@ -518,7 +585,7 @@ describe("capabilities", () => {
 		expect(advertised.capabilities["agents.kill.parked"]).toEqual({ available: false, api: "internal", reason: "tool_missing", detail: "probe failed" });
 		expect(advertised.capabilities["agents.kill.live"].available).toBe(true);
 		const got = await call(client, "capabilities.get");
-		const { "host.attach_file": _attachmentPolicy, ...legacy } = h.caps;
+		const { "host.attach_file": _attachmentPolicy, "host.forge_resource": _forgePolicy, ...legacy } = h.caps;
 		expect(got.result).toEqual({ capabilities: legacy });
 	});
 
@@ -533,6 +600,18 @@ describe("capabilities", () => {
 		expect(responseCapabilities(negotiated)["host.attach_file"]).toEqual(h.caps["host.attach_file"]);
 		for (const listener of h.capabilityListeners) listener(h.caps);
 		expect((await client.next()).capabilities).not.toHaveProperty("host.attach_file");
+	});
+
+	test("forge policy is optional and available only through explicit authenticated bootstrap negotiation", async () => {
+		h.caps["host.forge_resource"] = available("main-only-v1", "owning-main forge guard");
+		const client = await Client.connect(bridge.socketPath);
+		const hello = await client.call({ id: 1, method: "hello", params: { token: TOKEN } });
+		expect(responseCapabilities(hello)).not.toHaveProperty("host.forge_resource");
+		expect(responseCapabilities(await call(client, "capabilities.get"))).not.toHaveProperty("host.forge_resource");
+		const negotiated = await call(client, "capabilities.get", { hostTools: true });
+		expect(responseCapabilities(negotiated)["host.forge_resource"]).toEqual({ available: true, api: "main-only-v1", detail: "owning-main forge guard" });
+		for (const listener of h.capabilityListeners) listener(h.caps);
+		expect((await client.next()).capabilities).not.toHaveProperty("host.forge_resource");
 	});
 
 	test("parked kill is closed off when its capability is unavailable; live kill still works", async () => {

@@ -79,6 +79,7 @@ interface ConnectionState {
 	closed: boolean;
 	outbound: Buffer;
 	authenticatedSession?: string;
+	authenticationGeneration?: number;
 	gatewayReady?: Promise<void>;
 	gatewayReply?: { id: string; resolve(value: GatewayCredential): void; reject(error: Error): void };
 	renewal?: NodeJS.Timeout;
@@ -91,10 +92,10 @@ interface ConnectionState {
 	installingCredential?: boolean;
 }
 
-/** The attachment policy is bootstrap permission, not proof that a client registered its tool. */
-function clientCapabilities(capabilities: Capabilities, hostTools = false): Omit<Capabilities, "host.attach_file"> | Capabilities {
+/** Optional host policies require an explicit bootstrap request, not an existing SDK registration. */
+function clientCapabilities(capabilities: Capabilities, hostTools = false): Omit<Capabilities, "host.attach_file" | "host.forge_resource"> | Capabilities {
 	if (hostTools) return capabilities;
-	const { "host.attach_file": _attachmentPolicy, ...legacy } = capabilities;
+	const { "host.attach_file": _attachmentPolicy, "host.forge_resource": _forgePolicy, ...legacy } = capabilities;
 	return legacy;
 }
 
@@ -112,6 +113,8 @@ export interface Bridge {
 	close(): void;
 	/** Only a successful hello for this adoption authorizes agent-facing control. */
 	hasAuthenticatedSession(sessionId: string): boolean;
+	/** Revocable call/result fence; reauthentication never restores an old admission. */
+	authenticatedGeneration(sessionId: string): number | undefined;
 	invalidateAuthentication(): void;
 }
 
@@ -158,6 +161,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 	const turnsInFlight = new Set<string>();
     let bootstrapAvailable = true;
     let bindingSequence = 0;
+	let authenticationSequence = 0;
 
 	const flush = (socket: Socket<ConnectionState>): void => {
 		if (socket.data.closed || !socket.data.outbound.length) return;
@@ -185,6 +189,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 		tick();
 	};
 	const revoke = (socket: Socket<ConnectionState>): void => {
+		socket.data.authenticationGeneration = ++authenticationSequence;
 		clearTimeout(socket.data.renewal);
 		clearTimeout(socket.data.expiry);
 		clearTimeout(socket.data.bindingTimeout);
@@ -399,6 +404,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 			if (options.gateway) bootstrapAvailable = false;
 			socket.data.authed = true;
 			socket.data.authenticatedSession = host.sessionId();
+			socket.data.authenticationGeneration = ++authenticationSequence;
 			const hello = { protocol: PROTOCOL_VERSION, sessionId: host.sessionId(), pid: process.pid, capabilities: clientCapabilities(host.refreshCapabilities()) };
 			send(socket, Buffer.from(`${JSON.stringify({ type: "response", id, ok: true, result: hello })}\n`));
             void bind(socket);
@@ -511,10 +517,18 @@ export function startBridge(options: BridgeOptions): Bridge {
 	return {
 		socketPath,
 		hasAuthenticatedSession(sessionId) {
+			return this.authenticatedGeneration(sessionId) !== undefined;
+		},
+		authenticatedGeneration(sessionId) {
+			// The oldest current authentication owns admission, not socket accept order.
+			// A preconnected secondary may complete hello later without stealing ownership.
+			let generation: number | undefined;
 			for (const socket of sockets) {
-				if (!socket.data.closed && socket.data.authed && socket.data.authenticatedSession === sessionId) return true;
+				if (socket.data.closed || !socket.data.authed || socket.data.authenticatedSession !== sessionId) continue;
+				const candidate = socket.data.authenticationGeneration;
+				if (candidate !== undefined && (generation === undefined || candidate < generation)) generation = candidate;
 			}
-			return false;
+			return generation;
 		},
 		invalidateAuthentication() {
             for (const socket of sockets) { socket.data.authenticatedSession = undefined; revoke(socket); }

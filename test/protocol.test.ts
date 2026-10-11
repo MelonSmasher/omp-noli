@@ -32,12 +32,12 @@ describe("schema matches src/protocol.ts", () => {
 		expect([...(schema.$defs[def]?.enum ?? [])].sort()).toEqual([...values].sort());
 	});
 
-	test("non-bootstrap capabilities are required while attachment remains explicitly negotiated", () => {
+	test("non-bootstrap capabilities are required while attachment and forge remain explicitly negotiated", () => {
 		const caps = schema.$defs.Capabilities as { required?: string[] };
-		expect([...(caps.required ?? [])].sort()).toEqual(CAPABILITY_NAMES.filter(name => name !== "host.attach_file").sort());
+		expect([...(caps.required ?? [])].sort()).toEqual(CAPABILITY_NAMES.filter(name => name !== "host.attach_file" && name !== "host.forge_resource").sort());
 	});
 	test("thread-read capabilities validate v2 and reject legacy v1 for available and unavailable states", () => {
-		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: name === "host.thread_open" ? "main-only-v1" : "public", detail: "public" }]));
+		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: name === "host.thread_open" || name === "host.forge_resource" ? "main-only-v1" : "public", detail: "public" }]));
 		for (const state of [{ available: true, detail: "reference reads" }, { available: false, reason: "not_ready", detail: "not ready" }]) {
 			const frame = (api: string) => ({ type: "event", event: "capabilities.changed", sessionId: "s", capabilities: { ...capabilities, "host.thread_read": { ...state, api } } });
 			expect(() => assertValidFrame(frame("main-only-v2"))).not.toThrow();
@@ -45,11 +45,20 @@ describe("schema matches src/protocol.ts", () => {
 		}
 	});
 	test("thread-opening rejects incompatible APIs even while unavailable", () => {
-		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: name === "host.thread_read" ? "main-only-v2" : "public", detail: "public" }]));
+		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: name === "host.thread_read" ? "main-only-v2" : name === "host.forge_resource" ? "main-only-v1" : "public", detail: "public" }]));
 		for (const state of [{ available: true, detail: "opening" }, { available: false, reason: "not_ready", detail: "not ready" }]) {
 			const frame = (api: string) => ({ type: "event", event: "capabilities.changed", sessionId: "s", capabilities: { ...capabilities, "host.thread_open": { ...state, api } } });
 			expect(() => assertValidFrame(frame("main-only-v1"))).not.toThrow();
 			for (const api of ["public", "internal", "main-only-v2"]) expect(() => assertValidFrame(frame(api))).toThrow();
+		}
+	});
+	test("optional forge bootstrap requires exactly main-only-v1 in both availability states", () => {
+		const capabilities = Object.fromEntries(CAPABILITY_NAMES.filter(name => name !== "host.forge_resource").map(name => [name, { available: true, api: name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" ? "main-only-v1" : "public", detail: "test" }]));
+		const frame = (caps: unknown) => ({ type: "event", event: "capabilities.changed", sessionId: "s", capabilities: caps });
+		expect(() => assertValidFrame(frame(capabilities))).not.toThrow();
+		for (const state of [{ available: true, detail: "guard" }, { available: false, reason: "not_ready", detail: "not ready" }]) {
+			expect(() => assertValidFrame(frame({ ...capabilities, "host.forge_resource": { ...state, api: "main-only-v1" } }))).not.toThrow();
+			for (const api of ["public", "internal", "main-only-v2", undefined]) expect(() => assertValidFrame(frame({ ...capabilities, "host.forge_resource": { ...state, api } }))).toThrow();
 		}
 	});
 });
