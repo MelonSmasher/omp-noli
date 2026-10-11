@@ -520,12 +520,15 @@ export function startBridge(options: BridgeOptions): Bridge {
 			return this.authenticatedGeneration(sessionId) !== undefined;
 		},
 		authenticatedGeneration(sessionId) {
-			// The first matching connection owns admission until revoked or closed.
-			// Secondary hellos and revocations cannot change that connection's epoch.
+			// The oldest current authentication owns admission, not socket accept order.
+			// A preconnected secondary may complete hello later without stealing ownership.
+			let generation: number | undefined;
 			for (const socket of sockets) {
-				if (!socket.data.closed && socket.data.authed && socket.data.authenticatedSession === sessionId) return socket.data.authenticationGeneration;
+				if (socket.data.closed || !socket.data.authed || socket.data.authenticatedSession !== sessionId) continue;
+				const candidate = socket.data.authenticationGeneration;
+				if (candidate !== undefined && (generation === undefined || candidate < generation)) generation = candidate;
 			}
-			return undefined;
+			return generation;
 		},
 		invalidateAuthentication() {
             for (const socket of sockets) { socket.data.authenticatedSession = undefined; revoke(socket); }

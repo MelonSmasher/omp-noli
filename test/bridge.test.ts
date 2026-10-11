@@ -271,13 +271,14 @@ function forgeConsumer() {
 	return { admit: () => call(request, ctx), reply: (isError = false) => result({ ...reply, isError }, ctx) };
 }
 
-test("review forge reads survive unrelated secondary hello and disconnect", async () => {
+test.each([false, true])("review forge reads survive unrelated secondary hello and disconnect, preconnected=%s", async preconnected => {
+	const waiting = preconnected ? await Client.connect(bridge.socketPath) : undefined;
 	const owner = await Client.connect(bridge.socketPath);
 	await owner.call({ id: 1, method: "hello", params: { token: TOKEN } });
 	const consumer = forgeConsumer();
 	expect(consumer.admit()).toBeUndefined();
 	const ownerGeneration = bridge.authenticatedGeneration(h.session);
-	const secondary = await Client.connect(bridge.socketPath);
+	const secondary = waiting ?? await Client.connect(bridge.socketPath);
 	await secondary.call({ id: 2, method: "hello", params: { token: TOKEN } });
 	expect(bridge.authenticatedGeneration(h.session)).toBe(ownerGeneration);
 	expect(consumer.reply()).toBeUndefined();

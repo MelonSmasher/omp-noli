@@ -114,5 +114,5 @@ export async function verifyForgeRuntime(session: AgentSession, request: (method
 	assert.deepEqual(await fresh, { content, details });
 	await session.refreshRpcHostTools([]);
 	bridge.close("Disposable smoke complete");
-	console.log("OFFICIAL FORGE RUNTIME OK: main resolve/read admission, lossless decimal IDs, unchanged bounded content, current backend denial, native cancellation, child/advisor/absent SDK/foreign/forged arguments denied, unrelated secondary hello/disconnect preserve owning reads, stale tree/reconnect/adoption success and error content/details discarded");
+	console.log("OFFICIAL FORGE RUNTIME OK: main resolve/read admission, lossless decimal IDs, unchanged bounded content, current backend denial, native cancellation, child/advisor/absent SDK/foreign/forged arguments denied, unrelated secondary hello/disconnect preserve owning reads, stale tree/reconnect/adoption RPC success and error text discarded");
 }
