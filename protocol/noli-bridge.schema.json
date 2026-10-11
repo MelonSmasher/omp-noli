@@ -363,6 +363,7 @@
         "work.get",
         "work.cancel",
         "host.attach_file",
+        "host.forge_resource",
         "tree.navigate",
         "goal.budget",
         "memory.status",
@@ -531,6 +532,24 @@
         },
         "host.attach_file": {
           "$ref": "#/$defs/CapabilityState"
+        },
+        "host.forge_resource": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "main-only-v1"
+                }
+              }
+            }
+          ]
         },
         "tree.navigate": {
           "$ref": "#/$defs/CapabilityState"

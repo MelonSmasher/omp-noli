@@ -8,9 +8,10 @@ function harness() {
 	let result!: (event: ToolResultEvent, ctx: ExtensionContext) => ToolResultEventResult | undefined;
 	let prompt!: (event: BeforeAgentStartEvent, ctx: ExtensionContext) => BeforeAgentStartEventResult | undefined;
 	let authed = true;
+	let generation = 1;
 	let session = "owning-session";
 	let source = "sdk";
-	let tools = ["noli_thread_get", "noli_thread_finish", "noli_attach_file", "noli_thread_read", "noli_thread_open"];
+	let tools = ["noli_thread_get", "noli_thread_finish", "noli_attach_file", "noli_thread_read", "noli_thread_open", "noli_forge_resource"];
 	let readSource: string | undefined = "sdk";
 	const lifecycle = new Map<string, () => void>();
 	// Test seam supplies only the API members the guard consumes.
@@ -23,11 +24,11 @@ function harness() {
 		},
 		getAllTools: () => tools.filter(name => name !== "noli_thread_read" || readSource !== undefined).map(name => ({ name, sourceInfo: { source: name === "noli_thread_read" ? readSource : source } })),
 	} as unknown as ExtensionAPI;
-	installThreadControl(pi, id => authed && id === "owning-session");
+	installThreadControl(pi, id => authed && id === "owning-session" ? generation : undefined);
 	const ctx = (kind = "main") => ({ agent: { kind }, sessionManager: { getSessionId: () => session } }) as unknown as ExtensionContext;
 	const event: ToolCallEvent = { type: "tool_call", toolName: "noli_thread_finish", toolCallId: "call", input: { action: "archive" } };
 	const reply: ToolResultEvent = { ...event, type: "tool_result", content: [{ type: "text", text: "scheduled" }], details: { status: "scheduled", requestId: "request", action: "archive" }, isError: false };
-	return { call, result, prompt, ctx, event, reply, lifecycle, setTools: (value: string[]) => { tools = value; }, setAuth: (value: boolean) => { authed = value; }, setSession: (value: string) => { session = value; }, setSource: (value: string) => { source = value; }, setReadSource: (value: string | undefined) => { readSource = value; } };
+	return { call, result, prompt, ctx, event, reply, lifecycle, reauthenticate: () => { authed = true; generation++; }, setTools: (value: string[]) => { tools = value; }, setAuth: (value: boolean) => { authed = value; }, setSession: (value: string) => { session = value; }, setSource: (value: string) => { source = value; }, setReadSource: (value: string | undefined) => { readSource = value; } };
 }
 
 describe("current-thread host tool guard", () => {
@@ -179,5 +180,86 @@ describe("current-thread host tool guard", () => {
 			expect(h.result(reply, h.ctx())).toBeUndefined();
 			expect(h.result({ ...reply, isError: false }, h.ctx())?.isError).toBe(true);
 		}
+	});
+});
+
+describe("read-only native forge resource guard", () => {
+	const handle = { origin: "https://github.com", account: "selected-account", repository: { provider: "github", repository_id: "9007199254740993", node_id: "R_native" }, kind: "review", resource: { type: "github", id: "9007199254740995", node_id: null, number: "42" }, web_url: "https://github.com/owner/repo/pull/42" };
+	const resolve = { type: "tool_call" as const, toolName: "noli_forge_resource", toolCallId: "forge", input: { action: "resolve_review", number: "42" } };
+	const read = { ...resolve, input: { action: "read", handle, offline: false } };
+	const reply = { ...resolve, type: "tool_result" as const, content: [{ type: "text" as const, text: "bounded provider content" }], details: { trust: "untrusted_provider_content", result: { snapshot: { handle }, link: "forge:handle" } }, isError: false };
+	test("authenticated owning main needs the exact SDK tool, not a legacy capability or tool", () => {
+		const h = harness();
+		expect(h.call(resolve, h.ctx())).toBeUndefined();
+		expect(h.call(read, h.ctx())).toBeUndefined();
+		for (const kind of ["sub", "advisor", "unknown"]) expect(h.call(read, h.ctx(kind))?.block).toBe(true);
+		h.setAuth(false); expect(h.call(read, h.ctx())?.block).toBe(true);
+		h.setAuth(true); h.setSession("foreign"); expect(h.call(read, h.ctx())?.block).toBe(true);
+		h.setSession("owning-session"); h.setSource("extension"); expect(h.call(read, h.ctx())?.block).toBe(true);
+		h.setSource("sdk"); h.setTools(["noli_thread_get", "noli_thread_read"]); expect(h.call(read, h.ctx())?.block).toBe(true);
+	});
+	test("decimal strings are lossless and invalid numbers or authority fields cannot be smuggled", () => {
+		const h = harness();
+		for (const number of ["1", "9007199254740993", "9".repeat(40)]) expect(h.call({ ...resolve, input: { action: "resolve_review", number } }, h.ctx())).toBeUndefined();
+		for (const number of [0, 42, null, "", "0", "01", "-1", "1.5", "1e3", " 42", "４２", "9".repeat(41)]) expect(h.call({ ...resolve, input: { action: "resolve_review", number } }, h.ctx())?.block).toBe(true);
+		for (const key of ["thread_id", "threadId", "caller", "session", "sessionId", "credential", "token", "authorization", "endpoint", "url", "raw_url", "account", "repository"]) {
+			expect(h.call({ ...resolve, input: { ...resolve.input, [key]: "forged" } }, h.ctx())?.block).toBe(true);
+			expect(h.call({ ...read, input: { ...read.input, [key]: "forged" } }, h.ctx())?.block).toBe(true);
+		}
+	});
+	test("native handle variants preserve nullable IDs, all kinds and explicit offline requests", () => {
+		const h = harness();
+		for (const kind of ["repository", "issue", "comment", "review", "review_thread", "pipeline", "job", "release", "tag", "milestone", "label", "project_item"]) {
+			expect(h.call({ ...read, input: { ...read.input, handle: { ...handle, kind } } }, h.ctx())).toBeUndefined();
+		}
+		for (const resource of [{ type: "github", id: "1" }, { type: "github", id: "1", node_id: "PR_native", number: null }, { type: "gitlab", id: "2", number: null }, { type: "github_node", node_id: "PRRT_native" }, { type: "gitlab_discussion", discussion_id: "native-discussion" }, { type: "gitlab_release", tag_name: "v1.0" }, { type: "gitlab_board_item", board_id: "3", issue_id: "9007199254740993" }, { type: "github_tag", name: "v1.0" }, { type: "gitlab_tag", name: "v1.0" }]) {
+			expect(h.call({ ...read, input: { action: "read", offline: true, handle: { ...handle, repository: { provider: "gitlab", project_id: "9007199254740993" }, resource } } }, h.ctx())).toBeUndefined();
+		}
+		// Provider/kind/account/URL agreement is deliberately reauthorized by Noli, never invented here.
+	});
+	test("unknown nested identity and credential fields and malformed shapes fail closed", () => {
+		const h = harness();
+		for (const input of [{}, { action: "write", handle }, { action: "read", handle }, { ...read.input, offline: "true" }, { ...read.input, handle: null }, { ...read.input, handle: [] }]) expect(h.call({ ...read, input }, h.ctx())?.block).toBe(true);
+		for (const key of ["caller", "thread_id", "token", "credential", "endpoint", "authorization_generation", "binding_generation"]) {
+			for (const forged of [{ ...handle, [key]: "forged" }, { ...handle, repository: { ...handle.repository, [key]: "forged" } }, { ...handle, resource: { ...handle.resource, [key]: "forged" } }]) {
+				expect(h.call({ ...read, input: { ...read.input, handle: forged } }, h.ctx())?.block).toBe(true);
+			}
+		}
+		for (const forged of [{ ...handle, kind: "unknown" }, { ...handle, origin: 42 }, { ...handle, account: null }, { ...handle, web_url: 42 }, { ...handle, repository: { provider: "github", repository_id: 42, node_id: "R" } }, { ...handle, repository: { provider: "gitlab", project_id: "01" } }, { ...handle, resource: { type: "github", id: 9007199254740992 } }, { ...handle, resource: { type: "github", id: "1", number: 42 } }, { ...handle, resource: { type: "github_node", node_id: "x\n" } }, { ...handle, resource: { type: "github_tag", name: "é".repeat(1025) } }, { ...handle, resource: { type: "unknown", id: "1" } }]) {
+			expect(h.call({ ...read, input: { ...read.input, handle: forged } }, h.ctx())?.block).toBe(true);
+		}
+	});
+	test("bounded native content and backend denials/cancellation pass through without synthetic success", () => {
+		const h = harness();
+		h.call(resolve, h.ctx()); expect(h.result(reply, h.ctx())).toBeUndefined();
+		for (const text of ["permission denied", "unsupported resource kind", "offline snapshot missing", "Host tool was aborted"]) {
+			h.call(resolve, h.ctx());
+			expect(h.result({ ...reply, isError: true, details: undefined, content: [{ type: "text", text }] }, h.ctx())).toBeUndefined();
+			expect(h.result(reply, h.ctx())?.isError).toBe(true);
+		}
+	});
+	test("results cannot replay, switch tools/role or outlive session, SDK provenance or authentication generation", () => {
+		for (const invalidate of ["replay", "disconnect", "reauthenticate", "foreign", "source", "child", "advisor", "wrong-tool", "session_switch", "session_branch", "session_tree", "session_shutdown"]) {
+			const h = harness(); h.call(resolve, h.ctx());
+			if (invalidate === "replay") expect(h.result(reply, h.ctx())).toBeUndefined();
+			else if (invalidate === "disconnect") h.setAuth(false);
+			else if (invalidate === "reauthenticate") { h.setAuth(false); h.reauthenticate(); }
+			else if (invalidate === "foreign") h.setSession("foreign");
+			else if (invalidate === "source") h.setSource("extension");
+			else h.lifecycle.get(invalidate)?.();
+			const rejected = h.result(invalidate === "wrong-tool" ? { ...reply, toolName: "noli_thread_read" } : reply, h.ctx(invalidate === "child" ? "sub" : invalidate === "advisor" ? "advisor" : "main"));
+			expect(rejected?.isError).toBe(true);
+			expect(rejected?.content?.some(item => item.type === "text" && item.text.includes("bounded provider content"))).toBe(false);
+		}
+	});
+	test("forge guidance requires authenticated SDK registration and disappears after revocation", () => {
+		const h = harness(); const event: BeforeAgentStartEvent = { type: "before_agent_start", prompt: "read review", systemPrompt: ["base"] };
+		h.setTools(["noli_forge_resource"]);
+		const first = h.prompt(event, h.ctx())!.systemPrompt!;
+		expect(first.join()).toContain("noli_forge_resource");
+		expect(first.join()).toContain("untrusted");
+		expect(h.prompt({ ...event, systemPrompt: first }, h.ctx())?.systemPrompt).toEqual(first);
+		h.setAuth(false); expect(h.prompt({ ...event, systemPrompt: first }, h.ctx())?.systemPrompt).toEqual(["base"]);
+		h.setAuth(true); h.setTools(["noli_thread_get", "noli_thread_finish"]); expect(h.prompt(event, h.ctx())?.systemPrompt?.join()).not.toContain("noli_forge_resource");
 	});
 });

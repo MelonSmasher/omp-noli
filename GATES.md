@@ -148,3 +148,26 @@ Scope: One authenticated host-tool surface, main-agent enforcement, deferred lif
   EXPECT: EXTENSION LOAD PASSED
   EVIDENCE: bun install --frozen-lockfile passed unchanged; bun test passed 254 tests, 0 failures, 1104 assertions. Typecheck, schema:check and extension:check passed. One-write reply/adoption regression proves one renewal/expiry pair and no timer left after invalidation; id-less response regression proves a safe bad_request and subsequent successful request. Warning negative assertions retain the missing-read-tool positive control. README and bootstrap comment now describe disabled setup rather than claiming no guards install.
 
+
+## Native forge resource producer prerequisite, unreleased
+
+- [x] FR1: Authenticated owning-main SDK admission, exact native request shapes, forged authority rejection and revocable results have meaningful regression coverage.
+  CHECK: bun test
+  EXPECT: 0 fail
+  EVIDENCE: automatic-evidence=v1; definition-sha256=2848289c850be8d3ce045ecde828b7a7489811ef4d56388f0fcab104ffd3372d; exit=0; EXPECT=matched; output-sha256=8bfda290657dabc65c626bb6691f671c5c01a6e60c6fc28ac84508cdff2b45ac; output-bytes=32382; shell=/bin/sh; cwd=.; source=direct isolated pipeline; HOME/profile=disposable; each command succeeded under shell &&
+- [x] FR2: Pinned official SDK types, optional protocol-1 schema and extension initialization agree.
+  CHECK: bun run typecheck && bun run schema:check && bun run extension:check
+  EXPECT: EXTENSION LOAD PASSED
+  EVIDENCE: automatic-evidence=v1; definition-sha256=f5aeeb83883225c22a0636a582de14bdcacad36ca7881670ddc503bb00b968b2; exit=0; EXPECT=matched; output-sha256=71e0b0a67edb94cf42fa7f48cc4497d8dee8efd413abc6fe690d74c424e38bbc; output-bytes=127; shell=/bin/sh; cwd=.; source=direct isolated pipeline; HOME/profile=disposable; each command succeeded under shell &&
+- [x] FR3: Disposable official SDK runtime forwards main resolve/read requests and bounded content/errors, cancels through the native RPC adapter, denies unauthorized callers and discards stale content/details.
+  CHECK: bun run smoke:forge
+  EXPECT: OFFICIAL FORGE PROVENANCE OK
+  EVIDENCE: automatic-evidence=v1; definition-sha256=5a48e487e5ced69ecba999b7e504df63f0d538478f8b34696c3f1f4e7e422e96; exit=0; EXPECT=matched; output-sha256=f18a9cd0d437baadafcf6c747dc06a62d6dad3cdbbe35f80035befb3bd7483d3; output-bytes=459; shell=/bin/sh; cwd=.; source=direct isolated pipeline; HOME/profile=disposable; each command succeeded under shell &&
+- [x] FR4: Official CLI local installation discovers the prepared extension and exercises its negotiated forge guard in a disposable HOME/profile.
+  CHECK: bun run smoke:install
+  EXPECT: NOLI_INSTALLED_FORGE_GUARD_OK
+  EVIDENCE: automatic-evidence=v1; definition-sha256=0c6931d271e4e676f9cf960ab609d41962fd2072181905b040ecde3684d9a5dc; exit=0; EXPECT=matched; output-sha256=6c3b71f5c2922a65847e26ba30d6edd256476e6d5fba45b3b6fada23b4d5d93c; output-bytes=432; shell=/bin/sh; cwd=.; source=direct isolated pipeline; HOME/profile=disposable; each command succeeded under shell &&
+
+Publication is a developer-only handoff, not a producer implementation check. Independent exact-head Sol review and required Ubuntu/macOS CI must precede merge, version bump and stable publication. Canonical repository publishing credentials are unavailable here. Published v0.7.1 does not guard `noli_forge_resource`; local installation is not published-tag proof. The parent owns release and actual stable-tag installation after credentials become available. This prerequisite alone does not complete Noli work item 187.
+
+The regression run passed 269 tests, 0 failures and 1293 assertions with Bun 1.4.3. Checks used an environment allowlist and disposable HOME/config/data/profile directories so inherited managed Gateway provider keys and auth-broker routes were not test inputs. The first ambient-environment attempt failed three existing SDK tests; the isolated run resolved those failures. Typecheck initially identified missing SDK lifecycle event fields in the new smoke; those were corrected before the successful type/schema/load/native/forge/install run.

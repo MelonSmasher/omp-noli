@@ -32,6 +32,7 @@ export const CAPABILITY_NAMES = [
 	"work.get",
 	"work.cancel",
 	"host.attach_file",
+	"host.forge_resource",
 	"tree.navigate",
 	"goal.budget",
 	"memory.status",

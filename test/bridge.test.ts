@@ -49,7 +49,7 @@ function view(over: Partial<AgentView>): AgentView {
 }
 
 function allAvailable(): Capabilities {
-	return Object.fromEntries(CAPABILITY_NAMES.map(name => [name, available(name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" ? "main-only-v1" : "public", "test")])) as Capabilities; // Every key is filled from CAPABILITY_NAMES.
+	return Object.fromEntries(CAPABILITY_NAMES.map(name => [name, available(name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" || name === "host.forge_resource" ? "main-only-v1" : "public", "test")])) as Capabilities; // Every key is filled from CAPABILITY_NAMES.
 }
 
 interface Harness {
@@ -232,12 +232,16 @@ test("agent control authentication is revoked on adoption and disconnect", async
 	const client = await Client.connect(bridge.socketPath);
 	await client.call({ id: 1, method: "hello", params: { token: TOKEN } });
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
+	const admittedGeneration = bridge.authenticatedGeneration("sess-1");
+	expect(typeof admittedGeneration).toBe("number");
 	expect(bridge.hasAuthenticatedSession("sess-2")).toBe(false);
 	bridge.invalidateAuthentication();
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(false);
+	expect(bridge.authenticatedGeneration("sess-1")).toBeUndefined();
 	const replacement = await Client.connect(bridge.socketPath);
 	expect((await replacement.call({ id: 2, method: "hello", params: { token: TOKEN } })).ok).toBe(true);
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
+	expect(bridge.authenticatedGeneration("sess-1")).not.toBe(admittedGeneration);
     expect((await call(client, "session.adopt", { sessionId: "sess-1" })).ok).toBe(true);
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(true);
 	bridge.close();
@@ -518,7 +522,7 @@ describe("capabilities", () => {
 		expect(advertised.capabilities["agents.kill.parked"]).toEqual({ available: false, api: "internal", reason: "tool_missing", detail: "probe failed" });
 		expect(advertised.capabilities["agents.kill.live"].available).toBe(true);
 		const got = await call(client, "capabilities.get");
-		const { "host.attach_file": _attachmentPolicy, ...legacy } = h.caps;
+		const { "host.attach_file": _attachmentPolicy, "host.forge_resource": _forgePolicy, ...legacy } = h.caps;
 		expect(got.result).toEqual({ capabilities: legacy });
 	});
 
@@ -533,6 +537,18 @@ describe("capabilities", () => {
 		expect(responseCapabilities(negotiated)["host.attach_file"]).toEqual(h.caps["host.attach_file"]);
 		for (const listener of h.capabilityListeners) listener(h.caps);
 		expect((await client.next()).capabilities).not.toHaveProperty("host.attach_file");
+	});
+
+	test("forge policy is optional and available only through explicit authenticated bootstrap negotiation", async () => {
+		h.caps["host.forge_resource"] = available("main-only-v1", "owning-main forge guard");
+		const client = await Client.connect(bridge.socketPath);
+		const hello = await client.call({ id: 1, method: "hello", params: { token: TOKEN } });
+		expect(responseCapabilities(hello)).not.toHaveProperty("host.forge_resource");
+		expect(responseCapabilities(await call(client, "capabilities.get"))).not.toHaveProperty("host.forge_resource");
+		const negotiated = await call(client, "capabilities.get", { hostTools: true });
+		expect(responseCapabilities(negotiated)["host.forge_resource"]).toEqual({ available: true, api: "main-only-v1", detail: "owning-main forge guard" });
+		for (const listener of h.capabilityListeners) listener(h.caps);
+		expect((await client.next()).capabilities).not.toHaveProperty("host.forge_resource");
 	});
 
 	test("parked kill is closed off when its capability is unavailable; live kill still works", async () => {

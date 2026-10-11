@@ -27,7 +27,7 @@ function consumeBootstrap(path: string): string {
 export default function noli(pi: ExtensionAPI): void {
 	let bridge: Bridge | undefined;
 	let boundSession: string | undefined;
-	installThreadControl(pi, sessionId => bridge?.hasAuthenticatedSession(sessionId) ?? false);
+	installThreadControl(pi, sessionId => bridge?.authenticatedGeneration(sessionId));
 	const dir = process.env[ENV_DIR];
 	const tokenFile = process.env[ENV_TOKEN_FILE];
 	const legacyToken = process.env.NOLI_BRIDGE_TOKEN;

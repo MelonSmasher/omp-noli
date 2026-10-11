@@ -271,6 +271,7 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 			// installThreadControl separately requires authenticated SDK provenance at call time.
 			"host.thread_read": current && mainSession() ? available("main-only-v2", "Authenticated owning-main reference_id host tool; Noli authorizes durable submitted references") : unavailable("main-only-v2", "not_ready", "Main session not established"),
 			"host.thread_open": current && mainSession() ? available("main-only-v1", "Authenticated owning-main thread opening; Noli verifies explicit user authorization or requires confirmation") : unavailable("main-only-v1", "not_ready", "Main session not established"),
+			"host.forge_resource": current && mainSession() ? available("main-only-v1", "Authenticated owning-main noli_forge_resource guard; Noli owns native repository/account authorization and read-only backend") : unavailable("main-only-v1", "not_ready", "Main session not established"),
 			"agents.list": publicCap([], "pi.pi.AgentRegistry"),
 			"agents.list.persisted": internalCap("agents.list.persisted", probeRosterReader),
 			"agents.output": (() => {

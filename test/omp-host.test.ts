@@ -241,6 +241,16 @@ test("thread-read negotiation advertises only reference_id main-only-v2 and trac
 	expect(omp.host.capabilities()["host.thread_read"]).toMatchObject({ available: false, api: "main-only-v2", reason: "not_ready" });
 });
 
+test("forge guard bootstrap precedes SDK registration and follows owning-main lifetime", () => {
+	expect(omp.host.capabilities()["host.forge_resource"]).toMatchObject({ available: true, api: "main-only-v1" });
+	omp.release();
+	expect(omp.host.capabilities()["host.forge_resource"]).toMatchObject({ available: false, api: "main-only-v1", reason: "not_ready" });
+	omp.adopt(ctx);
+	expect(omp.host.capabilities()["host.forge_resource"].available).toBe(true);
+	registry.refs.delete("Main"); omp.adopt(ctx);
+	expect(omp.host.capabilities()["host.forge_resource"].available).toBe(false);
+});
+
 
 describe("persisted discovery", () => {
 	test("a stub-only root keeps discovery available and still returns live rows", async () => {
