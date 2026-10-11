@@ -89,7 +89,7 @@ export function installThreadControl(pi: ExtensionAPI, authenticatedGeneration: 
 		if (!THREAD_TOOLS.some(name => name === event.toolName)) return;
 		const owner = calls.get(event.toolCallId);
 		calls.delete(event.toolCallId);
-		if (!event.isError && (ctx.agent.kind !== "main" || owner?.sessionId !== sessionId(ctx) || owner.toolName !== event.toolName || owner.generation !== authenticatedGeneration(sessionId(ctx)) || !available(ctx, event.toolName))) {
+		if ((event.toolName === "noli_forge_resource" || !event.isError) && (ctx.agent.kind !== "main" || owner?.sessionId !== sessionId(ctx) || owner.toolName !== event.toolName || owner.generation !== authenticatedGeneration(sessionId(ctx)) || !available(ctx, event.toolName))) {
 			if (event.toolName === "noli_forge_resource") return { content: [{ type: "text", text: "Forge resource result lost its authenticated owning session; discard this stale read and request a fresh authorized read if needed." }], details: {}, isError: true };
 			return { content: [{ type: "text", text: "Noli control acknowledgement lost its authenticated session; outcome unknown. The operation may already be persisted. Do not retry automatically; inspect the owning conversation before retrying." }], isError: true };
 		}

@@ -101,7 +101,10 @@ if (selection === "--verify") {
 		}
 		if (forgeResources) {
 			await created.session.refreshRpcHostTools([]);
-			await verifyForgeRuntime(created.session, (method, params) => client!.request(method, params), () => client!.reconnect());
+			await verifyForgeRuntime(created.session, (method, params) => client!.request(method, params), () => client!.reconnect(), async () => {
+				const secondary = new ForgeClient(join(process.env.NOLI_BRIDGE_DIR!, `omp-${process.pid}.sock`), bootstrap, () => created.session.sessionId);
+				await secondary.connect(); return secondary;
+			});
 			console.log("NOLI_INSTALLED_FORGE_GUARD_OK");
 		}
 		console.log("NOLI_RELEASE_INSTALL_OK");

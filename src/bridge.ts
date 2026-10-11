@@ -79,6 +79,7 @@ interface ConnectionState {
 	closed: boolean;
 	outbound: Buffer;
 	authenticatedSession?: string;
+	authenticationGeneration?: number;
 	gatewayReady?: Promise<void>;
 	gatewayReply?: { id: string; resolve(value: GatewayCredential): void; reject(error: Error): void };
 	renewal?: NodeJS.Timeout;
@@ -160,7 +161,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 	const turnsInFlight = new Set<string>();
     let bootstrapAvailable = true;
     let bindingSequence = 0;
-	let authenticationGeneration = 0;
+	let authenticationSequence = 0;
 
 	const flush = (socket: Socket<ConnectionState>): void => {
 		if (socket.data.closed || !socket.data.outbound.length) return;
@@ -188,7 +189,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 		tick();
 	};
 	const revoke = (socket: Socket<ConnectionState>): void => {
-		authenticationGeneration++;
+		socket.data.authenticationGeneration = ++authenticationSequence;
 		clearTimeout(socket.data.renewal);
 		clearTimeout(socket.data.expiry);
 		clearTimeout(socket.data.bindingTimeout);
@@ -403,7 +404,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 			if (options.gateway) bootstrapAvailable = false;
 			socket.data.authed = true;
 			socket.data.authenticatedSession = host.sessionId();
-			authenticationGeneration++;
+			socket.data.authenticationGeneration = ++authenticationSequence;
 			const hello = { protocol: PROTOCOL_VERSION, sessionId: host.sessionId(), pid: process.pid, capabilities: clientCapabilities(host.refreshCapabilities()) };
 			send(socket, Buffer.from(`${JSON.stringify({ type: "response", id, ok: true, result: hello })}\n`));
             void bind(socket);
@@ -519,8 +520,10 @@ export function startBridge(options: BridgeOptions): Bridge {
 			return this.authenticatedGeneration(sessionId) !== undefined;
 		},
 		authenticatedGeneration(sessionId) {
+			// The first matching connection owns admission until revoked or closed.
+			// Secondary hellos and revocations cannot change that connection's epoch.
 			for (const socket of sockets) {
-				if (!socket.data.closed && socket.data.authed && socket.data.authenticatedSession === sessionId) return authenticationGeneration;
+				if (!socket.data.closed && socket.data.authed && socket.data.authenticatedSession === sessionId) return socket.data.authenticationGeneration;
 			}
 			return undefined;
 		},

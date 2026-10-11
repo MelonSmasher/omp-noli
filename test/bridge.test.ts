@@ -3,6 +3,8 @@ import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Socket } from "bun";
+import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult, ToolResultEvent, ToolResultEventResult } from "@oh-my-pi/pi-coding-agent";
+import { installThreadControl } from "../src/thread-control";
 import { type Bridge, type BridgeHost, startBridge } from "../src/bridge";
 import { available, unavailable } from "../src/capabilities";
 import { type AgentView, type Capabilities, CAPABILITY_NAMES, type CapabilityName, type CapabilityReason, type TurnResult } from "../src/protocol";
@@ -209,6 +211,11 @@ class Client {
 		this.raw(`${JSON.stringify(frame)}\n`);
 		return this.next();
 	}
+
+	async disconnect(): Promise<void> {
+		this.#socket?.end();
+		await this.closedPromise;
+	}
 }
 
 let dir: string;
@@ -247,6 +254,61 @@ test("agent control authentication is revoked on adoption and disconnect", async
 	bridge.close();
 	await replacement.closedPromise;
 	expect(bridge.hasAuthenticatedSession("sess-1")).toBe(false);
+});
+
+/** A guarded consumer call uses real socket authentication, not a capability-only mock. */
+function forgeConsumer() {
+	let call!: (event: ToolCallEvent, ctx: ExtensionContext) => ToolCallEventResult | undefined;
+	let result!: (event: ToolResultEvent, ctx: ExtensionContext) => ToolResultEventResult | undefined;
+	const pi = {
+		on(name: string, handler: unknown) { if (name === "tool_call") call = handler as typeof call; if (name === "tool_result") result = handler as typeof result; },
+		getAllTools: () => [{ name: "noli_forge_resource", sourceInfo: { source: "sdk" } }],
+	} as unknown as ExtensionAPI;
+	installThreadControl(pi, sessionId => bridge.authenticatedGeneration(sessionId));
+	const ctx = { agent: { kind: "main" }, sessionManager: { getSessionId: () => h.session } } as unknown as ExtensionContext;
+	const request: ToolCallEvent = { type: "tool_call", toolName: "noli_forge_resource", toolCallId: "pending-forge-read", input: { action: "resolve_review", number: "42" } };
+	const reply: ToolResultEvent = { ...request, type: "tool_result", content: [{ type: "text", text: "bounded current provider content" }], details: { snapshot: "current account snapshot" }, isError: false };
+	return { admit: () => call(request, ctx), reply: (isError = false) => result({ ...reply, isError }, ctx) };
+}
+
+test("review forge reads survive unrelated secondary hello and disconnect", async () => {
+	const owner = await Client.connect(bridge.socketPath);
+	await owner.call({ id: 1, method: "hello", params: { token: TOKEN } });
+	const consumer = forgeConsumer();
+	expect(consumer.admit()).toBeUndefined();
+	const ownerGeneration = bridge.authenticatedGeneration(h.session);
+	const secondary = await Client.connect(bridge.socketPath);
+	await secondary.call({ id: 2, method: "hello", params: { token: TOKEN } });
+	expect(bridge.authenticatedGeneration(h.session)).toBe(ownerGeneration);
+	expect(consumer.reply()).toBeUndefined();
+	expect(consumer.admit()).toBeUndefined();
+	await secondary.disconnect();
+	await owner.call({ id: 3, method: "capabilities.get", sessionId: h.session });
+	expect(bridge.authenticatedGeneration(h.session)).toBe(ownerGeneration);
+	expect(consumer.reply()).toBeUndefined();
+});
+
+test("review forge owner disconnect revokes success and error despite a remaining authenticated socket", async () => {
+	const owner = await Client.connect(bridge.socketPath);
+	await owner.call({ id: 1, method: "hello", params: { token: TOKEN } });
+	const secondary = await Client.connect(bridge.socketPath);
+	await secondary.call({ id: 2, method: "hello", params: { token: TOKEN } });
+	const consumer = forgeConsumer();
+	expect(consumer.admit()).toBeUndefined();
+	const ownerGeneration = bridge.authenticatedGeneration(h.session);
+	await owner.disconnect();
+	await secondary.call({ id: 3, method: "capabilities.get", sessionId: h.session });
+	expect(bridge.hasAuthenticatedSession(h.session)).toBe(true);
+	expect(bridge.authenticatedGeneration(h.session)).not.toBe(ownerGeneration);
+	const stale = consumer.reply();
+	expect(stale?.isError).toBe(true); expect(stale?.details).toEqual({});
+	expect(consumer.admit()).toBeUndefined();
+	bridge.invalidateAuthentication();
+	await secondary.call({ id: 4, method: "session.adopt", params: { sessionId: h.session } });
+	expect(bridge.hasAuthenticatedSession(h.session)).toBe(true);
+	const staleError = consumer.reply(true);
+	expect(staleError?.isError).toBe(true); expect(staleError?.details).toEqual({});
+	expect(JSON.stringify(staleError)).not.toContain("bounded current provider content");
 });
 
 afterEach(() => {

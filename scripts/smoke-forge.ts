@@ -41,7 +41,10 @@ if (process.argv[2] !== "--verify") {
 				const tool = session.getToolByName("noli_forge_resource"); assert(tool);
 				await assert.rejects(tool.execute("non-sdk-forge", call.input), /Authenticated Noli thread control is unavailable/);
 				console.log("OFFICIAL FORGE PROVENANCE OK: real extension-owned lookalike is denied despite authenticated owning-main context; SDK 18.8.2, disposable HOME/profile, no model requests");
-			} else await verifyForgeRuntime(session, (method, params) => client.request(method, params), () => client.reconnect());
+			} else await verifyForgeRuntime(session, (method, params) => client.request(method, params), () => client.reconnect(), async () => {
+				const secondary = new ForgeClient(join(bridgeDir, `omp-${process.pid}.sock`), token, () => session.sessionId);
+				await secondary.connect(); return secondary;
+			});
 		} finally { await client.disconnect(); await session.dispose(); }
 	}
 }

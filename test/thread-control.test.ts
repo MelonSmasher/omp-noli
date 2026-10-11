@@ -252,6 +252,25 @@ describe("read-only native forge resource guard", () => {
 			expect(rejected?.content?.some(item => item.type === "text" && item.text.includes("bounded provider content"))).toBe(false);
 		}
 	});
+	test("review forge errors cannot outlive admitted ownership", () => {
+		const error = { ...reply, isError: true, content: [{ type: "text" as const, text: "private previous-account backend diagnostic" }], details: { account: "previous-account", provider_body: "private error metadata" } };
+		const current = harness(); current.call(resolve, current.ctx());
+		expect(current.result(error, current.ctx())).toBeUndefined();
+		for (const invalidate of ["replay", "disconnect", "reauthenticate", "foreign", "source", "child", "advisor", "session_switch", "session_branch", "session_tree", "session_shutdown"]) {
+			const h = harness(); h.call(resolve, h.ctx());
+			if (invalidate === "replay") expect(h.result(error, h.ctx())).toBeUndefined();
+			else if (invalidate === "disconnect") h.setAuth(false);
+			else if (invalidate === "reauthenticate") { h.setAuth(false); h.reauthenticate(); }
+			else if (invalidate === "foreign") h.setSession("foreign");
+			else if (invalidate === "source") h.setSource("extension");
+			else h.lifecycle.get(invalidate)?.();
+			const rejected = h.result(error, h.ctx(invalidate === "child" ? "sub" : invalidate === "advisor" ? "advisor" : "main"));
+			expect(rejected?.isError).toBe(true);
+			expect(rejected?.details).toEqual({});
+			expect(JSON.stringify(rejected)).not.toContain("private previous-account");
+			expect(JSON.stringify(rejected)).not.toContain("private error metadata");
+		}
+	});
 	test("forge guidance requires authenticated SDK registration and disappears after revocation", () => {
 		const h = harness(); const event: BeforeAgentStartEvent = { type: "before_agent_start", prompt: "read review", systemPrompt: ["base"] };
 		h.setTools(["noli_forge_resource"]);

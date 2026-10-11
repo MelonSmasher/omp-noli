@@ -6,8 +6,9 @@ import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/ex
 import { RpcHostToolBridge } from "@oh-my-pi/pi-coding-agent/modes/rpc/host-tools";
 import type { RpcHostToolCallRequest, RpcHostToolCancelRequest } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
 import type { ServerFrame } from "../../src/protocol";
+import type { ForgeClient } from "./forge-client";
 
-export async function verifyForgeRuntime(session: AgentSession, request: (method: string, params?: Record<string, unknown>) => Promise<ServerFrame>, reconnect: () => Promise<void>): Promise<void> {
+export async function verifyForgeRuntime(session: AgentSession, request: (method: string, params?: Record<string, unknown>) => Promise<ServerFrame>, reconnect: () => Promise<void>, connectSecondary: () => Promise<ForgeClient>): Promise<void> {
 	const runtime = session.extensionRunner;
 	assert(runtime);
 	const negotiated = await request("capabilities.get", { hostTools: true });
@@ -53,6 +54,17 @@ export async function verifyForgeRuntime(session: AgentSession, request: (method
 	assert(readFrame.type === "host_tool_call");
 	assert.deepEqual(readFrame.arguments, { action: "read", handle, offline: true });
 	answer(readFrame); await read;
+	const helloPending = tool.execute("forge-unrelated-hello", input);
+	const helloFrame = await nextFrame();
+	const secondary = await connectSecondary();
+	answer(helloFrame);
+	assert.deepEqual(await helloPending, { content, details }, "An unrelated authenticated hello cannot revoke the owning read");
+	const disconnectPending = tool.execute("forge-unrelated-disconnect", input);
+	const disconnectFrame = await nextFrame();
+	await secondary.disconnect();
+	await request("capabilities.get", { hostTools: true });
+	answer(disconnectFrame);
+	assert.deepEqual(await disconnectPending, { content, details }, "An unrelated socket disconnect cannot revoke the owning read");
 	for (const kind of ["sub", "advisor"]) {
 		// The SDK currently types main/sub only; also exercise an unrecognized advisor identity fail-closed.
 		const identity = { kind, id: kind, name: kind, depth: 1, parentId: "Main" } as unknown as ExtensionAgentIdentity;
@@ -76,8 +88,8 @@ export async function verifyForgeRuntime(session: AgentSession, request: (method
 	assert.equal(cancellation.targetId, cancelledFrame.id);
 	await cancelledCheck;
 	assert.equal(bridge.handleResult({ type: "host_tool_result", id: cancelledFrame.id, result: { content, details } }), false, "Cancelled RPC results cannot revive the call");
-	for (const invalidate of ["tree", "reconnect", "adoption"] as const) {
-		const pending: Promise<AgentToolResult<unknown>> = tool.execute(`forge-stale-${invalidate}`, input);
+	for (const isError of [false, true]) for (const invalidate of ["tree", "reconnect", "adoption"] as const) {
+		const pending: Promise<AgentToolResult<unknown>> = tool.execute(`forge-stale-${invalidate}-${isError}`, input);
 		const frame = await nextFrame();
 		if (invalidate === "tree") await runtime.emit({ type: "session_tree", newLeafId: session.sessionManager.getLeafId(), oldLeafId: session.sessionManager.getLeafId() });
 		else if (invalidate === "reconnect") await reconnect();
@@ -90,16 +102,17 @@ export async function verifyForgeRuntime(session: AgentSession, request: (method
 			const adopted = await request("session.adopt", { sessionId: session.sessionId });
 			assert(adopted.type === "response" && adopted.ok);
 		}
-		answer(frame);
+		answer(frame, isError);
 		const stale: AgentToolResult<unknown> = await pending;
 		assert.equal(stale.isError, true);
 		assert.deepEqual(stale.details, {}, "Stale provider metadata is discarded with content");
 		assert(!JSON.stringify(stale).includes("bounded provider content"));
 		assert(!JSON.stringify(stale).includes("bounded backend snapshot"));
+		assert(!JSON.stringify(stale).includes("permission denied by forge backend"), "Stale error diagnostics cannot leak after ownership changes");
 	}
 	const fresh = tool.execute("forge-fresh-adoption", input); answer(await nextFrame());
 	assert.deepEqual(await fresh, { content, details });
 	await session.refreshRpcHostTools([]);
 	bridge.close("Disposable smoke complete");
-	console.log("OFFICIAL FORGE RUNTIME OK: main resolve/read admission, lossless decimal IDs, unchanged bounded content, backend denial, native cancellation, child/advisor/absent SDK/foreign/forged arguments denied, stale tree/reconnect/adoption content and details discarded");
+	console.log("OFFICIAL FORGE RUNTIME OK: main resolve/read admission, lossless decimal IDs, unchanged bounded content, current backend denial, native cancellation, child/advisor/absent SDK/foreign/forged arguments denied, unrelated secondary hello/disconnect preserve owning reads, stale tree/reconnect/adoption success and error content/details discarded");
 }
