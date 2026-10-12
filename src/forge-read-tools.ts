@@ -13,7 +13,7 @@ export function forgeReadArguments(input: Record<string, unknown>): boolean {
 	if (input.action !== "read" || !only(input, ["action", "read", "byte_budget"])) return false;
 	const read = input.read;
 	if (!record(read) || !only(read, ["resource", "request"]) || !record(read.request)) return false;
-	if (typeof read.resource !== "string" || !["issues", "review", "reviews", "ci", "boards", "releases", "task_snapshot", "watch", "log", "report", "artifacts"].includes(read.resource)) return false;
+	if (typeof read.resource !== "string" || !["issues", "review", "reviews", "ci", "boards", "releases", "release_files", "task_snapshot", "watch", "log", "report", "artifacts"].includes(read.resource)) return false;
 	if (read.resource === "task_snapshot" && (!only(read.request, ["attempt_id", "sequence"])
 		|| typeof read.request.attempt_id !== "string" || !read.request.attempt_id.length
 		|| Buffer.byteLength(read.request.attempt_id, "utf8") > 256 || /\p{Cc}/u.test(read.request.attempt_id)
@@ -21,6 +21,7 @@ export function forgeReadArguments(input: Record<string, unknown>): boolean {
 	if (read.resource === "watch" && (!only(read.request, ["watch_id"])
 		|| typeof read.request.watch_id !== "string" || !read.request.watch_id.length
 		|| Buffer.byteLength(read.request.watch_id, "utf8") > 256 || /\p{Cc}/u.test(read.request.watch_id))) return false;
+	if (read.resource === "release_files" && Object.keys(read.request).length !== 0) return false;
 	// Provider handles contain account/origin IDs as comparison inputs, not credentials.
 	// Native serde deny_unknown_fields and selected-account validation remain mandatory.
 	return Buffer.byteLength(JSON.stringify(input), "utf8") <= 65536;

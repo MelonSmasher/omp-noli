@@ -95,3 +95,17 @@ test("watch lookup takes only the persisted watch ID and retains main-session ad
 	h.setGeneration(2);
 	expect(h.result({...h.reply(),input:request},h.ctx())?.isError).toBe(true);
 });
+
+test("native release file metadata requires an empty scoped request, never paths or owner claims", () => {
+	const request={action:"read",read:{resource:"release_files",request:{}}};
+	expect(forgeReadArguments(request)).toBe(true);
+	for (const key of ["path","selection_id","rpc_session","native_owner","thread_id","account","grant"]) {
+		expect(forgeReadArguments({...request,read:{...request.read,request:{[key]:"forged"}}})).toBe(false);
+	}
+	const h=fixture();
+	const event={...h.request,input:request};
+	expect(h.call(event,h.ctx("sub"))?.block).toBe(true);
+	expect(h.call(event,h.ctx())).toBeUndefined();
+	h.setSession("replacement");
+	expect(h.result({...h.reply(),input:request},h.ctx())?.isError).toBe(true);
+});
