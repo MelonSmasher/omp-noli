@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { forgeWriteAdmission, forgeWriteArguments, forgeWriteStatusArguments } from "../src/forge-write-tools";
+import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult, ToolResultEvent, ToolResultEventResult } from "@oh-my-pi/pi-coding-agent";
+import { installThreadControl } from "../src/thread-control";
 
 const target = {
 	origin: "github", account: "selected", repository: { provider: "github", repository_id: "123", node_id: "R_123" },
@@ -49,4 +51,67 @@ describe("forge write producer envelope", () => {
 			expect(forgeWriteStatusArguments({ operation_id: "op-123", [key]: true })).toBe(false);
 		}
 	});
+});
+
+function guarded(toolName: "noli_forge_write_v1" | "noli_forge_write_status_v1") {
+    let call!: (event: ToolCallEvent, context: ExtensionContext) => ToolCallEventResult | undefined;
+    let result!: (event: ToolResultEvent, context: ExtensionContext) => ToolResultEventResult | undefined;
+    let generation: number | undefined = 1;
+    let session = "owning-native-session";
+    let source = "sdk";
+    const lifecycle = new Map<string, () => void>();
+    installThreadControl({
+        on(name: string, handler: unknown) {
+            if (name === "tool_call") call = handler as typeof call;
+            if (name === "tool_result") result = handler as typeof result;
+            if (name.startsWith("session_")) lifecycle.set(name, handler as () => void);
+        },
+        getAllTools: () => [{ name: toolName, sourceInfo: { source } }],
+    } as unknown as ExtensionAPI, id => id === "owning-native-session" ? generation : undefined);
+    const ctx = (kind = "main") => ({ agent: { kind }, sessionManager: { getSessionId: () => session } }) as unknown as ExtensionContext;
+    const event: ToolCallEvent = { type: "tool_call", toolName, toolCallId: "write-call", input: toolName === "noli_forge_write_v1" ? proposal : { operation_id: "op" } };
+    const reply = (isError = false): ToolResultEvent => ({ ...event, type: "tool_result", isError, content: [{ type: "text", text: "private-outcome-canary" }], details: { status: "pending_approval", operation_id: "op" } });
+    return { call, result, ctx, event, reply, lifecycle,
+        setSession: (value: string) => { session = value; },
+        setGeneration: (value: number | undefined) => { generation = value; },
+        setSource: (value: string) => { source = value; },
+    };
+}
+
+test("both registered write tools deny advisor, child, forged session and non-SDK callers", () => {
+    for (const name of ["noli_forge_write_v1", "noli_forge_write_status_v1"] as const) {
+        const h = guarded(name);
+        for (const role of ["advisor", "sub", "unknown"]) expect(h.call(h.event, h.ctx(role))?.block).toBe(true);
+        h.setSession("forged"); expect(h.call(h.event, h.ctx())?.block).toBe(true);
+        h.setSession("owning-native-session"); h.setGeneration(undefined); expect(h.call(h.event, h.ctx())?.block).toBe(true);
+        h.setGeneration(1); h.setSource("extension"); expect(h.call(h.event, h.ctx())?.block).toBe(true);
+        h.setSource("sdk"); expect(h.call(h.event, h.ctx())).toBeUndefined();
+        expect(h.result(h.reply(), h.ctx())).toBeUndefined();
+        expect(h.result(h.reply(), h.ctx())?.isError).toBe(true);
+    }
+});
+
+test("successful and failed callbacks discard stale private write outcomes", () => {
+    for (const name of ["noli_forge_write_v1", "noli_forge_write_status_v1"] as const) {
+        for (const isError of [false, true]) for (const change of ["session", "epoch", "disconnect", "branch", "source", "role"]) {
+            const h = guarded(name); h.call(h.event, h.ctx());
+            if (change === "session") h.setSession("replacement");
+            if (change === "epoch") h.setGeneration(2);
+            if (change === "disconnect") h.setGeneration(undefined);
+            if (change === "branch") h.lifecycle.get("session_branch")!();
+            if (change === "source") h.setSource("extension");
+            const rejected = h.result(h.reply(isError), h.ctx(change === "role" ? "sub" : "main"));
+            expect(rejected?.isError).toBe(true);
+            expect(JSON.stringify(rejected)).not.toContain("private-outcome-canary");
+            expect(rejected?.details).toEqual({});
+        }
+    }
+});
+
+test("shared proposal producer refuses upstream acknowledgement in place of pending admission", () => {
+    const h = guarded("noli_forge_write_v1");
+    h.call(h.event, h.ctx());
+    expect(h.result({ ...h.reply(), details: { status: "acknowledged", operation_id: "op" } }, h.ctx())?.isError).toBe(true);
+    h.call(h.event, h.ctx());
+    expect(h.result(h.reply(), h.ctx())).toBeUndefined();
 });
