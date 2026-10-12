@@ -93,9 +93,9 @@ interface ConnectionState {
 }
 
 /** Optional host policies require an explicit bootstrap request, not an existing SDK registration. */
-function clientCapabilities(capabilities: Capabilities, hostTools = false): Omit<Capabilities, "host.attach_file" | "host.forge_resource"> | Capabilities {
+function clientCapabilities(capabilities: Capabilities, hostTools = false): Omit<Capabilities, "host.attach_file" | "host.forge_resource" | "host.forge_read" | "host.forge_write"> | Capabilities {
 	if (hostTools) return capabilities;
-	const { "host.attach_file": _attachmentPolicy, "host.forge_resource": _forgePolicy, ...legacy } = capabilities;
+	const { "host.attach_file": _attachmentPolicy, "host.forge_resource": _forgePolicy, "host.forge_read": _forgeReadPolicy, "host.forge_write": _forgeWritePolicy, ...legacy } = capabilities;
 	return legacy;
 }
 

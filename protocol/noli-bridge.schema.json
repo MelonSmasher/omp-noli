@@ -364,6 +364,8 @@
         "work.cancel",
         "host.attach_file",
         "host.forge_resource",
+        "host.forge_read",
+        "host.forge_write",
         "tree.navigate",
         "goal.budget",
         "memory.status",
@@ -534,6 +536,42 @@
           "$ref": "#/$defs/CapabilityState"
         },
         "host.forge_resource": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "main-only-v1"
+                }
+              }
+            }
+          ]
+        },
+        "host.forge_read": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "main-only-v1"
+                }
+              }
+            }
+          ]
+        },
+        "host.forge_write": {
           "allOf": [
             {
               "$ref": "#/$defs/CapabilityState"

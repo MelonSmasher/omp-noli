@@ -47,11 +47,13 @@ for (const name of ["GatewayBindParams", "GatewayBindResult", "GatewayReadyResul
 	schema.$defs[name] = generate(checker.getTypeAtLocation(declaration));
 }
 for (const [name, values] of Object.entries({ CapabilityName: CAPABILITY_NAMES, CapabilityReason: CAPABILITY_REASONS, AgentKind: AGENT_KINDS, AgentState: AGENT_STATES, DefinitionSource: DEFINITION_SOURCES, DiscoveryReason: DISCOVERY_REASONS, DiscoveryStatus: DISCOVERY_STATUSES, ErrorCode: ERROR_CODES, JobKind: JOB_KINDS })) schema.$defs[name] = { enum: values };
-schema.$defs.Capabilities.required = CAPABILITY_NAMES.filter(name => name !== "host.attach_file" && name !== "host.forge_resource");
+schema.$defs.Capabilities.required = CAPABILITY_NAMES.filter(name => name !== "host.attach_file" && name !== "host.forge_resource" && name !== "host.forge_read" && name !== "host.forge_write");
 schema.$defs.Capabilities.properties = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { $ref: "#/$defs/CapabilityState" }]));
 schema.$defs.Capabilities.properties["host.thread_read"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", properties: { api: { const: "main-only-v2" } } }] };
 schema.$defs.Capabilities.properties["host.thread_open"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", required: ["api"], properties: { api: { const: "main-only-v1" } } }] };
 schema.$defs.Capabilities.properties["host.forge_resource"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", required: ["api"], properties: { api: { const: "main-only-v1" } } }] };
+schema.$defs.Capabilities.properties["host.forge_read"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", required: ["api"], properties: { api: { const: "main-only-v1" } } }] };
+schema.$defs.Capabilities.properties["host.forge_write"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", required: ["api"], properties: { api: { const: "main-only-v1" } } }] };
 schema.$defs.CapabilityApi = { enum: ["public", "internal", "main-only-v1", "main-only-v2"] };
 const output = schema.$defs.AgentOutputResult;
 output.properties.nextOffset = { type: ["integer", "null"], minimum: 0 };
