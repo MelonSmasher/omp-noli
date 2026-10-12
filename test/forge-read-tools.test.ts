@@ -61,3 +61,20 @@ test("the shared structural checker preserves native handle shape, never grants 
 	expect(forgeResourceHandle(handle)).toBe(true);
 	for (const malformed of [{...handle,caller:"main"},{...handle,repository:{provider:"gitlab",project_id:"0"}},{...handle,resource:{type:"raw",url:"https://other"}}]) expect(forgeResourceHandle(malformed)).toBe(false);
 });
+
+test("snapshot reads accept persisted IDs, never a model-supplied target or authority", () => {
+	const request = {action:"read",read:{resource:"task_snapshot",request:{attempt_id:"attempt-local",sequence:7}},byte_budget:1024};
+	expect(forgeReadArguments(request)).toBe(true);
+	for (const key of ["thread_id","owner","account","repository","origin","session_id","grant","url"]) {
+		expect(forgeReadArguments({...request,read:{...request.read,request:{...request.read.request,[key]:"forged"}}})).toBe(false);
+	}
+	for (const sequence of [-1,1.5,Number.MAX_SAFE_INTEGER+1,"7"]) {
+		expect(forgeReadArguments({...request,read:{...request.read,request:{attempt_id:"attempt-local",sequence}}})).toBe(false);
+	}
+	const h=fixture();
+	const event={...h.request,input:request};
+	expect(h.call(event,h.ctx("sub"))?.block).toBe(true);
+	expect(h.call(event,h.ctx())).toBeUndefined();
+	h.setSession("replacement");
+	expect(h.result({...h.reply(),input:request},h.ctx())?.isError).toBe(true);
+});
