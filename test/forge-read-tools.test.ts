@@ -78,3 +78,20 @@ test("snapshot reads accept persisted IDs, never a model-supplied target or auth
 	h.setSession("replacement");
 	expect(h.result({...h.reply(),input:request},h.ctx())?.isError).toBe(true);
 });
+
+test("watch lookup takes only the persisted watch ID and retains main-session admission", () => {
+	const request = {action:"read",read:{resource:"watch",request:{watch_id:"watch-local"}}};
+	expect(forgeReadArguments(request)).toBe(true);
+	for (const key of ["thread_id","attempt_id","owner","account","repository","session_id","grant"]) {
+		expect(forgeReadArguments({...request,read:{...request.read,request:{...request.read.request,[key]:"forged"}}})).toBe(false);
+	}
+	for (const watch_id of ["","x".repeat(257),"watch\nother",7]) {
+		expect(forgeReadArguments({...request,read:{...request.read,request:{watch_id}}})).toBe(false);
+	}
+	const h=fixture();
+	const event={...h.request,input:request};
+	expect(h.call(event,h.ctx("advisor"))?.block).toBe(true);
+	expect(h.call(event,h.ctx())).toBeUndefined();
+	h.setGeneration(2);
+	expect(h.result({...h.reply(),input:request},h.ctx())?.isError).toBe(true);
+});
