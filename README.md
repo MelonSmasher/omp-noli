@@ -30,6 +30,8 @@ The existing host-tool guard independently checks the trusted current main role,
 
 Run `bun test`, `bun run typecheck`, `bun run schema:check`, `bun run extension:check`, `bun run smoke:native`, `bun run smoke:forge` and `bun run smoke:install` after implementation. Forge smoke uses pinned official OMP 18.8.2, its actual RPC host adapter and extension wrappers in a disposable HOME/profile. It exercises main admission, backend denial, native cancellation, child/advisor/foreign/non-SDK denial, unrelated secondary connections and stale success/error results without model requests or user-data changes. Local installation is not published-release proof. Releases require independent exact-head review, required Ubuntu/macOS CI, a stable tag and `bun scripts/smoke-install.ts v0.8.0` against that published tag. Forge qualification must print `NOLI_INSTALLED_FORGE_GUARD_OK`; older tags can pass their old contract without that token.
 
+Native SDK control fixtures publish command JSON by atomic rename. The driver opens a fresh `Bun.file` when reading the published command because a handle created before publication can retain a zero-byte size in Bun 1.4.3. This filesystem check does not certify the full native scenario.
+
 ## v0.7.1 Gateway models for subagents
 
 - Subagents and other sessions of a managed launch keep the Gateway models. OMP runs every extension factory again for each new session and clears this extension's providers first. The launch's bootstrap is already consumed by then, so these sessions previously failed with "No API key found". They now re-register from the launch's in-memory binding, scoped to that launch's `NOLI_BRIDGE_DIR`.

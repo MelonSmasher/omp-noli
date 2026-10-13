@@ -41,7 +41,7 @@ async function command(index: number): Promise<{mode:string; request:unknown; to
 		if (Date.now()>deadline) throw new Error("Native read smoke command deadline expired");
 		await Bun.sleep(20);
 	}
-	return file.json();
+	return Bun.file(join(root!,`command${index}.json`)).json();
 }
 let consuming = false;
 const refresh = session.refreshRpcHostTools.bind(session);
