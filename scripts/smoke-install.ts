@@ -10,6 +10,21 @@ import { type } from "@oh-my-pi/omptype";
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
 import { ForgeClient } from "./fixtures/forge-client";
 import { verifyForgeRuntime } from "./fixtures/forge-runtime";
+import { verifyInstalledForgeRuntime, verifyInstalledForgeProvenance } from "./fixtures/forge-installed-runtime";
+
+async function runIsolated(command: string[], cwd: string, env: Record<string, string>, timeoutMs: number) {
+	const child = Bun.spawn(command, { cwd, env, stdout: "pipe", stderr: "pipe" });
+	let timedOut = false;
+	const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
+	try {
+		const [out, err, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+		assert(!timedOut, `Isolated install smoke command exceeded ${timeoutMs}ms: ${command.join(" ")}`);
+		return { out, err, exit };
+	} finally {
+		clearTimeout(timer);
+		if (child.exitCode === null) { child.kill("SIGKILL"); await child.exited; }
+	}
+}
 
 const selection = process.argv[2];
 const root = resolve(import.meta.dir, "..");
@@ -20,6 +35,8 @@ if (selection === "--verify") {
 	const [major, minor] = expectedVersion.split(".").map(Number);
 	const referenceReads = major! > 0 || minor! >= 5;
 	const threadOpening = major! > 0 || minor! >= 6;
+	const forgeResources = major! > 0 || minor! >= 8;
+	const versionedForge = major! > 0 || minor! >= 9;
 	const installed = (await getEnabledPlugins(dir, { home: dir })).filter(plugin => plugin.name === "omp-noli");
 	assert.equal(installed.length, 1, "Official discovery finds one enabled installed plugin");
 	const plugin = installed[0]!;
@@ -30,6 +47,12 @@ if (selection === "--verify") {
 	const tokenFile = process.env.NOLI_BRIDGE_TOKEN_FILE;
 	const bootstrap = tokenFile === undefined ? undefined : readFileSync(tokenFile, "utf8");
 	assert.equal(entries.length, 1, "Installed manifest resolves one extension");
+	assert.equal(realpathSync(entries[0]!), realpathSync(join(plugin.path, "src/index.ts")), "Official loader selects the installed entry point");
+	if (versionedForge) for (const file of ["forge-read-tools.ts", "forge-write-tools.ts", "thread-control.ts"]) {
+		const installedModule = realpathSync(join(plugin.path, "src", file));
+		assert(installedModule.startsWith(`${realpathSync(plugin.path)}/`), "Required modules belong to the installed package");
+		if (process.argv[5] !== "--local") assert.notEqual(installedModule, realpathSync(join(root, "src", file)), "Published new-tool modules cannot resolve to checkout code");
+	}
 	const loaded = await loadExtensions(entries, dir);
 	assert.deepEqual(loaded.errors, []);
 	assert.equal(loaded.extensions.length, 1);
@@ -45,11 +68,15 @@ if (selection === "--verify") {
 	assert.equal(protocol.PROTOCOL_VERSION, 1);
 	assert.deepEqual(protocol.NATIVE_METHODS, ["tree.navigate", "goal.budget", "memory.status", "memory.search", "memory.save"]);
 	const schema = await Bun.file(join(plugin.path, "protocol/noli-bridge.schema.json")).json();
-	const forgeResources = protocol.CAPABILITY_NAMES.includes("host.forge_resource");
-	if (process.argv[5] === "--local") assert(forgeResources, "Prepared checkout contains the forge guard, unlike released v0.7.1");
+	if (forgeResources) assert(protocol.CAPABILITY_NAMES.includes("host.forge_resource"), "v0.8+ requires the legacy forge contract");
 	if (forgeResources) {
 		assert(!schema.$defs.Capabilities.required.includes("host.forge_resource"), "Forge bootstrap marker is optional in protocol 1");
 		assert.equal(schema.$defs.Capabilities.properties["host.forge_resource"].allOf[1].properties.api.const, "main-only-v1");
+	}
+	if (versionedForge) for (const capability of ["host.forge_read", "host.forge_write"]) {
+		assert(protocol.CAPABILITY_NAMES.includes(capability), `v0.9+ requires ${capability}; absence is not an older-release fallback`);
+		assert(!schema.$defs.Capabilities.required.includes(capability), "Compatible optional protocol-1 wire field is still required release support");
+		assert.equal(schema.$defs.Capabilities.properties[capability].allOf[1].properties.api.const, "main-only-v1");
 	}
 	if (referenceReads) {
 		assert(protocol.CAPABILITY_NAMES.includes("host.thread_read"));
@@ -74,7 +101,7 @@ if (selection === "--verify") {
 		// Negotiate with no registered host tools: Noli discovers support before set_host_tools.
 		assert(bootstrap !== undefined);
 		client = new ForgeClient(join(process.env.NOLI_BRIDGE_DIR!, `omp-${process.pid}.sock`), bootstrap, () => created.session.sessionId);
-		const hello = await client.connect();
+		const hello = versionedForge ? await verifyInstalledForgeRuntime(created.session, plugin.path, client) : await client.connect();
 		assert(hello.type === "response" && hello.ok);
 		const advertised = hello.result as { capabilities?: Record<string, { api: string; available: boolean }> };
 		if (referenceReads) {
@@ -107,11 +134,16 @@ if (selection === "--verify") {
 			});
 			console.log("NOLI_INSTALLED_FORGE_GUARD_OK");
 		}
-		console.log("NOLI_RELEASE_INSTALL_OK");
 	} finally {
 		await client?.disconnect();
 		await created.session.dispose();
 	}
+	if (versionedForge) {
+		assert(bootstrap !== undefined && tokenFile !== undefined);
+		await verifyInstalledForgeProvenance(entries, dir, tokenFile, bootstrap);
+		console.log("NOLI_INSTALLED_FORGE_V09_POLICY_OK: actual installed read/proposal/status SDK policy consumers; fixture backend only, no native approval/provider mutation claim");
+	}
+	console.log("NOLI_RELEASE_INSTALL_OK");
 } else {
 	assert(selection === "--local" || (selection && /^v\d+\.\d+\.\d+$/.test(selection)), "Pass --local or a published stable release tag");
 	const local = selection === "--local";
@@ -131,20 +163,22 @@ if (selection === "--verify") {
 		const bridgeDir = join(dir, "bridge");
 		mkdirSync(bridgeDir, { mode: 0o700 });
 		const env: Record<string, string> = { HOME: dir, PATH: `${dirname(bun)}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? "/usr/bin:/bin"}`, OMP_PROFILE: "release-smoke", PI_CODING_AGENT_DIR: join(dir, "agent"), XDG_CONFIG_HOME: join(dir, "config"), XDG_DATA_HOME: join(dir, "data"), XDG_CACHE_HOME: join(dir, "cache"), BUN_INSTALL_CACHE_DIR: join(dir, "bun-cache"), CI: "true", NO_COLOR: "1" };
-		const runtime = Bun.spawn([...cli, "--version"], { cwd: dir, env, stdout: "pipe", stderr: "pipe" });
-		const [version, versionError, versionExit] = await Promise.all([new Response(runtime.stdout).text(), new Response(runtime.stderr).text(), runtime.exited]);
+		const { out: version, err: versionError, exit: versionExit } = await runIsolated([...cli, "--version"], dir, env, 30_000);
 		assert.equal(versionExit, 0, `Pinned official OMP CLI unavailable: ${versionError}`);
-		const install = Bun.spawn([...cli, "plugin", "install", spec], { cwd: dir, env, stdout: "pipe", stderr: "pipe" });
-		const [out, err, exit] = await Promise.all([new Response(install.stdout).text(), new Response(install.stderr).text(), install.exited]);
+		const { out, err, exit } = await runIsolated([...cli, "plugin", "install", spec], dir, env, 180_000);
 		assert.equal(exit, 0, `Official isolated installation failed: ${out}\n${err}`);
 		const tokenFile = join(bridgeDir, "bootstrap-token");
 		writeFileSync(tokenFile, crypto.randomUUID(), { mode: 0o600 });
-		const verify = Bun.spawn([bun, import.meta.path, "--verify", dir, expectedVersion, local ? "--local" : "--published"], { cwd: dir, env: { ...env, NOLI_BRIDGE_DIR: bridgeDir, NOLI_BRIDGE_TOKEN_FILE: tokenFile }, stdout: "pipe", stderr: "pipe" });
-		const [verified, failure, code] = await Promise.all([new Response(verify.stdout).text(), new Response(verify.stderr).text(), verify.exited]);
+		const { out: verified, err: failure, exit: code } = await runIsolated([bun, import.meta.path, "--verify", dir, expectedVersion, local ? "--local" : "--published"], dir, { ...env, NOLI_BRIDGE_DIR: bridgeDir, NOLI_BRIDGE_TOKEN_FILE: tokenFile }, 120_000);
 		assert.equal(code, 0, `Installed extension verification failed: ${verified}\n${failure}`);
 		assert(verified.includes("NOLI_RELEASE_INSTALL_OK"));
+		const [major, minor] = expectedVersion.split(".").map(Number);
+		if (major! > 0 || minor! >= 9) {
+			assert(verified.includes("NOLI_INSTALLED_FORGE_V09_POLICY_OK"), "v0.9+ cannot pass on the legacy guard token alone");
+			console.log(verified.trim());
+		}
 		console.log(`NOLI_RELEASE_INSTALL_OK: ${local ? "prepared local checkout" : selection}, ${version.trim()}, pinned SDK ${sdk.version} CLI and extension loader, isolated disposable HOME/profile, enabled plugin discovery, extension initialization and release-specific host-tool negotiation`);
-		if (verified.includes("NOLI_INSTALLED_FORGE_GUARD_OK")) console.log("NOLI_INSTALLED_FORGE_GUARD_OK: installed plugin authenticated owning-main native RPC guard, backend denial/cancellation and stale-result revocation exercised");
+		if (verified.includes("NOLI_INSTALLED_FORGE_GUARD_OK")) console.log("NOLI_INSTALLED_FORGE_GUARD_OK: installed legacy resource SDK policy consumer with fixture backend; not native Noli forge acceptance");
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

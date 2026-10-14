@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Socket } from "bun";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult, ToolResultEvent, ToolResultEventResult } from "@oh-my-pi/pi-coding-agent";
+import { RpcHostToolBridge } from "@oh-my-pi/pi-coding-agent/modes/rpc/host-tools";
+import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, RpcFrameEncoder } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-frame";
+import type { RpcHostToolCallRequest } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
 import { installThreadControl } from "../src/thread-control";
 import { type Bridge, type BridgeHost, startBridge } from "../src/bridge";
 import { available, unavailable } from "../src/capabilities";
@@ -51,7 +54,7 @@ function view(over: Partial<AgentView>): AgentView {
 }
 
 function allAvailable(): Capabilities {
-	return Object.fromEntries(CAPABILITY_NAMES.map(name => [name, available(name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" || name === "host.forge_resource" ? "main-only-v1" : "public", "test")])) as Capabilities; // Every key is filled from CAPABILITY_NAMES.
+	return Object.fromEntries(CAPABILITY_NAMES.map(name => [name, available(name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" || name.startsWith("host.forge_") ? "main-only-v1" : "public", "test")])) as Capabilities; // Every key is filled from CAPABILITY_NAMES.
 }
 
 interface Harness {
@@ -268,7 +271,15 @@ function forgeConsumer() {
 	const ctx = { agent: { kind: "main" }, sessionManager: { getSessionId: () => h.session } } as unknown as ExtensionContext;
 	const request: ToolCallEvent = { type: "tool_call", toolName: "noli_forge_resource", toolCallId: "pending-forge-read", input: { action: "resolve_review", number: "42" } };
 	const reply: ToolResultEvent = { ...request, type: "tool_result", content: [{ type: "text", text: "bounded current provider content" }], details: { snapshot: "current account snapshot" }, isError: false };
-	return { admit: () => call(request, ctx), reply: (isError = false) => result({ ...reply, isError }, ctx) };
+	let admittedInput = request.input;
+	return {
+		admit: () => {
+			const admission = call(request, ctx);
+			if (admission?.input) admittedInput = admission.input;
+			return admission;
+		},
+		reply: (isError = false) => result({ ...reply, input: admittedInput, isError }, ctx),
+	};
 }
 
 test.each([false, true])("review forge reads survive unrelated secondary hello and disconnect, preconnected=%s", async preconnected => {
@@ -276,13 +287,13 @@ test.each([false, true])("review forge reads survive unrelated secondary hello a
 	const owner = await Client.connect(bridge.socketPath);
 	await owner.call({ id: 1, method: "hello", params: { token: TOKEN } });
 	const consumer = forgeConsumer();
-	expect(consumer.admit()).toBeUndefined();
+	expect(consumer.admit()).toHaveProperty("input");
 	const ownerGeneration = bridge.authenticatedGeneration(h.session);
 	const secondary = waiting ?? await Client.connect(bridge.socketPath);
 	await secondary.call({ id: 2, method: "hello", params: { token: TOKEN } });
 	expect(bridge.authenticatedGeneration(h.session)).toBe(ownerGeneration);
 	expect(consumer.reply()).toBeUndefined();
-	expect(consumer.admit()).toBeUndefined();
+	expect(consumer.admit()).toHaveProperty("input");
 	await secondary.disconnect();
 	await owner.call({ id: 3, method: "capabilities.get", sessionId: h.session });
 	expect(bridge.authenticatedGeneration(h.session)).toBe(ownerGeneration);
@@ -295,7 +306,7 @@ test("review forge owner disconnect revokes success and error despite a remainin
 	const secondary = await Client.connect(bridge.socketPath);
 	await secondary.call({ id: 2, method: "hello", params: { token: TOKEN } });
 	const consumer = forgeConsumer();
-	expect(consumer.admit()).toBeUndefined();
+	expect(consumer.admit()).toHaveProperty("input");
 	const ownerGeneration = bridge.authenticatedGeneration(h.session);
 	await owner.disconnect();
 	await secondary.call({ id: 3, method: "capabilities.get", sessionId: h.session });
@@ -303,7 +314,7 @@ test("review forge owner disconnect revokes success and error despite a remainin
 	expect(bridge.authenticatedGeneration(h.session)).not.toBe(ownerGeneration);
 	const stale = consumer.reply();
 	expect(stale?.isError).toBe(true); expect(stale?.details).toEqual({});
-	expect(consumer.admit()).toBeUndefined();
+	expect(consumer.admit()).toHaveProperty("input");
 	bridge.invalidateAuthentication();
 	await secondary.call({ id: 4, method: "session.adopt", params: { sessionId: h.session } });
 	expect(bridge.hasAuthenticatedSession(h.session)).toBe(true);
@@ -311,6 +322,112 @@ test("review forge owner disconnect revokes success and error despite a remainin
 	expect(staleError?.isError).toBe(true); expect(staleError?.details).toEqual({});
 	expect(JSON.stringify(staleError)).not.toContain("bounded current provider content");
 });
+
+// The socket authenticates the guard; proposal bytes go through the SDK stdout
+// encoder/decoder. Replies here are transport fixtures, not native journal proof.
+test("forge SDK transport rejects oversized serialized proposals without losing the authenticated connection", async () => {
+	const client = await authed();
+	const generation = bridge.authenticatedGeneration(h.session);
+	let admit!: (event: ToolCallEvent, ctx: ExtensionContext) => ToolCallEventResult | undefined;
+	let result!: (event: ToolResultEvent, ctx: ExtensionContext) => ToolResultEventResult | undefined;
+	installThreadControl({
+		on(name: string, handler: unknown) {
+			if (name === "tool_call") admit = handler as typeof admit;
+			if (name === "tool_result") result = handler as typeof result;
+		},
+		getAllTools: () => [{ name: "noli_forge_write_v1", sourceInfo: { source: "sdk" } }],
+	} as unknown as ExtensionAPI, session => bridge.authenticatedGeneration(session));
+	const ctx = { agent: { kind: "main" }, sessionManager: { getSessionId: () => h.session } } as unknown as ExtensionContext;
+	const encoder = new RpcFrameEncoder();
+	encoder.setProtocolVersion(2);
+	const decoder = new RpcFrameDecoder();
+	let outputCalls = 0;
+	let physicalFrames = 0;
+	let delivered: RpcHostToolCallRequest | undefined;
+	let overflow: Record<string, unknown> | undefined;
+	const sdkBridge = new RpcHostToolBridge(frame => {
+		outputCalls++;
+		for (const line of encoder.encodeFrames(frame)) {
+			physicalFrames++;
+			expect(Buffer.byteLength(line, "utf8")).toBeLessThanOrEqual(MAX_RPC_FRAME_BYTES);
+			const decoded = decoder.push(JSON.parse(line)) as Record<string, unknown> | undefined;
+			if (decoded?.type === "host_tool_call") delivered = decoded as unknown as RpcHostToolCallRequest;
+			if (decoded?.type === "rpc_frame_error") overflow = decoded;
+		}
+	});
+	const forwardedCall = (): RpcHostToolCallRequest => {
+		if (!delivered) throw new Error("SDK did not deliver the host call");
+		return delivered;
+	};
+	const [tool] = sdkBridge.setTools([{ name: "noli_forge_write_v1", label: "Propose forge write", description: "Transport fixture", parameters: { type: "object" } }]);
+	const toolCallId = 'bounds-é-"\\';
+	const proposal = (body: string) => ({
+		target: { origin: "github", account: "selected", repository: { provider: "github", repository_id: "123", node_id: "R_123" },
+			kind: "issue", resource: { type: "github", id: "456", node_id: "I_456", number: "7" }, web_url: "https://github.com/owner/repository/issues/7" },
+		payload: { kind: "issue", mutation: { action: "comment", body } },
+		precondition: { kind: "updated_at", value: "2026-10-12T00:00:00Z" },
+	});
+	const envelope = (input: Record<string, unknown>) => ({ type: "host_tool_call", id: "0000000000000000", toolCallId, toolName: tool!.name, arguments: input });
+	const overhead = Buffer.byteLength(JSON.stringify(envelope(proposal(""))), "utf8");
+	const atom = 'é\n"\\';
+	const atomBytes = Buffer.byteLength(JSON.stringify(atom), "utf8") - 2;
+	const content = [{ type: "text" as const, text: "Transport fixture pending admission" }];
+	const details = { status: "pending_approval", operation_id: "transport-operation" };
+	for (const delta of [-1, 0, 1]) {
+		const bodyBytes = MAX_RPC_REASSEMBLED_BYTES + delta - overhead;
+		const input = proposal(atom.repeat(Math.floor(bodyBytes / atomBytes)) + "x".repeat(bodyBytes % atomBytes));
+		expect(Buffer.byteLength(JSON.stringify(envelope(input)), "utf8")).toBe(MAX_RPC_REASSEMBLED_BYTES + delta);
+		const event: ToolCallEvent = { type: "tool_call", toolName: tool!.name, toolCallId, input };
+		if (delta === 1) {
+			// Positive control: the SDK drops an unguarded oversize call without an
+			// ID-bearing result. Abort releases its otherwise unresolved pending call.
+			const abort = new AbortController();
+			const unguarded = tool!.execute(toolCallId, input, abort.signal);
+			let settled = false;
+			void unguarded.then(() => { settled = true; }, () => { settled = true; });
+			await Promise.resolve();
+			expect(settled).toBe(false);
+			expect(overflow?.originalType).toBe("host_tool_call");
+			expect(overflow).not.toHaveProperty("id");
+			expect(delivered).toBeUndefined();
+			abort.abort();
+			await expect(unguarded).rejects.toThrow(/aborted/);
+			const previousCalls = outputCalls;
+			expect(admit(event, ctx)?.block).toBe(true);
+			expect(outputCalls).toBe(previousCalls);
+		} else {
+			const admission = admit(event, ctx);
+			expect(admission?.input).toBeDefined();
+			expect(admission?.input).not.toBe(input);
+			const pending = tool!.execute(toolCallId, admission!.input!);
+			expect(physicalFrames).toBeGreaterThan(1);
+			expect(overflow).toBeUndefined();
+			const forwarded = forwardedCall();
+			expect(forwarded.toolCallId).toBe(toolCallId);
+			expect(forwarded.id).toMatch(/^[0-9a-f]{16}$/);
+			const payload = forwarded.arguments.payload as { mutation: { body: string } };
+			expect(payload.mutation.body.length).toBe(input.payload.mutation.body.length);
+			expect(payload.mutation.body === input.payload.mutation.body).toBe(true);
+			expect(sdkBridge.handleResult({ type: "host_tool_result", id: forwarded.id, result: { content, details } })).toBe(true);
+			const reply = await pending;
+			expect(result({ ...event, input: admission!.input!, type: "tool_result", ...reply, isError: false }, ctx)).toBeUndefined();
+		}
+		delivered = undefined;
+		physicalFrames = 0;
+	}
+	// No reconnect, reauthentication or bridge replacement after the rejection.
+	expect((await call(client, "capabilities.get", { hostTools: true })).ok).toBe(true);
+	expect(bridge.authenticatedGeneration(h.session)).toBe(generation);
+	const event: ToolCallEvent = { type: "tool_call", toolName: tool!.name, toolCallId: "subsequent-valid", input: proposal("Small valid request") };
+	const admission = admit(event, ctx);
+	expect(admission?.input).toBeDefined();
+	const pending = tool!.execute(event.toolCallId, admission!.input!);
+	const forwarded = forwardedCall();
+	expect(forwarded.toolCallId).toBe(event.toolCallId);
+	expect(sdkBridge.handleResult({ type: "host_tool_result", id: forwarded.id, result: { content, details } })).toBe(true);
+	const reply = await pending;
+	expect(result({ ...event, input: admission!.input!, type: "tool_result", ...reply, isError: false }, ctx)).toBeUndefined();
+}, 60_000);
 
 afterEach(() => {
 	bridge.close();
@@ -584,9 +701,6 @@ describe("capabilities", () => {
 		expect(advertised.protocol).toBe(1);
 		expect(advertised.capabilities["agents.kill.parked"]).toEqual({ available: false, api: "internal", reason: "tool_missing", detail: "probe failed" });
 		expect(advertised.capabilities["agents.kill.live"].available).toBe(true);
-		const got = await call(client, "capabilities.get");
-		const { "host.attach_file": _attachmentPolicy, "host.forge_resource": _forgePolicy, ...legacy } = h.caps;
-		expect(got.result).toEqual({ capabilities: legacy });
 	});
 
 	test("attachment policy is returned only on explicit authenticated bootstrap requests", async () => {
@@ -602,16 +716,16 @@ describe("capabilities", () => {
 		expect((await client.next()).capabilities).not.toHaveProperty("host.attach_file");
 	});
 
-	test("forge policy is optional and available only through explicit authenticated bootstrap negotiation", async () => {
-		h.caps["host.forge_resource"] = available("main-only-v1", "owning-main forge guard");
+	test.each(["host.forge_resource", "host.forge_read", "host.forge_write"] as const)("%s policy requires explicit authenticated bootstrap negotiation", async capability => {
+		h.caps[capability] = available("main-only-v1", "owning-main forge guard");
 		const client = await Client.connect(bridge.socketPath);
 		const hello = await client.call({ id: 1, method: "hello", params: { token: TOKEN } });
-		expect(responseCapabilities(hello)).not.toHaveProperty("host.forge_resource");
-		expect(responseCapabilities(await call(client, "capabilities.get"))).not.toHaveProperty("host.forge_resource");
+		expect(responseCapabilities(hello)).not.toHaveProperty(capability);
+		expect(responseCapabilities(await call(client, "capabilities.get"))).not.toHaveProperty(capability);
 		const negotiated = await call(client, "capabilities.get", { hostTools: true });
-		expect(responseCapabilities(negotiated)["host.forge_resource"]).toEqual({ available: true, api: "main-only-v1", detail: "owning-main forge guard" });
+		expect(responseCapabilities(negotiated)[capability]).toEqual({ available: true, api: "main-only-v1", detail: "owning-main forge guard" });
 		for (const listener of h.capabilityListeners) listener(h.caps);
-		expect((await client.next()).capabilities).not.toHaveProperty("host.forge_resource");
+		expect((await client.next()).capabilities).not.toHaveProperty(capability);
 	});
 
 	test("parked kill is closed off when its capability is unavailable; live kill still works", async () => {

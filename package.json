@@ -1,9 +1,9 @@
 {
   "name": "omp-noli",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
-  "description": "Session-scoped Noli control and read-only native forge host-tool bridge for Oh My Pi",
+  "description": "Session-scoped Noli control and guarded native forge tools for Oh My Pi",
   "license": "MIT",
   "author": "Alex Markessinis <alex@markessinis.me>",
   "repository": {

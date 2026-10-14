@@ -26,14 +26,20 @@ test("pinned SDK re-register refreshes existing model credentials only in memory
 		expect(registry.find("noli-codex", model.id)?.api).toBe("openai-codex-responses");
 		expect(registry.find("noli-codex", model.id)?.baseUrl).toBe("http://127.0.0.1:12345");
 		expect(await registry.getApiKey(existing)).toBe("noli-pending");
+		const expectAvailable = () => expect(registry.getAvailable()
+			.filter(candidate => candidate.id === model.id)
+			.map(candidate => candidate.provider).sort()).toEqual(["noli-codex", "noli-openai"]);
+		expectAvailable();
 		const first = "a".repeat(43), second = "b".repeat(43);
 		gateway.bind({ token: first, expires_ms: Date.now() + 60_000 });
 		expect(await registry.getApiKey(existing)).toBe(first);
+		expectAvailable();
 		gateway.bind({ token: second, expires_ms: Date.now() + 60_000 });
 		expect(await registry.getApiKey(existing)).toBe(second);
-		expect(registry.getAvailable().map(value => value.provider).sort()).toEqual(["noli-codex", "noli-openai"]);
+		expectAvailable();
 		gateway.revoke();
 		expect(await registry.getApiKey(existing)).toBe("noli-pending");
+		expectAvailable();
 		for (const file of readdirSync(dir)) {
 			const bytes = readFileSync(join(dir, file));
 			expect(bytes.includes(Buffer.from(first))).toBe(false);
