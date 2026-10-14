@@ -22,6 +22,8 @@ For managed Gateway sessions, Noli writes secret-free `gateway-providers.json` a
 - Reads persisted task snapshots, retained watch targets and metadata for files explicitly handed to the native session. Native cursors remain bounded and expire on authority changes; remote reads have no local-credential fallback.
 - Keeps protocol 1, official OMP 18.8.2+ and Bun 1.4.2+. The isolated official OMP 18.10.1 qualification runs do not establish published-tag installation, live-provider access or packaged Noli certification.
 
+The v0.9 installed-release check is `bun scripts/smoke-install.ts v0.9.0`. It requires both versioned forge capabilities and exercises the installed read, write-proposal and status tools through the official SDK. `NOLI_INSTALLED_FORGE_V09_POLICY_OK` is separate from the legacy resource-guard token. The backend supplies policy fixtures, not native approvals or provider mutations. `--local` does not prove downloaded-tag installation.
+
 ## v0.8.0 native forge resource guard
 
 - Adds optional `host.forge_resource.api: "main-only-v1"` for exactly `noli_forge_resource`, with strict Rust-compatible native request shapes and owning-main SDK authorization. Existing protocol-1 clients keep their default capability contract.
