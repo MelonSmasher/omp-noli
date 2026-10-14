@@ -16,10 +16,16 @@ For managed Gateway sessions, Noli writes secret-free `gateway-providers.json` a
 
 `test/gateway.test.ts` exercises the pinned real SDK registry, availability and auth storage before bind, after two keys and after revoke, and checks all temporary profile files for credential bytes. `test/review-gateway.test.ts` permanently covers legacy re-hello, uninterrupted renewal, real streaming auth retries, native lifecycle rebinding and process-launched bootstrap isolation with implicit Bun child environment inheritance. Bridge fixtures cover one-use hello, bind acknowledgement, stale-session rejection and rebind/revoke. The Noli repository owns the mock-upstream managed-process security smoke and actual Gateway 429 classifier fixture.
 
+## Unreleased
+
+- Clarifies that Noli forge tools cover only configured hosts/repositories/accounts and never restrict other tools. Use `gh`/`glab` or other tools with their own credentials for unconfigured hosts, unavailable or unsupported Noli operations, or whenever the user asks; explicit user CLI instructions win. Noli tools never accept credentials/raw endpoints or borrow CLI credentials.
+- Documents the matching Noli server's blocking forge-write approval and dispatch: approval is automatic in Yolo and otherwise human in Noli; denial, expiry and dispatch failure are tool errors. Do not end the turn asking for approval. Success retains `{status:"pending_approval", operation_id}`; read operation status for the outcome and canonical links, and never automatically retry an unknown outcome.
+- Documents native merge protection/CI evidence capture and replacement of the supplied precondition (`{"kind":"ci"}` is sufficient); unmet requirements return as error blockers. Guidance only: admission, validators, protocol and runtime behavior are unchanged.
+
 ## v0.9.0 native task tools
 
 - Guards versioned forge reads, write proposals and operation status against the authenticated owning main session and native tool provenance. Noli owns provider authorization, approval and dispatch; the plugin grants no write authority.
-- Reads persisted task snapshots, retained watch targets and metadata for files explicitly handed to the native session. Native cursors remain bounded and expire on authority changes; remote reads have no local-credential fallback.
+- Reads persisted task snapshots, retained watch targets and metadata for files explicitly handed to the native session. Native cursors remain bounded and expire on authority changes; Noli remote reads never substitute local credentials.
 - Fences forge completions by invocation even when the SDK reuses a tool-call ID or the caller reuses its input object. A stale completion cannot consume the newer call's admission.
 - Rejects write proposals above the SDK protocol-2 64 MiB logical-frame limit before dispatch, counting the full UTF-8 JSON envelope. Chunked requests above 1 MiB remain supported.
 - Requires `scripts/smoke-forge-read.ts --seed` to receive a fresh child path under an existing private parent. Existing directories, files and symlinks are rejected without replacing saved state.
