@@ -1,3 +1,4 @@
+import { MAX_RPC_REASSEMBLED_BYTES } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-frame";
 import { forgeResourceHandle } from "./forge-resource-handle";
 
 /** Registration and session admission belong to the native producer, not this module. */
@@ -13,11 +14,16 @@ const operationId = (value: unknown): value is string => typeof value === "strin
  * guard restricts the transport envelope, never invents a second payload schema
  * or treats a model-supplied account, grant, role or session as authority.
  */
-export function forgeWriteArguments(input: Record<string, unknown>): boolean {
+export function forgeWriteArguments(input: Record<string, unknown>, toolCallId: string): boolean {
 	return only(input, ["target", "payload", "precondition"])
 		&& forgeResourceHandle(input.target)
 		&& record(input.payload) && typeof input.payload.kind === "string"
-		&& record(input.precondition) && typeof input.precondition.kind === "string";
+		&& record(input.precondition) && typeof input.precondition.kind === "string"
+		// Native host calls use SDK protocol 2 stdout, not the companion socket.
+		// Snowflake IDs are fixed-width 16-char hex. Count the full JSON envelope,
+		// including UTF-8 and JSON escapes, but not the chunk transport's newline.
+		&& Buffer.byteLength(JSON.stringify({ type: "host_tool_call", id: "0000000000000000",
+			toolCallId, toolName: FORGE_WRITE_TOOLS[0], arguments: input }), "utf8") <= MAX_RPC_REASSEMBLED_BYTES;
 }
 
 export function forgeWriteStatusArguments(input: Record<string, unknown>): boolean {

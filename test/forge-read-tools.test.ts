@@ -21,7 +21,27 @@ function fixture() {
 	const ctx = (kind = "main") => ({agent:{kind},sessionManager:{getSessionId:()=>session}}) as unknown as ExtensionContext;
 	const request: ToolCallEvent = {type:"tool_call",toolName:FORGE_READ_TOOL,toolCallId:"callback",input};
 	const reply = (isError = false): ToolResultEvent => ({...request,type:"tool_result",content:[{type:"text",text:"private-provider-canary"}],details:{content:"private-provider-canary"},isError});
-	return {call,result,ctx,request,reply,lifecycle,setSession:(value:string)=>{session=value;},setGeneration:(value:number|undefined)=>{generation=value;},setSource:(value:string)=>{source=value;}};
+	const invoke = (event: ToolCallEvent, context: ExtensionContext) => {
+		const decision = call(event, context);
+		if (decision?.input) event.input = decision.input;
+		return decision;
+	};
+	return {call:invoke,result,ctx,request,reply,lifecycle,setSession:(value:string)=>{session=value;},setGeneration:(value:number|undefined)=>{generation=value;},setSource:(value:string)=>{source=value;}};
+}
+
+function expectCurrentRead(request: Record<string, unknown>) {
+	for (const isError of [false, true]) {
+		const current = fixture();
+		const event = { ...current.request, input: request };
+		const decision = current.call(event, current.ctx());
+		expect(decision?.block).not.toBe(true);
+		expect(decision?.input).toBe(event.input);
+		const original = { ...current.reply(isError), input: event.input };
+		const delivered = { ...original, ...current.result(original, current.ctx()) };
+		expect(delivered.isError).toBe(isError);
+		expect(delivered.content).toEqual([{ type: "text", text: "private-provider-canary" }]);
+		expect(delivered.details).toEqual({ content: "private-provider-canary" });
+	}
 }
 
 test("versioned read guard bounds requests and never admits identity or arbitrary endpoints", () => {
@@ -36,12 +56,13 @@ test("only current authenticated SDK main calls reach the native callback", () =
 	for (const kind of ["sub","advisor","unknown"]) expect(h.call(h.request,h.ctx(kind))?.block).toBe(true);
 	h.setGeneration(undefined); expect(h.call(h.request,h.ctx())?.block).toBe(true);
 	h.setGeneration(1); h.setSource("extension"); expect(h.call(h.request,h.ctx())?.block).toBe(true);
-	h.setSource("sdk"); expect(h.call(h.request,h.ctx())).toBeUndefined();
+	h.setSource("sdk"); h.call(h.request,h.ctx());
 	expect(h.result(h.reply(),h.ctx())).toBeUndefined();
 	expect(h.result(h.reply(),h.ctx())?.isError).toBe(true);
 });
 
 test("success and provider errors lose private text after session, auth epoch or lifecycle changes", () => {
+	expectCurrentRead(input);
 	for (const isError of [false,true]) for (const change of ["session","epoch","disconnect","branch","source"]) {
 		const h = fixture(); h.call(h.request,h.ctx());
 		if (change === "session") h.setSession("replacement");
@@ -64,6 +85,7 @@ test("the shared structural checker preserves native handle shape, never grants 
 
 test("snapshot reads accept persisted IDs, never a model-supplied target or authority", () => {
 	const request = {action:"read",read:{resource:"task_snapshot",request:{attempt_id:"attempt-local",sequence:7}},byte_budget:1024};
+	expectCurrentRead(request);
 	expect(forgeReadArguments(request)).toBe(true);
 	for (const key of ["thread_id","owner","account","repository","origin","session_id","grant","url"]) {
 		expect(forgeReadArguments({...request,read:{...request.read,request:{...request.read.request,[key]:"forged"}}})).toBe(false);
@@ -74,13 +96,14 @@ test("snapshot reads accept persisted IDs, never a model-supplied target or auth
 	const h=fixture();
 	const event={...h.request,input:request};
 	expect(h.call(event,h.ctx("sub"))?.block).toBe(true);
-	expect(h.call(event,h.ctx())).toBeUndefined();
+	expect(h.call(event,h.ctx())?.block).not.toBe(true);
 	h.setSession("replacement");
-	expect(h.result({...h.reply(),input:request},h.ctx())?.isError).toBe(true);
+	expect(h.result({...h.reply(),input:event.input},h.ctx())?.isError).toBe(true);
 });
 
 test("watch lookup takes only the persisted watch ID and retains main-session admission", () => {
 	const request = {action:"read",read:{resource:"watch",request:{watch_id:"watch-local"}}};
+	expectCurrentRead(request);
 	expect(forgeReadArguments(request)).toBe(true);
 	for (const key of ["thread_id","attempt_id","owner","account","repository","session_id","grant"]) {
 		expect(forgeReadArguments({...request,read:{...request.read,request:{...request.read.request,[key]:"forged"}}})).toBe(false);
@@ -91,13 +114,14 @@ test("watch lookup takes only the persisted watch ID and retains main-session ad
 	const h=fixture();
 	const event={...h.request,input:request};
 	expect(h.call(event,h.ctx("advisor"))?.block).toBe(true);
-	expect(h.call(event,h.ctx())).toBeUndefined();
+	expect(h.call(event,h.ctx())?.block).not.toBe(true);
 	h.setGeneration(2);
-	expect(h.result({...h.reply(),input:request},h.ctx())?.isError).toBe(true);
+	expect(h.result({...h.reply(),input:event.input},h.ctx())?.isError).toBe(true);
 });
 
 test("native release file metadata requires an empty scoped request, never paths or owner claims", () => {
 	const request={action:"read",read:{resource:"release_files",request:{}}};
+	expectCurrentRead(request);
 	expect(forgeReadArguments(request)).toBe(true);
 	for (const key of ["path","selection_id","rpc_session","native_owner","thread_id","account","grant"]) {
 		expect(forgeReadArguments({...request,read:{...request.read,request:{[key]:"forged"}}})).toBe(false);
@@ -105,7 +129,7 @@ test("native release file metadata requires an empty scoped request, never paths
 	const h=fixture();
 	const event={...h.request,input:request};
 	expect(h.call(event,h.ctx("sub"))?.block).toBe(true);
-	expect(h.call(event,h.ctx())).toBeUndefined();
+	expect(h.call(event,h.ctx())?.block).not.toBe(true);
 	h.setSession("replacement");
-	expect(h.result({...h.reply(),input:request},h.ctx())?.isError).toBe(true);
+	expect(h.result({...h.reply(),input:event.input},h.ctx())?.isError).toBe(true);
 });

@@ -16,6 +16,8 @@ if (process.argv.includes("--seed")) {
 	const digest = createHash("sha256");
 	for await (const chunk of createReadStream(join(input.sdk,"omp"))) digest.update(chunk);
 	assert.equal(digest.digest("hex"),binary[3],"Certified executable digest must match the immutable artifact");
+	// Callers own the private parent; never reuse or clean up an existing destination.
+	await mkdir(input.data,{recursive:false,mode:0o700});
 	const managed = join(input.data,"managed-omp");
 	const release = join(managed,"releases",basename(input.sdk));
 	await mkdir(join(release,"sdk"),{recursive:true,mode:0o700});

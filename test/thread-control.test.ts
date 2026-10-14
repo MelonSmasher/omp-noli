@@ -10,6 +10,7 @@ function harness() {
 	let authed = true;
 	let generation = 1;
 	let session = "owning-session";
+	let authenticatedSession = session;
 	let source = "sdk";
 	let tools = ["noli_thread_get", "noli_thread_finish", "noli_attach_file", "noli_thread_read", "noli_thread_open", "noli_forge_resource"];
 	let readSource: string | undefined = "sdk";
@@ -24,11 +25,23 @@ function harness() {
 		},
 		getAllTools: () => tools.filter(name => name !== "noli_thread_read" || readSource !== undefined).map(name => ({ name, sourceInfo: { source: name === "noli_thread_read" ? readSource : source } })),
 	} as unknown as ExtensionAPI;
-	installThreadControl(pi, id => authed && id === "owning-session" ? generation : undefined);
+	installThreadControl(pi, id => authed && id === authenticatedSession ? generation : undefined);
 	const ctx = (kind = "main") => ({ agent: { kind }, sessionManager: { getSessionId: () => session } }) as unknown as ExtensionContext;
 	const event: ToolCallEvent = { type: "tool_call", toolName: "noli_thread_finish", toolCallId: "call", input: { action: "archive" } };
 	const reply: ToolResultEvent = { ...event, type: "tool_result", content: [{ type: "text", text: "scheduled" }], details: { status: "scheduled", requestId: "request", action: "archive" }, isError: false };
-	return { call, result, prompt, ctx, event, reply, lifecycle, reauthenticate: () => { authed = true; generation++; }, setTools: (value: string[]) => { tools = value; }, setAuth: (value: boolean) => { authed = value; }, setSession: (value: string) => { session = value; }, setSource: (value: string) => { source = value; }, setReadSource: (value: string | undefined) => { readSource = value; } };
+	// Sequential cases use the SDK's returned execution input. Races below retain
+	// each invocation's revision explicitly through the raw hooks instead.
+	const revisions = new WeakMap<object, Record<string, unknown>>();
+	const admit = (event: ToolCallEvent, context: ExtensionContext) => {
+		const admitted = call(event, context);
+		if (admitted?.block) return admitted;
+		expect(admitted).toEqual({ input: { ...event.input } });
+		expect(admitted!.input).not.toBe(event.input);
+		revisions.set(event.input, admitted!.input!);
+		return undefined;
+	};
+	const complete = (event: ToolResultEvent, context: ExtensionContext) => result({ ...event, input: revisions.get(event.input) ?? event.input }, context);
+	return { call: admit, result: complete, rawCall: call, rawResult: result, prompt, ctx, event, reply, lifecycle, reauthenticate: () => { authed = true; authenticatedSession = session; generation++; }, setTools: (value: string[]) => { tools = value; }, setAuth: (value: boolean) => { authed = value; }, setSession: (value: string) => { session = value; }, setSource: (value: string) => { source = value; }, setReadSource: (value: string | undefined) => { readSource = value; } };
 }
 
 describe("current-thread host tool guard", () => {
@@ -280,5 +293,75 @@ describe("read-only native forge resource guard", () => {
 		expect(h.prompt({ ...event, systemPrompt: first }, h.ctx())?.systemPrompt).toEqual(first);
 		h.setAuth(false); expect(h.prompt({ ...event, systemPrompt: first }, h.ctx())?.systemPrompt).toEqual(["base"]);
 		h.setAuth(true); h.setTools(["noli_thread_get", "noli_thread_finish"]); expect(h.prompt(event, h.ctx())?.systemPrompt?.join()).not.toContain("noli_forge_resource");
+	});
+});
+
+describe("reused SDK invocation ownership", () => {
+	const tools: Array<{ name: string; input: Record<string, unknown> }> = [
+		{ name: "noli_forge_resource", input: { action: "resolve_review", number: "42" } },
+		{ name: "noli_forge_read_v1", input: { action: "read", read: { resource: "review", request: { action: "resolve_review", number: "42" } }, byte_budget: 1024 } },
+		{ name: "noli_forge_write_v1", input: {
+			target: { origin: "github", account: "selected", repository: { provider: "github", repository_id: "123", node_id: "R_123" }, kind: "issue", resource: { type: "github", id: "456", node_id: "I_456", number: "7" }, web_url: "https://github.com/owner/repository/issues/7" },
+			payload: { kind: "issue", mutation: { action: "comment", body: "Please review." } },
+			precondition: { kind: "updated_at", value: "2026-10-12T00:00:00Z" },
+		} },
+		{ name: "noli_forge_write_status_v1", input: { operation_id: "op" } },
+	];
+	for (const oldTool of tools) for (const newTool of tools) for (const order of ["old-first", "new-first"]) {
+		test(`${oldTool.name} -> ${newTool.name}, ${order}: stale success/errors cannot borrow or consume the new admission`, () => {
+			for (const invalidate of ["none", "generation", "session", "session_switch", "session_branch", "session_tree", "session_shutdown"]) {
+				for (const oldError of [false, true]) for (const newError of [false, true]) {
+					const h = harness(); h.setTools(tools.map(tool => tool.name));
+					const oldCall: ToolCallEvent = { type: "tool_call", toolCallId: "reused", toolName: oldTool.name, input: oldTool.input };
+					const oldAdmission = h.rawCall(oldCall, h.ctx());
+					expect(oldAdmission).toEqual({ input: oldCall.input });
+					if (invalidate === "generation") h.reauthenticate();
+					else if (invalidate === "session") { h.setSession("adopted-session"); h.reauthenticate(); }
+					else h.lifecycle.get(invalidate)?.();
+					// Same-tool cases deliberately reuse the SAME caller input object.
+					const newCall: ToolCallEvent = { ...oldCall, toolName: newTool.name, input: newTool.input };
+					const newAdmission = h.rawCall(newCall, h.ctx());
+					expect(newAdmission).toEqual({ input: newCall.input });
+					expect(newAdmission!.input).not.toBe(oldAdmission!.input);
+					expect(newAdmission!.input).not.toBe(newCall.input);
+					const oldReply: ToolResultEvent = { ...oldCall, type: "tool_result", input: oldAdmission!.input!, isError: oldError,
+						content: [{ type: "text", text: "private-old-provider-content" }], details: { private: "private-old-provider-metadata" } };
+					const newReply: ToolResultEvent = { ...newCall, type: "tool_result", input: newAdmission!.input!, isError: newError,
+						content: [{ type: "text", text: "current-provider-content" }], details: { status: "pending_approval", operation_id: "current-operation" } };
+					const rejectOld = () => {
+						const rejected = h.rawResult(oldReply, h.ctx());
+						expect(rejected?.isError).toBe(true);
+						expect(rejected?.details).toEqual({});
+						expect(JSON.stringify(rejected)).not.toContain("private-old-provider");
+					};
+					if (order === "old-first") rejectOld();
+					expect(h.rawResult(newReply, h.ctx())).toBeUndefined();
+					if (order === "new-first") rejectOld();
+					expect(h.rawResult(newReply, h.ctx())?.isError).toBe(true);
+				}
+			}
+		});
+	}
+	test("equal input, wrong tool and wrong ID results do not consume the current invocation", () => {
+		const h = harness(); h.setTools(tools.map(tool => tool.name));
+		const call: ToolCallEvent = { type: "tool_call", toolCallId: "owned", toolName: tools[0]!.name, input: tools[0]!.input };
+		const admitted = h.rawCall(call, h.ctx())!;
+		const reply: ToolResultEvent = { ...call, type: "tool_result", input: admitted.input!, content: [{ type: "text", text: "private-current-content" }], details: { private: "private-current-details" }, isError: false };
+		for (const unmatched of [{ ...reply, input: { ...reply.input } }, { ...reply, input: call.input }, { ...reply, toolName: tools[1]!.name }, { ...reply, toolCallId: "other" }]) {
+			for (const isError of [false, true]) {
+				const rejected = h.rawResult({ ...unmatched, isError }, h.ctx());
+				expect(rejected?.isError).toBe(true);
+				expect(rejected?.details).toEqual({});
+				expect(JSON.stringify(rejected)).not.toContain("private-current");
+			}
+		}
+		expect(h.rawResult(reply, h.ctx())).toBeUndefined();
+	});
+	test("blocked reuse leaves the admitted invocation intact", () => {
+		const h = harness();
+		const admitted = h.rawCall(h.event, h.ctx())!;
+		expect(h.rawCall({ ...h.event, input: { action: "archive", caller: "forged" } }, h.ctx())?.block).toBe(true);
+		expect(h.rawCall(h.event, h.ctx("sub"))?.block).toBe(true);
+		expect(h.rawResult({ ...h.reply, input: admitted.input! }, h.ctx())).toBeUndefined();
 	});
 });

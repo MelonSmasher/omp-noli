@@ -28,7 +28,7 @@ export function installThreadControl(pi: ExtensionAPI, authenticatedGeneration: 
 	const available = (ctx: ExtensionContext, name?: string): boolean => authenticatedGeneration(sessionId(ctx)) !== undefined &&
 		(name ? [name] : ["noli_thread_get", "noli_thread_finish"]).every(name =>
 			pi.getAllTools().some(tool => tool.name === name && tool.sourceInfo.source === "sdk"));
-	const calls = new Map<string, { sessionId: string; toolName: string; generation: number }>();
+	const calls = new Map<string, { sessionId: string; toolName: string; generation: number; input: Record<string, unknown> }>();
 	pi.on("session_switch", () => calls.clear());
 	pi.on("session_branch", () => calls.clear());
 	pi.on("session_tree", () => calls.clear());
@@ -40,7 +40,7 @@ export function installThreadControl(pi: ExtensionAPI, authenticatedGeneration: 
 		if (!record(event.input)) return { block: true, reason: "Invalid Noli host-tool arguments" };
 		const keys = Object.keys(event.input);
 		if (event.toolName === FORGE_WRITE_TOOLS[0]) {
-			if (!forgeWriteArguments(event.input)) return { block: true, reason: "Invalid forge proposal; supply an exact target, payload and precondition, never caller authority" };
+			if (!forgeWriteArguments(event.input, event.toolCallId)) return { block: true, reason: "Invalid forge proposal; supply an exact target, payload and precondition, never caller authority" };
 		} else if (event.toolName === FORGE_WRITE_TOOLS[1]) {
 			if (!forgeWriteStatusArguments(event.input)) return { block: true, reason: "Invalid forge status request; supply only the native operation identifier" };
 		} else if (event.toolName === FORGE_READ_TOOL) {
@@ -67,15 +67,22 @@ export function installThreadControl(pi: ExtensionAPI, authenticatedGeneration: 
 				: keys.length === 1 && keys[0] === "action" && "action" in event.input && (event.input.action === "settle" || event.input.action === "archive");
 			if (!valid) return { block: true, reason: "Invalid Noli host-tool arguments; only the owning current thread is permitted" };
 		}
-		calls.set(event.toolCallId, { sessionId: sessionId(ctx), toolName: event.toolName, generation: authenticatedGeneration(sessionId(ctx))! });
+		// The SDK carries a handler's input revision by reference into tool_result for
+		// host tools. Mint one per admission: IDs and even caller-owned input objects
+		// can be reused while an earlier execution is still completing.
+		const input = { ...event.input };
+		calls.set(event.toolCallId, { sessionId: sessionId(ctx), toolName: event.toolName, generation: authenticatedGeneration(sessionId(ctx))!, input });
+		return { input };
 	});
 	pi.on("tool_result", (event, ctx) => {
 		if (!THREAD_TOOLS.some(name => name === event.toolName)) return;
 		const owner = calls.get(event.toolCallId);
-		calls.delete(event.toolCallId);
+		const matchingInvocation = owner !== undefined && owner.toolName === event.toolName && owner.input === event.input;
+		// A superseded completion must neither borrow nor consume the new admission.
+		if (matchingInvocation) calls.delete(event.toolCallId);
 		const forgeRead = event.toolName === "noli_forge_resource" || event.toolName === FORGE_READ_TOOL;
 		const forgeWrite = FORGE_WRITE_TOOLS.some(name => name === event.toolName);
-		if ((forgeRead || forgeWrite || !event.isError) && (ctx.agent.kind !== "main" || owner?.sessionId !== sessionId(ctx) || owner.toolName !== event.toolName || owner.generation !== authenticatedGeneration(sessionId(ctx)) || !available(ctx, event.toolName))) {
+		if ((forgeRead || forgeWrite || !event.isError) && (!matchingInvocation || ctx.agent.kind !== "main" || owner?.sessionId !== sessionId(ctx) || owner.generation !== authenticatedGeneration(sessionId(ctx)) || !available(ctx, event.toolName))) {
 			if (forgeRead) return { content: [{ type: "text", text: "Forge resource result lost its authenticated owning session; discard this stale read and request a fresh authorized read if needed." }], details: {}, isError: true };
 			return { content: [{ type: "text", text: "Noli control acknowledgement lost its authenticated session; outcome unknown. The operation may already be persisted. Do not retry automatically; inspect the owning conversation before retrying." }], details: {}, isError: true };
 		}

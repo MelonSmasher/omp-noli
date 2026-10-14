@@ -40,8 +40,8 @@ export async function verifyInstalledForgeRuntime(session: AgentSession, install
 	for (const item of cases) assert(control.THREAD_TOOLS.includes(item.name), `Installed consumer must include ${item.name}`);
 	assert.equal(read.forgeReadArguments(cases[0].input), true);
 	assert.equal(read.forgeReadArguments({ ...cases[0].input, endpoint: "forbidden" }), false);
-	assert.equal(write.forgeWriteArguments(cases[1].input), true);
-	assert.equal(write.forgeWriteArguments({ ...cases[1].input, approved: true }), false);
+	assert.equal(write.forgeWriteArguments(cases[1].input, "installed-policy-fixture"), true);
+	assert.equal(write.forgeWriteArguments({ ...cases[1].input, approved: true }, "installed-policy-fixture"), false);
 	assert.equal(write.forgeWriteStatusArguments(cases[2].input), true);
 	assert.equal(write.forgeWriteStatusArguments({ ...cases[2].input, retry: true }), false);
 

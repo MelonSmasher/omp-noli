@@ -20,6 +20,9 @@ For managed Gateway sessions, Noli writes secret-free `gateway-providers.json` a
 
 - Guards versioned forge reads, write proposals and operation status against the authenticated owning main session and native tool provenance. Noli owns provider authorization, approval and dispatch; the plugin grants no write authority.
 - Reads persisted task snapshots, retained watch targets and metadata for files explicitly handed to the native session. Native cursors remain bounded and expire on authority changes; remote reads have no local-credential fallback.
+- Fences forge completions by invocation even when the SDK reuses a tool-call ID or the caller reuses its input object. A stale completion cannot consume the newer call's admission.
+- Rejects write proposals above the SDK protocol-2 64 MiB logical-frame limit before dispatch, counting the full UTF-8 JSON envelope. Chunked requests above 1 MiB remain supported.
+- Requires `scripts/smoke-forge-read.ts --seed` to receive a fresh child path under an existing private parent. Existing directories, files and symlinks are rejected without replacing saved state.
 - Keeps protocol 1, official OMP 18.8.2+ and Bun 1.4.2+. The isolated official OMP 18.10.1 qualification runs do not establish published-tag installation, live-provider access or packaged Noli certification.
 
 The v0.9 installed-release check is `bun scripts/smoke-install.ts v0.9.0`. It requires both versioned forge capabilities and exercises the installed read, write-proposal and status tools through the official SDK. `NOLI_INSTALLED_FORGE_V09_POLICY_OK` is separate from the legacy resource-guard token. The backend supplies policy fixtures, not native approvals or provider mutations. `--local` does not prove downloaded-tag installation.
