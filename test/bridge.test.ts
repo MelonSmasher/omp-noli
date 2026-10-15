@@ -862,10 +862,10 @@ describe("child output requests", () => {
 	test("an absent child is a distinct, schema-valid error", async () => {
 		const client = await authed();
 		const original = h.host.output;
-		h.host.output = async ({ agentId }) => { throw new BridgeError("agent_absent", `agent "${agentId}" is not registered in this OMP process`); };
+		h.host.output = async ({ agentId }) => { throw new BridgeError("agent_absent", `agent "${agentId}" is no longer registered in this OMP process`); };
 		try {
 			const reply = await call(client, "agents.output", { agentId: "C" });
-			expect(reply.error).toEqual({ code: "agent_absent", message: 'agent "C" is not registered in this OMP process' });
+			expect(reply.error).toEqual({ code: "agent_absent", message: 'agent "C" is no longer registered in this OMP process' });
 		} finally { h.host.output = original; }
 	});
 	test("output is explicitly gated when native API is missing", async () => {

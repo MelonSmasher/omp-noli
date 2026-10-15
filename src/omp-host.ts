@@ -402,7 +402,14 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 		return result;
 	};
 	const agentTelemetry = new AgentTelemetry(exportsRecord, readChild);
-	const viewOf = (ref: AgentRef): AgentView => toView(ref, definitionOf(ref), agentTelemetry.sample(ref));
+	/** IDs this root's clients have seen in listings or change events. Only these can be reported as absent, so absence never reveals another root's agents. */
+	let exposed: { root: string | undefined; ids: Set<string> } = { root: undefined, ids: new Set() };
+	const viewOf = (ref: AgentRef): AgentView => {
+		const root = artifactRoot();
+		if (exposed.root !== root) exposed = { root, ids: new Set() };
+		exposed.ids.add(ref.id);
+		return toView(ref, definitionOf(ref), agentTelemetry.sample(ref));
+	};
 	const publishAgent = (ref: AgentRef): void => {
 		if (!current || scopedRef(ref.id) !== ref || (ref.kind === "sub" && !ownedChild(ref))) return;
 		const view = viewOf(ref);
@@ -601,9 +608,10 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 			if (!capability.available) throw new BridgeError("capability_unavailable", capability.detail, { capability: "agents.output", reason: capability.reason });
 			const ref = scopedRef(params.agentId);
 			if (!ref) {
-				// No registry entry at all: OMP released the child (or it never
-				// existed). A registered agent outside this root stays unknown_agent.
-				if (!registry().get(params.agentId)) throw new BridgeError("agent_absent", `agent "${params.agentId}" is not registered in this OMP process`);
+				// An ID this root exposed that OMP's registry no longer has: the
+				// child was released. Guessed IDs and registered agents outside
+				// this root stay unknown_agent, so neither is distinguishable.
+				if (!registry().get(params.agentId) && exposed.root === artifactRoot() && exposed.ids.has(params.agentId)) throw new BridgeError("agent_absent", `agent "${params.agentId}" is no longer registered in this OMP process`);
 				throw new BridgeError("unknown_agent", `no agent "${params.agentId}" in this session`);
 			}
 			if (ref.kind !== "sub") throw new BridgeError("forbidden_kind", "only subagent transcripts can be read");
