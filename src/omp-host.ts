@@ -33,6 +33,8 @@ const TASK_SUBAGENT_LIFECYCLE_CHANNEL = "task:subagent:lifecycle";
 
 /** Upper bound on transcript directories walked when looking for undiscovered children. */
 const MAX_SCAN_DIRS = 256;
+/** Released child IDs per root that `agents.output` still reports as `agent_absent`. */
+export const DEPARTED_LIMIT = 1024;
 
 /** Symbol description OMP uses to tag the registry with its per-root roster scan latches. */
 const ROSTER_LATCH_SYMBOL = "persistedRosterLatches";
@@ -402,12 +404,36 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 		return result;
 	};
 	const agentTelemetry = new AgentTelemetry(exportsRecord, readChild);
-	/** IDs this root's clients have seen in listings or change events. Only these can be reported as absent, so absence never reveals another root's agents. */
-	let exposed: { root: string | undefined; ids: Set<string> } = { root: undefined, ids: new Set() };
-	const viewOf = (ref: AgentRef): AgentView => {
+	/**
+	 * IDs this root's clients have seen in listings or change events: `listed`
+	 * are still registered, `departed` are the most recent DEPARTED_LIMIT that
+	 * OMP has since released (insertion ordered, oldest evicted). Only departed
+	 * IDs are reported as `agent_absent`, so absence never reveals another
+	 * root's agents; evicted departures fall back to `unknown_agent`.
+	 */
+	let exposed = { root: undefined as string | undefined, listed: new Set<string>(), departed: new Set<string>(), sweepAt: DEPARTED_LIMIT };
+	const exposure = () => {
 		const root = artifactRoot();
-		if (exposed.root !== root) exposed = { root, ids: new Set() };
-		exposed.ids.add(ref.id);
+		if (exposed.root !== root) exposed = { root, listed: new Set(), departed: new Set(), sweepAt: DEPARTED_LIMIT };
+		return exposed;
+	};
+	/** Moves a listed ID that the registry no longer has to the bounded departed set. */
+	const depart = (id: string): void => {
+		const scope = exposure();
+		if (registry().get(id) || !scope.listed.delete(id)) return;
+		scope.departed.add(id);
+		if (scope.departed.size > DEPARTED_LIMIT) scope.departed.delete(scope.departed.values().next().value!);
+	};
+	const viewOf = (ref: AgentRef): AgentView => {
+		const scope = exposure();
+		scope.departed.delete(ref.id);
+		scope.listed.add(ref.id);
+		// Removal events can be missed (observers stopped), so occasionally drop
+		// listed IDs that are no longer registered; amortized O(1) per view.
+		if (scope.listed.size > scope.sweepAt) {
+			for (const id of scope.listed) depart(id);
+			scope.sweepAt = Math.max(DEPARTED_LIMIT, 2 * scope.listed.size);
+		}
 		return toView(ref, definitionOf(ref), agentTelemetry.sample(ref));
 	};
 	const publishAgent = (ref: AgentRef): void => {
@@ -462,6 +488,7 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 		const unsubscribeRegistry = registry().onChange(event => {
 			if (!("ref" in event)) return;
 			const ref = event.ref;
+			if (event.type === "removed") depart(ref.id);
 			if (event.type === "removed" || scopedRef(ref.id) !== ref || (ref.kind === "sub" && !ownedChild(ref))) {
 				sessions.get(ref)?.unsubscribe();
 				sessions.delete(ref);
@@ -611,7 +638,8 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 				// An ID this root exposed that OMP's registry no longer has: the
 				// child was released. Guessed IDs and registered agents outside
 				// this root stay unknown_agent, so neither is distinguishable.
-				if (!registry().get(params.agentId) && exposed.root === artifactRoot() && exposed.ids.has(params.agentId)) throw new BridgeError("agent_absent", `agent "${params.agentId}" is no longer registered in this OMP process`);
+				depart(params.agentId);
+				if (!registry().get(params.agentId) && exposure().departed.has(params.agentId)) throw new BridgeError("agent_absent", `agent "${params.agentId}" is no longer registered in this OMP process`);
 				throw new BridgeError("unknown_agent", `no agent "${params.agentId}" in this session`);
 			}
 			if (ref.kind !== "sub") throw new BridgeError("forbidden_kind", "only subagent transcripts can be read");

@@ -18,7 +18,7 @@ For managed Gateway sessions, Noli writes secret-free `gateway-providers.json` a
 
 ## v0.9.2 child output departure signal
 
-- `agents.output` now distinguishes an agent this root listed (in `agents.list` or an `agent.changed` event) that is no longer in OMP's registry (`agent_absent`) from a registered agent that is not readable from this root (`unknown_agent`). IDs this root never exposed always get `unknown_agent`, so the code reveals nothing about other roots' agents. Before v0.9.2 both produced `unknown_agent` with the same `no agent "<id>" in this session` message, so a client could not tell a released child from a foreign-session ID.
+- `agents.output` now distinguishes an agent this root listed (in `agents.list` or an `agent.changed` event) that is no longer in OMP's registry (`agent_absent`) from a registered agent that is not readable from this root (`unknown_agent`). IDs this root never exposed always get `unknown_agent`, so the code reveals nothing about other roots' agents. Released IDs are remembered per root up to the 1024 most recent; older ones fall back to `unknown_agent`, so memory stays bounded. Before v0.9.2 both produced `unknown_agent` with the same `no agent "<id>" in this session` message, so a client could not tell a released child from a foreign-session ID.
 - Only `agents.output` changes. Steer, follow-up, turn and kill keep their existing `unknown_agent` contract.
 - `agent_absent` is an additive `ErrorCode`; protocol version stays 1. Strict decoders must accept the new code. Official OMP 18.8.2+ and Bun 1.4.2+ are unchanged.
 
@@ -352,7 +352,7 @@ Pages contain at most **500 lines** and **64 KiB UTF-8** of rendered text (span 
 | `unauthorized` | `hello` failed or was missing. |
 | `stale_session` | The request's `sessionId` isn't the active session. |
 | `unknown_agent` | No child with that ID in the current root session. `agents.output` also uses it for a registered agent outside this root, a child without an owned transcript and a transcript that escapes the root artifact directory. |
-| `agent_absent` | `agents.output` only: OMP's registry no longer has an agent this root previously listed, typically a finished one-shot child that OMP released. Unlisted IDs get `unknown_agent`. Saved observations of the child remain valid; reading again cannot succeed until a roster change registers the ID again. Bridges before v0.9.2 report this as `unknown_agent`. |
+| `agent_absent` | `agents.output` only: OMP's registry no longer has an agent this root previously listed, typically a finished one-shot child that OMP released. Unlisted IDs get `unknown_agent`. The bridge remembers the 1024 most recent releases per root (`DEPARTED_LIMIT`); older releases, and any release before a root change, fall back to `unknown_agent`. Saved observations of the child remain valid; reading again cannot succeed until a roster change registers the ID again. Bridges before v0.9.2 report this as `unknown_agent`. |
 | `unknown_definition` | `agents.turn` named a definition that doesn't exist; see `definitions.list`. |
 | `definition_required` | `agents.turn` got no `params.agent` and the row has no recorded `definition`. |
 | `forbidden_kind` | The target is a main or advisor row. |
