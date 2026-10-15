@@ -290,7 +290,17 @@ describe("read-only native forge resource guard", () => {
 		const first = h.prompt(event, h.ctx())!.systemPrompt!;
 		expect(first.join()).toContain("noli_forge_resource");
 		expect(first.join()).toContain("untrusted");
+		expect(first.join()).toContain("never restrict other tools");
+		expect(first.join()).toContain("own credentials");
+		expect(first.join()).toContain("Explicit user CLI instructions win");
+		expect(first.join()).toContain("never accept credentials/raw endpoints or borrow CLI credentials");
+		expect(first.join()).toContain("do not repeat a denied Noli read or write through another tool unless the user asks");
 		expect(h.prompt({ ...event, systemPrompt: first }, h.ctx())?.systemPrompt).toEqual(first);
+		h.setTools(["noli_forge_read_v1"]);
+		const readOnly = h.prompt(event, h.ctx())!.systemPrompt!.join();
+		expect(readOnly).not.toContain("noli_forge_resource can");
+		expect(readOnly).toContain("Explicit user CLI instructions win");
+		h.setTools(["noli_forge_resource"]);
 		h.setAuth(false); expect(h.prompt({ ...event, systemPrompt: first }, h.ctx())?.systemPrompt).toEqual(["base"]);
 		h.setAuth(true); h.setTools(["noli_thread_get", "noli_thread_finish"]); expect(h.prompt(event, h.ctx())?.systemPrompt?.join()).not.toContain("noli_forge_resource");
 	});
