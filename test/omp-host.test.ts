@@ -691,7 +691,22 @@ describe("read-only child output isolation", () => {
 		child("Foreign", { parentId: "DifferentRoot" });
 		child("Outside", { sessionFile: join(dir, "outside.jsonl") });
 		for (const agentId of ["Main", "Advisor"]) await expect(omp.host.output({ agentId })).rejects.toMatchObject({ body: { code: "forbidden_kind" } });
-		for (const agentId of ["ghost", "Foreign", "Outside"]) await expect(omp.host.output({ agentId })).rejects.toMatchObject({ body: { code: "unknown_agent" } });
+		await expect(omp.host.output({ agentId: "Foreign" })).rejects.toMatchObject({ body: { code: "unknown_agent", message: "child does not belong to this root session" } });
+		await expect(omp.host.output({ agentId: "Outside" })).rejects.toMatchObject({ body: { code: "unknown_agent", message: 'no agent "Outside" in this session' } });
+		await expect(omp.host.output({ agentId: "ghost" })).rejects.toMatchObject({ body: { code: "agent_absent" } });
+	});
+	test("a released child is absent, while the same ID under another root keeps its rejection", async () => {
+		child("C");
+		expect((await omp.host.output({ agentId: "C" })).text.length).toBeGreaterThan(0);
+		// OMP releases a finished one-shot child from its registry.
+		registry.refs.delete("C");
+		await expect(omp.host.output({ agentId: "C" })).rejects.toMatchObject({ body: { code: "agent_absent", message: 'agent "C" is not registered in this OMP process' } });
+		// A registered agent with the same ID whose transcript belongs to another root session.
+		child("C", { sessionFile: join(dir, "other-root", "C.jsonl") });
+		await expect(omp.host.output({ agentId: "C" })).rejects.toMatchObject({ body: { code: "unknown_agent", message: 'no agent "C" in this session' } });
+		// Registered without a session file.
+		child("C", { sessionFile: undefined });
+		await expect(omp.host.output({ agentId: "C" })).rejects.toMatchObject({ body: { code: "unknown_agent" } });
 	});
 	test("canonical symlink escape never reaches the loader", async () => {
 		const ref = child();

@@ -271,6 +271,7 @@ export const ERROR_CODES = [
 	"unauthorized",
 	"stale_session",
 	"unknown_agent",
+	"agent_absent",
 	"unknown_definition",
 	"definition_required",
 	"forbidden_kind",

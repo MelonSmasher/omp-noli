@@ -600,7 +600,12 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 			const capability = refresh()["agents.output"];
 			if (!capability.available) throw new BridgeError("capability_unavailable", capability.detail, { capability: "agents.output", reason: capability.reason });
 			const ref = scopedRef(params.agentId);
-			if (!ref) throw new BridgeError("unknown_agent", `no agent "${params.agentId}" in this session`);
+			if (!ref) {
+				// No registry entry at all: OMP released the child (or it never
+				// existed). A registered agent outside this root stays unknown_agent.
+				if (!registry().get(params.agentId)) throw new BridgeError("agent_absent", `agent "${params.agentId}" is not registered in this OMP process`);
+				throw new BridgeError("unknown_agent", `no agent "${params.agentId}" in this session`);
+			}
 			if (ref.kind !== "sub") throw new BridgeError("forbidden_kind", "only subagent transcripts can be read");
 			if (!ownedChild(ref)) throw new BridgeError("unknown_agent", "child does not belong to this root session");
 			return readChild(ref, () => readAgentOutput(ref, params, exportsRecord, readChild));

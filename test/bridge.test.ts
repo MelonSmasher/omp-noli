@@ -8,7 +8,7 @@ import { RpcHostToolBridge } from "@oh-my-pi/pi-coding-agent/modes/rpc/host-tool
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, RpcFrameEncoder } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-frame";
 import type { RpcHostToolCallRequest } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
 import { installThreadControl } from "../src/thread-control";
-import { type Bridge, type BridgeHost, startBridge } from "../src/bridge";
+import { type Bridge, type BridgeHost, BridgeError, startBridge } from "../src/bridge";
 import { available, unavailable } from "../src/capabilities";
 import { type AgentView, type Capabilities, CAPABILITY_NAMES, type CapabilityName, type CapabilityReason, type TurnResult } from "../src/protocol";
 import { assertValidFrame } from "./schema";
@@ -858,6 +858,15 @@ describe("child output requests", () => {
 		const reply = await call(client, "agents.output", { agentId: "C", ...params });
 		expect(reply.error?.code).toBe("bad_request");
 		expect(h.calls).toEqual([]);
+	});
+	test("an absent child is a distinct, schema-valid error", async () => {
+		const client = await authed();
+		const original = h.host.output;
+		h.host.output = async ({ agentId }) => { throw new BridgeError("agent_absent", `agent "${agentId}" is not registered in this OMP process`); };
+		try {
+			const reply = await call(client, "agents.output", { agentId: "C" });
+			expect(reply.error).toEqual({ code: "agent_absent", message: 'agent "C" is not registered in this OMP process' });
+		} finally { h.host.output = original; }
 	});
 	test("output is explicitly gated when native API is missing", async () => {
 		const client = await authed();
