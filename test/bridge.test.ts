@@ -853,7 +853,7 @@ describe("child output requests", () => {
 		expect(reply.error?.code).toBe("stale_session");
 		expect(h.calls).toEqual([]);
 	});
-	test.each([{ offset: -1 }, { offset: 1.5 }, { offset: null }, { offset: "2" }, { offset: Number.MAX_SAFE_INTEGER + 1 }, { limit: 0 }, { limit: 501 }, { limit: 1.5 }, { limit: null }, { limit: "2" }])("rejects malformed pagination %j before any host read", async params => {
+	test.each([{ offset: -1 }, { offset: 1.5 }, { offset: null }, { offset: "2" }, { offset: Number.MAX_SAFE_INTEGER + 1 }, { limit: 0 }, { limit: 501 }, { limit: 1.5 }, { limit: null }, { limit: "2" }, { revision: "" }, { revision: 7 }, { revision: null }, { revision: "r".repeat(257) }])("rejects malformed pagination %j before any host read", async params => {
 		const client = await authed();
 		const reply = await call(client, "agents.output", { agentId: "C", ...params });
 		expect(reply.error?.code).toBe("bad_request");
@@ -866,6 +866,17 @@ describe("child output requests", () => {
 		try {
 			const reply = await call(client, "agents.output", { agentId: "C" });
 			expect(reply.error).toEqual({ code: "agent_absent", message: 'agent "C" is no longer registered in this OMP process' });
+		} finally { h.host.output = original; }
+	});
+	test("a frozen read forwards its revision, and an expired one is a distinct, schema-valid error", async () => {
+		const client = await authed();
+		const original = h.host.output;
+		const seen: (string | undefined)[] = [];
+		h.host.output = async ({ revision }) => { seen.push(revision); throw new BridgeError("snapshot_expired", "the requested transcript revision is no longer retained; read the newest page again"); };
+		try {
+			const reply = await call(client, "agents.output", { agentId: "C", offset: 3, revision: "sha256:abc" });
+			expect(reply.error).toEqual({ code: "snapshot_expired", message: "the requested transcript revision is no longer retained; read the newest page again" });
+			expect(seen).toEqual(["sha256:abc"]);
 		} finally { h.host.output = original; }
 	});
 	test("output is explicitly gated when native API is missing", async () => {

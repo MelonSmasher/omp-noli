@@ -370,7 +370,7 @@ try {
 	let olderOffset: number | null = newest.nextOffset;
 	let assembled = newest.text;
 	while (olderOffset !== null) {
-		const older: AgentOutputResult = await bridgeCall("agents.output", { agentId: child.id, offset: olderOffset, limit: 3 });
+		const older: AgentOutputResult = await bridgeCall("agents.output", { agentId: child.id, offset: olderOffset, limit: 3, ...(newest.revision ? { revision: newest.revision } : {}) });
 		assert(older.nextOffset === null || older.nextOffset < olderOffset, "older pagination does not progress");
 		assert.equal(older.revision, newest.revision, "pages of one unchanged transcript carry different revisions");
 		assembled = older.text + (older.text && assembled ? "\n" : "") + assembled;

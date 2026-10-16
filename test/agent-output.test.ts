@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentRef } from "@oh-my-pi/pi-coding-agent";
-import { parkedDigestLimits, parkedDigestUsage, readAgentOutput, revisionWork } from "../src/agent-output";
+import { snapshotLimits, snapshotUsage, readAgentOutput, revisionWork } from "../src/agent-output";
 import { BridgeError } from "../src/bridge";
 import type { AgentOutputParams } from "../src/protocol";
 
@@ -431,23 +431,23 @@ describe("native child transcript output", () => {
 			async loadEntriesFromFile() { return []; },
 		}, readChild);
 		// Empty and hidden-only transcripts retain nothing, however many children there are.
-		const before = parkedDigestUsage();
+		const before = snapshotUsage();
 		for (let index = 0; index < 3000; index++) {
 			await read(parked(), index % 2 ? [] : [{ role: "system", content: "hidden", timestamp: 1 }, { role: "custom", content: "x", display: false, timestamp: 2 }]);
 		}
-		expect(parkedDigestUsage()).toEqual(before);
+		expect(snapshotUsage()).toEqual(before);
 		// At most 1024 children are retained, least recently read evicted first.
 		const refs = Array.from({ length: 1100 }, () => parked());
 		for (const [index, ref] of refs.entries()) await read(ref, [text("assistant", `child ${index}`)]);
-		expect(parkedDigestUsage().children).toBe(1024);
+		expect(snapshotUsage().children).toBe(1024);
 		const digests = revisionWork.messageDigests;
 		await read(refs[refs.length - 1]!, [text("assistant", `child ${refs.length - 1}`)]);
 		expect(revisionWork.messageDigests).toBe(digests);
 		await read(refs[0]!, [text("assistant", "child 0")]);
 		expect(revisionWork.messageDigests).toBe(digests + 1);
-		expect(parkedDigestUsage().children).toBe(1024);
+		expect(snapshotUsage().children).toBe(1024);
 		// Metadata counts toward the budget: each child costs more than its text.
-		expect(parkedDigestUsage().cost).toBeGreaterThan(1024 * 256);
+		expect(snapshotUsage().cost).toBeGreaterThan(1024 * 256);
 	});
 
 	test("parked digest cache is bounded by retained text and metadata", async () => {
@@ -456,24 +456,24 @@ describe("native child transcript output", () => {
 			async loadSessionMessagesReadOnly() { return structuredClone(messages); },
 			async loadEntriesFromFile() { return []; },
 		}, readChild);
-		const saved = { ...parkedDigestLimits };
-		parkedDigestLimits.units = 10_000;
+		const saved = { ...snapshotLimits };
+		snapshotLimits.units = 10_000;
 		try {
 			// Each child costs about 3100 units with its overheads: three fit, a fourth evicts the oldest.
 			const body = (index: number) => [text("assistant", `${index} ${"t".repeat(2500)}`)];
 			const refs = Array.from({ length: 4 }, () => parked());
 			for (const [index, ref] of refs.entries()) await read(ref, body(index));
-			expect(parkedDigestUsage().children).toBe(3);
-			expect(parkedDigestUsage().cost).toBeLessThanOrEqual(10_000);
+			expect(snapshotUsage().children).toBe(3);
+			expect(snapshotUsage().cost).toBeLessThanOrEqual(10_000);
 			const digests = revisionWork.messageDigests;
 			await read(refs[3]!, body(3));
 			expect(revisionWork.messageDigests).toBe(digests);
 			await read(refs[0]!, body(0));
 			expect(revisionWork.messageDigests).toBe(digests + 1);
 			// Repeated reads of a cached child do not inflate its cost.
-			const cost = parkedDigestUsage().cost;
+			const cost = snapshotUsage().cost;
 			for (let index = 0; index < 5; index++) await read(refs[0]!, body(0));
-			expect(parkedDigestUsage().cost).toBe(cost);
+			expect(snapshotUsage().cost).toBe(cost);
 			expect(revisionWork.messageDigests).toBe(digests + 1);
 			// A child over the budget on its own is never retained.
 			const huge = parked();
@@ -481,14 +481,66 @@ describe("native child transcript output", () => {
 			await read(huge, hugeBody);
 			await read(huge, hugeBody);
 			expect(revisionWork.messageDigests).toBe(digests + 3);
-			expect(parkedDigestUsage().cost).toBe(cost);
+			expect(snapshotUsage().cost).toBe(cost);
 			// Span metadata counts too: many tiny segments cost far more than their text.
 			const many = parked();
 			await read(many, Array.from({ length: 100 }, (_, index) => ({ ...text("assistant", "x", index), id: `segment-${index}` })));
-			expect(parkedDigestUsage().cost).toBeLessThanOrEqual(10_000);
-			expect(parkedDigestUsage().cost).toBeGreaterThan(100 * 64);
+			expect(snapshotUsage().cost).toBeLessThanOrEqual(10_000);
+			expect(snapshotUsage().cost).toBeGreaterThan(100 * 64);
 		} finally {
-			Object.assign(parkedDigestLimits, saved);
+			Object.assign(snapshotLimits, saved);
+		}
+	});
+
+	test("frozen reads serve one revision's older pages while a live child keeps streaming", async () => {
+		const messages: Message[] = Array.from({ length: 40 }, (_, index) => ({ ...text("assistant", `line ${index}`, 100 + index), id: `m${index}` }));
+		// The same live session object throughout, with a stream that moves on.
+		const state: { streamMessage: Message | null } = { streamMessage: { ...text("assistant", "Draft", 900), id: "stream" } };
+		const ref = { id: "child", kind: "sub", session: { messages, agent: { state }, sessionManager: { getBranch: () => [] } } } as unknown as AgentRef;
+		const read = (params: Partial<AgentOutputParams>) => readAgentOutput(ref, { agentId: "child", limit: 7, ...params }, {}, noDisk);
+		const newest = await read({});
+		const expected = (await read({ limit: 500 })).text;
+		// The stream moves on after the newest page was read, before every older page.
+		state.streamMessage = { ...text("assistant", "Draft and more", 900), id: "stream" };
+		const moved = await read({});
+		expect(moved.revision).not.toBe(newest.revision);
+		let assembled = newest.text;
+		let next = newest.nextOffset;
+		while (next !== null) {
+			const older = await read({ offset: next, revision: newest.revision! });
+			expect(older.revision).toBe(newest.revision);
+			assembled = `${older.text}\n${assembled}`;
+			next = older.nextOffset;
+		}
+		// The frozen pages reassemble exactly the transcript the newest page was cut from.
+		expect(assembled).toBe(expected);
+	});
+
+	test("frozen reads of parked children never reload the transcript", async () => {
+		const prompt = text("user", Array.from({ length: 30 }, (_, index) => `prompt ${index}`).join("\n"), 100);
+		const h = diskHarness([prompt], []);
+		const ref = parked();
+		const newest = await readAgentOutput(ref, { agentId: "child", limit: 5 }, h.api, h.readChild);
+		const loads = h.calls.length;
+		const older = await readAgentOutput(ref, { agentId: "child", limit: 5, offset: newest.nextOffset!, revision: newest.revision! }, h.api, h.readChild);
+		expect(older.revision).toBe(newest.revision);
+		expect(older.text).toBe(Array.from({ length: 5 }, (_, index) => `prompt ${20 + index}`).join("\n"));
+		expect(h.calls.length).toBe(loads);
+	});
+
+	test("an evicted or unknown revision is reported as snapshot_expired", async () => {
+		const messages: Message[] = [{ ...text("assistant", "a\nb\nc", 1), id: "m" }];
+		const ref = live(messages, null);
+		const first = await readAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk);
+		await expect(readAgentOutput(ref, { agentId: "child", limit: 1, offset: 2, revision: "sha256:unknown" }, {}, noDisk)).rejects.toMatchObject({ body: { code: "snapshot_expired" } });
+		// Two newer revisions push the first out of the per-child limit.
+		for (const tail of ["d", "e"]) {
+			messages.push({ ...text("assistant", tail, 2), id: `t${tail}` });
+			await readAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk);
+		}
+		await expect(readAgentOutput(ref, { agentId: "child", limit: 1, offset: first.nextOffset!, revision: first.revision! }, {}, noDisk)).rejects.toMatchObject({ body: { code: "snapshot_expired" } });
+		for (const revision of ["", "r".repeat(257), 7, null]) {
+			await expect(readAgentOutput(ref, { agentId: "child", revision } as AgentOutputParams, {}, noDisk)).rejects.toMatchObject({ body: { code: "bad_request" } });
 		}
 	});
 

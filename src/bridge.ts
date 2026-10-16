@@ -295,14 +295,17 @@ export function startBridge(options: BridgeOptions): Bridge {
 			case "agents.output": {
 				requireCapability("agents.output");
 				const agentId = paramString(params, "agentId");
-				const { offset, limit } = params;
+				const { offset, limit, revision } = params;
 				if (offset !== undefined && (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0)) {
 					throw new BridgeError("bad_request", "params.offset must be a non-negative safe integer");
 				}
 				if (limit !== undefined && (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1 || limit > 500)) {
 					throw new BridgeError("bad_request", "params.limit must be an integer from 1 to 500");
 				}
-				return host.output({ agentId, offset: offset as number | undefined, limit: limit as number | undefined });
+				if (revision !== undefined && (typeof revision !== "string" || revision.length === 0 || revision.length > 256)) {
+					throw new BridgeError("bad_request", "params.revision must be a nonempty string of at most 256 characters");
+				}
+				return host.output({ agentId, offset: offset as number | undefined, limit: limit as number | undefined, revision: revision as string | undefined });
 			}
 			case "agents.steer":
 			case "agents.followUp": {
