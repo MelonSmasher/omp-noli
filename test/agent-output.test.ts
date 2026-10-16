@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AgentRef } from "@oh-my-pi/pi-coding-agent";
-import { readAgentOutput } from "../src/agent-output";
+import { readAgentOutput, revisionWork } from "../src/agent-output";
 import { BridgeError } from "../src/bridge";
 import type { AgentOutputParams } from "../src/protocol";
 
@@ -334,6 +337,89 @@ describe("native child transcript output", () => {
 		expect(after.revision).not.toBe(before.revision);
 		const again = await readAgentOutput(live(messages, text("assistant", "Working", 2)), { agentId: "child" }, {}, noDisk);
 		expect(again.revision).toBe(after.revision);
+	});
+
+	test("revision encoding is injective over UTF-16 code units", async () => {
+		const revision = async (messages: Message[]) => (await output(messages)).revision;
+		// Distinct lone surrogates are distinct transcripts; content is never normalized.
+		expect(await revision([text("user", "\ud800")])).not.toBe(await revision([text("user", "\ud801")]));
+		expect(await revision([text("user", "a\ud800")])).not.toBe(await revision([text("user", "a\ufffd")]));
+		expect(await revision([{ ...text("user", "x"), id: "\ud800" }])).not.toBe(await revision([{ ...text("user", "x"), id: "\ud801" }]));
+		// Astral characters count as two units in both the length prefix and the hashed text.
+		expect(await revision([text("user", "😀"), text("user", "a")])).not.toBe(await revision([text("user", "😀a")]));
+	});
+
+	test("live revisions rehash only changed messages within a page-walk budget", async () => {
+		// About 4 MB of visible text in 2000 messages: 60+ pages of 64 KiB.
+		const body = "x".repeat(2000);
+		const messages: Message[] = Array.from({ length: 2000 }, (_, index) => ({ ...text(index % 2 ? "assistant" : "user", `${index} ${body}`, 1000 + index), id: `m${index}` }));
+		const ref = live(messages);
+		const digests = revisionWork.messageDigests;
+		const began = performance.now();
+		let result = await readAgentOutput(ref, { agentId: "child", limit: 500 }, {}, noDisk);
+		const revision = result.revision;
+		let reads = 1;
+		while (result.nextOffset !== null) {
+			result = await readAgentOutput(ref, { agentId: "child", offset: result.nextOffset, limit: 500 }, {}, noDisk);
+			expect(result.revision).toBe(revision);
+			reads++;
+		}
+		const elapsed = performance.now() - began;
+		expect(reads).toBeGreaterThanOrEqual(30);
+		// Each message is hashed once for the whole walk, not once per page.
+		expect(revisionWork.messageDigests - digests).toBe(messages.length);
+		expect(elapsed).toBeLessThan(5000);
+		// A streaming update rehashes only the streaming message.
+		const streaming = await readAgentOutput(live(messages, text("assistant", "Draft", 9000)), { agentId: "child" }, {}, noDisk);
+		const longer = await readAgentOutput(live(messages, text("assistant", "Draft more", 9000)), { agentId: "child" }, {}, noDisk);
+		expect(revisionWork.messageDigests - digests).toBe(messages.length + 2);
+		expect(new Set([revision, streaming.revision, longer.revision]).size).toBe(3);
+		// An in-place rewrite of an older message is detected, not trusted from object identity.
+		(messages[3]!.content as Message[])[0]!.text = "rewritten";
+		expect((await readAgentOutput(ref, { agentId: "child", limit: 500 }, {}, noDisk)).revision).not.toBe(revision);
+		expect(revisionWork.messageDigests - digests).toBe(messages.length + 3);
+	});
+
+	test("parked revisions are computed once per unchanged transcript file", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "omp-noli-revision-"));
+		const file = join(dir, "child.jsonl");
+		await writeFile(file, "initial\n");
+		const body = "y".repeat(1500);
+		let source: Message[] = Array.from({ length: 2000 }, (_, index) => ({ ...text("assistant", `${index} ${body}`, 1000 + index), id: `p${index}` }));
+		let touchDuringLoad = false;
+		const api = {
+			// Each native load returns fresh message objects, as reloading a file does.
+			async loadSessionMessagesReadOnly() { return structuredClone(source); },
+			async loadEntriesFromFile() { if (touchDuringLoad) await appendFile(file, "x"); return []; },
+		};
+		const readChild = async <T>(_ref: AgentRef, loader: (file: string) => Promise<T>): Promise<T> => loader(file);
+		const ref = parked();
+		const transcripts = revisionWork.transcriptDigests;
+		const began = performance.now();
+		let result = await readAgentOutput(ref, { agentId: "child", limit: 500 }, api, readChild);
+		const revision = result.revision;
+		let reads = 1;
+		while (result.nextOffset !== null && reads < 40) {
+			result = await readAgentOutput(ref, { agentId: "child", offset: result.nextOffset, limit: 500 }, api, readChild);
+			expect(result.revision).toBe(revision);
+			reads++;
+		}
+		expect(reads).toBeGreaterThanOrEqual(30);
+		expect(revisionWork.transcriptDigests - transcripts).toBe(1);
+		expect(performance.now() - began).toBeLessThan(10000);
+		// A changed file identity recomputes; identical content keeps its revision.
+		await appendFile(file, "appended\n");
+		expect((await readAgentOutput(ref, { agentId: "child" }, api, readChild)).revision).toBe(revision);
+		expect(revisionWork.transcriptDigests - transcripts).toBe(2);
+		source = source.map((message, index) => index === 0 ? { ...message, content: [{ type: "text", text: "rewritten" }] } : message);
+		await appendFile(file, "rewritten\n");
+		const rewritten = await readAgentOutput(ref, { agentId: "child" }, api, readChild);
+		expect(rewritten.revision).not.toBe(revision);
+		// A file that changes during the read is never cached.
+		touchDuringLoad = true;
+		for (let index = 0; index < 2; index++) expect((await readAgentOutput(ref, { agentId: "child" }, api, readChild)).revision).toBe(rewritten.revision);
+		expect(revisionWork.transcriptDigests - transcripts).toBe(5);
+		await rm(dir, { recursive: true, force: true });
 	});
 
 	test("malformed pagination fails before live or parked reads", async () => {

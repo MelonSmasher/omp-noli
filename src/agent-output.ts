@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import type { AgentRef } from "@oh-my-pi/pi-coding-agent";
 import { BridgeError } from "./bridge";
 import type { AgentOutputParams, AgentOutputResult } from "./protocol";
@@ -109,12 +110,14 @@ function sameVisibleMessage(left: RecordValue, right: RecordValue): boolean {
 	return true;
 }
 
-function* segments(messages: unknown[], identities: Map<string, MessageIdentity[]>, agentId: string): Generator<Segment> {
+/** `cursor.message` is the message that produced each yielded segment. */
+function* segments(messages: unknown[], identities: Map<string, MessageIdentity[]>, agentId: string, cursor: { message?: RecordValue } = {}): Generator<Segment> {
 	const occurrences = new Map<string, number>();
 	const usedIdentities = new Set<MessageIdentity>();
 	for (const value of messages) {
 		const message = record(value);
 		if (!message || typeof message.role !== "string") continue;
+		cursor.message = message;
 		const role = message.role;
 		const key = messageKey(message);
 		const occurrence = occurrences.get(key) ?? 0;
@@ -194,23 +197,65 @@ function clipLine(text: string, start: number, end: number): { text: string; byt
 }
 
 /**
- * Transcript revision: SHA-256 over every visible segment in order (its id,
- * role, tool, created_ms and full unclipped text, length-prefixed so segment
- * boundaries are unambiguous). It changes whenever any rendered line or span
- * identity changes anywhere in the transcript, including in-place rewrites,
- * truncation and streaming updates; page bounds never affect it.
+ * Transcript revision: SHA-256 over the per-message digests, in order. A
+ * message digest is SHA-256 over each visible segment it renders: the JSON
+ * array `[id, role, tool, created_ms, length]` followed by exactly `length`
+ * UTF-16 code units of its full unclipped text, all hashed as raw UTF-16LE
+ * code units. The encoding is injective (lone surrogates included), so the
+ * revision changes whenever any rendered line, span identity or segment
+ * boundary changes anywhere: appends, in-place rewrites of older messages,
+ * truncation and streaming updates. Page bounds never affect it.
  */
-function page(agentId: string, messages: unknown[], identities: Map<string, MessageIdentity[]>, offset: number | undefined, limit: number): AgentOutputResult {
+const messageDigests = new WeakMap<RecordValue, { segments: Segment[]; digest: Uint8Array }>();
+/** Parked revisions by child, valid while the canonical transcript file identity is unchanged. */
+const fileRevisions = new WeakMap<AgentRef, { stamp: string; revision: string }>();
+/** Revision work actually performed, observed by the budget tests. */
+export const revisionWork = { messageDigests: 0, transcriptDigests: 0 };
+
+/**
+ * Reuses a message's digest while it still renders the same segments, so a
+ * live child rehashes only messages that changed (its streaming message).
+ * Segments are compared, never trusted from object identity alone.
+ */
+function messageDigest(message: RecordValue, rendered: Segment[]): Uint8Array {
+	const cached = messageDigests.get(message);
+	if (cached && cached.segments.length === rendered.length && cached.segments.every((old, index) => {
+		const segment = rendered[index]!;
+		return old.id === segment.id && old.role === segment.role && old.tool === segment.tool && old.created_ms === segment.created_ms && old.text === segment.text;
+	})) return cached.digest;
+	const hasher = new Bun.CryptoHasher("sha256");
+	for (const segment of rendered) {
+		hasher.update(Buffer.from(JSON.stringify([segment.id, segment.role, segment.tool, segment.created_ms, segment.text.length]), "utf16le"));
+		hasher.update(Buffer.from(segment.text, "utf16le"));
+	}
+	const digest = new Uint8Array(hasher.digest());
+	revisionWork.messageDigests++;
+	messageDigests.set(message, { segments: rendered, digest });
+	return digest;
+}
+
+/** `known` is a revision already established for this exact transcript; it skips hashing. */
+function page(agentId: string, messages: unknown[], identities: Map<string, MessageIdentity[]>, offset: number | undefined, limit: number, known?: string): AgentOutputResult {
 	// Keep only source ranges for the candidate suffix. No oversized message
 	// is split or copied; clipping happens only for the returned page.
 	const ring: (Line | undefined)[] = new Array(limit);
-	const hasher = new Bun.CryptoHasher("sha256");
+	const transcript = known === undefined ? new Bun.CryptoHasher("sha256") : undefined;
+	const cursor: { message?: RecordValue } = {};
+	let message: RecordValue | undefined;
+	let rendered: Segment[] = [];
+	const finishMessage = (): void => {
+		if (transcript && message) transcript.update(messageDigest(message, rendered));
+		rendered = [];
+	};
 	let total = 0;
 	let retained = 0;
 	let segmentIndex = 0;
-	for (const segment of segments(messages, identities, agentId)) {
-		hasher.update(`${JSON.stringify([segment.id, segment.role, segment.tool, segment.created_ms])}${segment.text.length}:`);
-		hasher.update(segment.text);
+	for (const segment of segments(messages, identities, agentId, cursor)) {
+		if (cursor.message !== message) {
+			finishMessage();
+			message = cursor.message;
+		}
+		if (transcript) rendered.push(segment);
 		let start = 0;
 		while (start <= segment.text.length) {
 			const newline = segment.text.indexOf("\n", start);
@@ -224,6 +269,12 @@ function page(agentId: string, messages: unknown[], identities: Map<string, Mess
 			start = newline + 1;
 		}
 		segmentIndex++;
+	}
+	finishMessage();
+	let revision = known;
+	if (transcript) {
+		revisionWork.transcriptDigests++;
+		revision = `sha256:${transcript.digest("hex")}`;
 	}
 	const upper = Math.min(offset ?? total, total);
 	const count = Math.min(retained, limit);
@@ -253,7 +304,7 @@ function page(agentId: string, messages: unknown[], identities: Map<string, Mess
 		previousSegment = line.segment;
 	}
 	const lower = upper - selected.length;
-	return { agentId, text: textParts.join("\n"), spans, nextOffset: lower > 0 ? lower : null, revision: `sha256:${hasher.digest("hex")}` };
+	return { agentId, text: textParts.join("\n"), spans, nextOffset: lower > 0 ? lower : null, revision: revision! };
 }
 
 /** Read an already-authorized native child, without revival, writers or locks. */
@@ -276,7 +327,12 @@ export async function readAgentOutput(ref: AgentRef, params: AgentOutputParams, 
 	if (typeof loadMessages !== "function") unavailable("loadSessionMessagesReadOnly is required for read-only child transcripts");
 	const loadEntries = api.loadEntriesFromFile;
 	if (typeof loadEntries !== "function") unavailable("loadEntriesFromFile is required to preserve native persisted transcript identities");
+	// The file's identity is taken before the first load and after the last,
+	// so a cached revision is reused only for a file unchanged throughout.
+	let before: string | undefined;
+	let stamp: string | undefined;
 	const messages = await readChild(ref, async file => {
+		before = await fileStamp(file);
 		const loaded: unknown = await loadMessages(file);
 		if (!Array.isArray(loaded)) unavailable("loadSessionMessagesReadOnly did not return native messages");
 		return loaded;
@@ -284,7 +340,26 @@ export async function readAgentOutput(ref: AgentRef, params: AgentOutputParams, 
 	const identities = await readChild(ref, async file => {
 		const entries: unknown = await loadEntries(file);
 		if (!Array.isArray(entries)) unavailable("loadEntriesFromFile did not return native entries");
+		const after = await fileStamp(file);
+		if (after !== undefined && after === before) stamp = after;
 		return messageIdentities(entries);
 	});
-	return page(ref.id, messages, identities, offset, limit);
+	const cached = stamp === undefined ? undefined : fileRevisions.get(ref);
+	const result = page(ref.id, messages, identities, offset, limit, cached?.stamp === stamp ? cached?.revision : undefined);
+	if (stamp !== undefined) fileRevisions.set(ref, { stamp, revision: result.revision });
+	return result;
+}
+
+/**
+ * Canonical path plus device, inode, size and nanosecond mtime/ctime of a
+ * parked transcript; `undefined` when it cannot be read, so nothing is cached.
+ * OMP appends to session files, and any rewrite changes size or times.
+ */
+async function fileStamp(file: string): Promise<string | undefined> {
+	try {
+		const stats = await stat(file, { bigint: true });
+		return JSON.stringify([file, `${stats.dev}`, `${stats.ino}`, `${stats.size}`, `${stats.mtimeNs}`, `${stats.ctimeNs}`]);
+	} catch {
+		return undefined;
+	}
 }
