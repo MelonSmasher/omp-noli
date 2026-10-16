@@ -347,6 +347,12 @@ describe("native child transcript output", () => {
 		// Text longer than one hash slice, with a surrogate pair split across the slice boundary.
 		const long = `${"a".repeat(64 * 1024 - 1)}😀${"b".repeat(100_000)}`;
 		expect(await revision([text("user", long)])).toBe(await revision([text("user", long)]));
+		// Independent reference: the documented encoding hashed in one unsliced buffer.
+		const message = new Bun.CryptoHasher("sha256");
+		message.update(Buffer.from(JSON.stringify(["long", "user", null, 100, long.length]), "utf16le"));
+		message.update(Buffer.from(long, "utf16le"));
+		const reference = new Bun.CryptoHasher("sha256").update(message.digest()).digest("hex");
+		expect(await revision([{ ...text("user", long), id: "long" }])).toBe(`sha256:${reference}`);
 		expect(await revision([text("user", long)])).not.toBe(await revision([text("user", `${long.slice(0, -1)}c`)]));
 		expect(await revision([text("user", long)])).not.toBe(await revision([text("user", long.replace("😀", "😁"))]));
 	});
