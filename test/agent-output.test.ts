@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentRef } from "@oh-my-pi/pi-coding-agent";
-import { readAgentOutput, revisionWork } from "../src/agent-output";
+import { parkedDigestUsage, readAgentOutput, revisionWork } from "../src/agent-output";
 import { BridgeError } from "../src/bridge";
 import type { AgentOutputParams } from "../src/protocol";
 
@@ -416,6 +416,32 @@ describe("native child transcript output", () => {
 		source = [...original, { ...text("assistant", "appended", 9000), id: "tail" }];
 		expect((await readAgentOutput(ref, { agentId: "child" }, api, readChild)).revision).not.toBe(revision);
 		expect(revisionWork.messageDigests - digests).toBe(original.length + 3);
+	});
+
+	test("parked digest cache is bounded by child count and skips empty transcripts", async () => {
+		const readChild = async <T>(_ref: AgentRef, loader: (file: string) => Promise<T>): Promise<T> => loader("/canonical/child.jsonl");
+		const read = (ref: AgentRef, messages: Message[]) => readAgentOutput(ref, { agentId: "child" }, {
+			async loadSessionMessagesReadOnly() { return structuredClone(messages); },
+			async loadEntriesFromFile() { return []; },
+		}, readChild);
+		// Empty and hidden-only transcripts retain nothing, however many children there are.
+		const before = parkedDigestUsage();
+		for (let index = 0; index < 3000; index++) {
+			await read(parked(), index % 2 ? [] : [{ role: "system", content: "hidden", timestamp: 1 }, { role: "custom", content: "x", display: false, timestamp: 2 }]);
+		}
+		expect(parkedDigestUsage()).toEqual(before);
+		// At most 1024 children are retained, least recently read evicted first.
+		const refs = Array.from({ length: 1100 }, () => parked());
+		for (const [index, ref] of refs.entries()) await read(ref, [text("assistant", `child ${index}`)]);
+		expect(parkedDigestUsage().children).toBe(1024);
+		const digests = revisionWork.messageDigests;
+		await read(refs[refs.length - 1]!, [text("assistant", `child ${refs.length - 1}`)]);
+		expect(revisionWork.messageDigests).toBe(digests);
+		await read(refs[0]!, [text("assistant", "child 0")]);
+		expect(revisionWork.messageDigests).toBe(digests + 1);
+		expect(parkedDigestUsage().children).toBe(1024);
+		// Metadata counts toward the budget: each child costs more than its text.
+		expect(parkedDigestUsage().cost).toBeGreaterThan(1024 * 256);
 	});
 
 	test("malformed pagination fails before live or parked reads", async () => {

@@ -210,14 +210,23 @@ interface MessageDigest { segments: Segment[]; digest: Uint8Array; units: number
 const messageDigests = new WeakMap<RecordValue, MessageDigest>();
 /**
  * Parked children's digests by message position: every read loads fresh
- * message objects. Retained text is bounded across children (least recently
- * read evicted first); an evicted child is simply hashed again.
+ * message objects. Bounded across children, least recently read evicted
+ * first: at most `PARKED_DIGEST_CHILDREN` children and `PARKED_DIGEST_UNITS`
+ * cost, where cost is the retained text in UTF-16 units plus a fixed
+ * per-message and per-child overhead for metadata. Transcripts without
+ * visible messages are not cached. An evicted child is simply hashed again.
  */
-const parkedDigests = new Map<AgentRef, { entries: MessageDigest[]; units: number }>();
+const parkedDigests = new Map<AgentRef, { entries: MessageDigest[]; cost: number }>();
 const PARKED_DIGEST_UNITS = 32 * 1024 * 1024;
-let parkedUnits = 0;
+const PARKED_DIGEST_CHILDREN = 1024;
+const PARKED_ENTRY_OVERHEAD = 256;
+let parkedCost = 0;
 /** Revision work actually performed, observed by the budget tests. */
 export const revisionWork = { messageDigests: 0 };
+/** Current parked cache occupancy, observed by the bound tests. */
+export function parkedDigestUsage(): { children: number; cost: number } {
+	return { children: parkedDigests.size, cost: parkedCost };
+}
 
 /**
  * Reuses a message's earlier digest only while the message still renders the
@@ -358,16 +367,16 @@ export async function readAgentOutput(ref: AgentRef, params: AgentOutputParams, 
 	const result = page(ref.id, messages, identities, offset, limit, parked);
 	if (previous) {
 		parkedDigests.delete(ref);
-		parkedUnits -= previous.units;
+		parkedCost -= previous.cost;
 	}
-	const units = parked.next.reduce((sum, entry) => sum + entry.units, 0);
-	if (units <= PARKED_DIGEST_UNITS) {
-		parkedDigests.set(ref, { entries: parked.next, units });
-		parkedUnits += units;
+	const cost = parked.next.reduce((sum, entry) => sum + entry.units + PARKED_ENTRY_OVERHEAD, PARKED_ENTRY_OVERHEAD);
+	if (parked.next.length > 0 && cost <= PARKED_DIGEST_UNITS) {
+		parkedDigests.set(ref, { entries: parked.next, cost });
+		parkedCost += cost;
 		for (const [oldest, cached] of parkedDigests) {
-			if (parkedUnits <= PARKED_DIGEST_UNITS) break;
+			if (parkedCost <= PARKED_DIGEST_UNITS && parkedDigests.size <= PARKED_DIGEST_CHILDREN) break;
 			parkedDigests.delete(oldest);
-			parkedUnits -= cached.units;
+			parkedCost -= cached.cost;
 		}
 	}
 	return result;
