@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentRef } from "@oh-my-pi/pi-coding-agent";
-import { parkedDigestLimits, parkedDigestUsage, readAgentOutput, revisionWork } from "../src/agent-output";
+import { type OutputRead, releaseSnapshots, renderAgentOutput, snapshotLimits, snapshotUsage, readAgentOutput, revisionWork } from "../src/agent-output";
 import { BridgeError } from "../src/bridge";
 import type { AgentOutputParams } from "../src/protocol";
 
 type Message = Record<string, unknown>;
+/** One authorized read scope; the host computes the real one per read. */
+const SCOPE = "test-scope";
 const noDisk = async <T>(_ref: AgentRef, _loader: (file: string) => Promise<T>): Promise<T> => { throw new Error("Live output must not read disk"); };
 
 function live(messages: Message[], streamMessage: Message | null = null, branch: Message[] = []): AgentRef {
@@ -45,7 +47,7 @@ function diskHarness(messages: Message[], entries: Message[] = []) {
 }
 
 async function output(messages: Message[], params: Partial<AgentOutputParams> = {}) {
-	return readAgentOutput(live(messages), { agentId: "child", ...params }, {}, noDisk);
+	return readAgentOutput(live(messages), { agentId: "child", ...params }, {}, noDisk, SCOPE);
 }
 
 describe("native child transcript output", () => {
@@ -68,7 +70,7 @@ describe("native child transcript output", () => {
 			{ role: "system", content: "hidden-system", timestamp: 15 },
 		];
 		const partial = { ...text("assistant", "Still typing 🦊", 16), id: "partial-id" };
-		const result = await readAgentOutput(live(messages, partial), { agentId: "child" }, {}, noDisk);
+		const result = await readAgentOutput(live(messages, partial), { agentId: "child" }, {}, noDisk, SCOPE);
 		expect(result.text).toBe('prompt\nWorking\nread({"path":"src/index.ts"})\ncontents\nStill typing 🦊');
 		expect(result.spans.map(({ id, role, tool, created_ms }) => ({ id, role, tool, created_ms }))).toEqual([
 			{ id: "prompt-id", role: "user", tool: null, created_ms: 11 },
@@ -83,7 +85,7 @@ describe("native child transcript output", () => {
 
 	test("does not duplicate an already appended streaming object", async () => {
 		const message = text("assistant", "response");
-		const result = await readAgentOutput(live([message], message), { agentId: "child" }, {}, noDisk);
+		const result = await readAgentOutput(live([message], message), { agentId: "child" }, {}, noDisk, SCOPE);
 		expect(result.text).toBe("response");
 	});
 
@@ -97,7 +99,7 @@ describe("native child transcript output", () => {
 			{ type: "thinking_level_change", id: "last", parentId: "reply-entry", timestamp: "2026-01-01T00:00:00Z", thinkingLevel: "high" },
 		]);
 		const ref = parked();
-		const result = await readAgentOutput(ref, { agentId: "child" }, h.api, h.readChild);
+		const result = await readAgentOutput(ref, { agentId: "child" }, h.api, h.readChild, SCOPE);
 		expect(h.reads).toEqual(["child", "child"]);
 		expect(h.calls).toEqual(["messages:/canonical/child.jsonl", "entries:/canonical/child.jsonl"]);
 		expect(result.text).toBe("prompt\nreply");
@@ -109,7 +111,7 @@ describe("native child transcript output", () => {
 	test("live entry identities are read only from the existing current branch", async () => {
 		const first = text("user", "prompt", 33);
 		const reply = text("assistant", "answer", 34);
-		const result = await readAgentOutput(live([first, reply], null, [entry("u", null, first), entry("a", "u", reply)]), { agentId: "child" }, {}, noDisk);
+		const result = await readAgentOutput(live([first, reply], null, [entry("u", null, first), entry("a", "u", reply)]), { agentId: "child" }, {}, noDisk, SCOPE);
 		expect(result.spans.map(span => span.id)).toEqual(["u", "a"]);
 	});
 
@@ -137,7 +139,7 @@ describe("native child transcript output", () => {
 			{ type: "custom_message", id: "hidden-id", parentId: null, timestamp: new Date(100).toISOString(), content: "hidden" },
 			{ type: "custom_message", id: "visible-id", parentId: "hidden-id", timestamp: new Date(100).toISOString(), content: "visible" },
 		]);
-		const result = await readAgentOutput(parked(), { agentId: "child" }, h.api, h.readChild);
+		const result = await readAgentOutput(parked(), { agentId: "child" }, h.api, h.readChild, SCOPE);
 		expect(result.text).toBe("visible");
 		expect(result.spans[0]?.id).toBe("visible-id");
 	});
@@ -146,13 +148,13 @@ describe("native child transcript output", () => {
 		const old = text("assistant", "old", 100);
 		const kept = text("assistant", "kept", 100);
 		const h = diskHarness([kept], [entry("old-id", null, old), entry("kept-id", "old-id", kept)]);
-		const result = await readAgentOutput(parked(), { agentId: "child" }, h.api, h.readChild);
+		const result = await readAgentOutput(parked(), { agentId: "child" }, h.api, h.readChild, SCOPE);
 		expect(result.spans[0]?.id).toBe("kept-id");
 	});
 
 	test("entry parent cycles terminate without inventing abandoned content", async () => {
 		const h = diskHarness([text("assistant", "answer")], [entry("a", "b", text("assistant", "answer")), { type: "model_change", id: "b", parentId: "a" }]);
-		const result = await readAgentOutput(parked(), { agentId: "child" }, h.api, h.readChild);
+		const result = await readAgentOutput(parked(), { agentId: "child" }, h.api, h.readChild, SCOPE);
 		expect(result.text).toBe("answer");
 		expect(result.spans[0]?.id).toBe("a");
 	});
@@ -174,7 +176,7 @@ describe("native child transcript output", () => {
 
 	test("missing persisted entry export fails explicitly before any disk read", async () => {
 		const h = diskHarness([text("user", "prompt")]);
-		await expect(readAgentOutput(parked(), { agentId: "child" }, { loadSessionMessagesReadOnly: h.api.loadSessionMessagesReadOnly }, h.readChild)).rejects.toMatchObject({ body: { code: "capability_unavailable", capability: "agents.output", reason: "export_missing" } });
+		await expect(readAgentOutput(parked(), { agentId: "child" }, { loadSessionMessagesReadOnly: h.api.loadSessionMessagesReadOnly }, h.readChild, SCOPE)).rejects.toMatchObject({ body: { code: "capability_unavailable", capability: "agents.output", reason: "export_missing" } });
 		expect(h.calls).toEqual([]);
 		expect(h.reads).toEqual([]);
 	});
@@ -182,7 +184,7 @@ describe("native child transcript output", () => {
 	test("native message and block IDs win over entry IDs", async () => {
 		const message = { ...text("assistant", "answer", 222), id: "message-id", responseId: "response-id" };
 		const h = diskHarness([message], [entry("entry-id", null, message)]);
-		const result = await readAgentOutput(parked(), { agentId: "child" }, h.api, h.readChild);
+		const result = await readAgentOutput(parked(), { agentId: "child" }, h.api, h.readChild, SCOPE);
 		expect(result.spans[0]?.id).toBe("message-id");
 		expect(result.spans[0]?.created_ms).toBe(222);
 	});
@@ -329,10 +331,10 @@ describe("native child transcript output", () => {
 
 	test("revision follows a live child's streaming message", async () => {
 		const messages = [text("user", "prompt", 1)];
-		const before = await readAgentOutput(live(messages, text("assistant", "Work", 2)), { agentId: "child" }, {}, noDisk);
-		const after = await readAgentOutput(live(messages, text("assistant", "Working", 2)), { agentId: "child" }, {}, noDisk);
+		const before = await readAgentOutput(live(messages, text("assistant", "Work", 2)), { agentId: "child" }, {}, noDisk, SCOPE);
+		const after = await readAgentOutput(live(messages, text("assistant", "Working", 2)), { agentId: "child" }, {}, noDisk, SCOPE);
 		expect(after.revision).not.toBe(before.revision);
-		const again = await readAgentOutput(live(messages, text("assistant", "Working", 2)), { agentId: "child" }, {}, noDisk);
+		const again = await readAgentOutput(live(messages, text("assistant", "Working", 2)), { agentId: "child" }, {}, noDisk, SCOPE);
 		expect(again.revision).toBe(after.revision);
 	});
 
@@ -363,11 +365,11 @@ describe("native child transcript output", () => {
 		const messages: Message[] = Array.from({ length: 2000 }, (_, index) => ({ ...text(index % 2 ? "assistant" : "user", `${index} ${body}`, 1000 + index), id: `m${index}` }));
 		const ref = live(messages);
 		const digests = revisionWork.messageDigests;
-		let result = await readAgentOutput(ref, { agentId: "child", limit: 500 }, {}, noDisk);
+		let result = await readAgentOutput(ref, { agentId: "child", limit: 500 }, {}, noDisk, SCOPE);
 		const revision = result.revision;
 		let reads = 1;
 		while (result.nextOffset !== null) {
-			result = await readAgentOutput(ref, { agentId: "child", offset: result.nextOffset, limit: 500 }, {}, noDisk);
+			result = await readAgentOutput(ref, { agentId: "child", offset: result.nextOffset, limit: 500 }, {}, noDisk, SCOPE);
 			expect(result.revision).toBe(revision);
 			reads++;
 		}
@@ -375,13 +377,13 @@ describe("native child transcript output", () => {
 		// Each message is hashed once for the whole walk, not once per page.
 		expect(revisionWork.messageDigests - digests).toBe(messages.length);
 		// A streaming update rehashes only the streaming message.
-		const streaming = await readAgentOutput(live(messages, text("assistant", "Draft", 9000)), { agentId: "child" }, {}, noDisk);
-		const longer = await readAgentOutput(live(messages, text("assistant", "Draft more", 9000)), { agentId: "child" }, {}, noDisk);
+		const streaming = await readAgentOutput(live(messages, text("assistant", "Draft", 9000)), { agentId: "child" }, {}, noDisk, SCOPE);
+		const longer = await readAgentOutput(live(messages, text("assistant", "Draft more", 9000)), { agentId: "child" }, {}, noDisk, SCOPE);
 		expect(revisionWork.messageDigests - digests).toBe(messages.length + 2);
 		expect(new Set([revision, streaming.revision, longer.revision]).size).toBe(3);
 		// An in-place rewrite of an older message is detected, not trusted from object identity.
 		(messages[3]!.content as Message[])[0]!.text = "rewritten";
-		expect((await readAgentOutput(ref, { agentId: "child", limit: 500 }, {}, noDisk)).revision).not.toBe(revision);
+		expect((await readAgentOutput(ref, { agentId: "child", limit: 500 }, {}, noDisk, SCOPE)).revision).not.toBe(revision);
 		expect(revisionWork.messageDigests - digests).toBe(messages.length + 3);
 	});
 
@@ -397,11 +399,11 @@ describe("native child transcript output", () => {
 		const readChild = async <T>(_ref: AgentRef, loader: (file: string) => Promise<T>): Promise<T> => loader("/canonical/child.jsonl");
 		const ref = parked();
 		const digests = revisionWork.messageDigests;
-		let result = await readAgentOutput(ref, { agentId: "child", limit: 500 }, api, readChild);
+		let result = await readAgentOutput(ref, { agentId: "child", limit: 500 }, api, readChild, SCOPE);
 		const revision = result.revision;
 		let reads = 1;
 		while (result.nextOffset !== null && reads < 40) {
-			result = await readAgentOutput(ref, { agentId: "child", offset: result.nextOffset, limit: 500 }, api, readChild);
+			result = await readAgentOutput(ref, { agentId: "child", offset: result.nextOffset, limit: 500 }, api, readChild, SCOPE);
 			expect(result.revision).toBe(revision);
 			reads++;
 		}
@@ -412,15 +414,15 @@ describe("native child transcript output", () => {
 		// and only the rewritten message is hashed again.
 		const original = source;
 		source = source.map((message, index) => index === 7 ? { ...message, content: [{ type: "text", text: `7 ${"z".repeat(1500)}` }] } : message);
-		const rewritten = await readAgentOutput(ref, { agentId: "child" }, api, readChild);
+		const rewritten = await readAgentOutput(ref, { agentId: "child" }, api, readChild, SCOPE);
 		expect(rewritten.revision).not.toBe(revision);
 		expect(revisionWork.messageDigests - digests).toBe(source.length + 1);
 		source = original;
-		expect((await readAgentOutput(ref, { agentId: "child" }, api, readChild)).revision).toBe(revision);
+		expect((await readAgentOutput(ref, { agentId: "child" }, api, readChild, SCOPE)).revision).toBe(revision);
 		expect(revisionWork.messageDigests - digests).toBe(source.length + 2);
 		// An append hashes only the new message.
 		source = [...original, { ...text("assistant", "appended", 9000), id: "tail" }];
-		expect((await readAgentOutput(ref, { agentId: "child" }, api, readChild)).revision).not.toBe(revision);
+		expect((await readAgentOutput(ref, { agentId: "child" }, api, readChild, SCOPE)).revision).not.toBe(revision);
 		expect(revisionWork.messageDigests - digests).toBe(original.length + 3);
 	});
 
@@ -429,25 +431,25 @@ describe("native child transcript output", () => {
 		const read = (ref: AgentRef, messages: Message[]) => readAgentOutput(ref, { agentId: "child" }, {
 			async loadSessionMessagesReadOnly() { return structuredClone(messages); },
 			async loadEntriesFromFile() { return []; },
-		}, readChild);
+		}, readChild, SCOPE);
 		// Empty and hidden-only transcripts retain nothing, however many children there are.
-		const before = parkedDigestUsage();
+		const before = snapshotUsage();
 		for (let index = 0; index < 3000; index++) {
 			await read(parked(), index % 2 ? [] : [{ role: "system", content: "hidden", timestamp: 1 }, { role: "custom", content: "x", display: false, timestamp: 2 }]);
 		}
-		expect(parkedDigestUsage()).toEqual(before);
+		expect(snapshotUsage()).toEqual(before);
 		// At most 1024 children are retained, least recently read evicted first.
 		const refs = Array.from({ length: 1100 }, () => parked());
 		for (const [index, ref] of refs.entries()) await read(ref, [text("assistant", `child ${index}`)]);
-		expect(parkedDigestUsage().children).toBe(1024);
+		expect(snapshotUsage().children).toBe(1024);
 		const digests = revisionWork.messageDigests;
 		await read(refs[refs.length - 1]!, [text("assistant", `child ${refs.length - 1}`)]);
 		expect(revisionWork.messageDigests).toBe(digests);
 		await read(refs[0]!, [text("assistant", "child 0")]);
 		expect(revisionWork.messageDigests).toBe(digests + 1);
-		expect(parkedDigestUsage().children).toBe(1024);
+		expect(snapshotUsage().children).toBe(1024);
 		// Metadata counts toward the budget: each child costs more than its text.
-		expect(parkedDigestUsage().cost).toBeGreaterThan(1024 * 256);
+		expect(snapshotUsage().cost).toBeGreaterThan(1024 * 256);
 	});
 
 	test("parked digest cache is bounded by retained text and metadata", async () => {
@@ -455,25 +457,25 @@ describe("native child transcript output", () => {
 		const read = (ref: AgentRef, messages: Message[]) => readAgentOutput(ref, { agentId: "child" }, {
 			async loadSessionMessagesReadOnly() { return structuredClone(messages); },
 			async loadEntriesFromFile() { return []; },
-		}, readChild);
-		const saved = { ...parkedDigestLimits };
-		parkedDigestLimits.units = 10_000;
+		}, readChild, SCOPE);
+		const saved = { ...snapshotLimits };
+		snapshotLimits.units = 10_000;
 		try {
 			// Each child costs about 3100 units with its overheads: three fit, a fourth evicts the oldest.
 			const body = (index: number) => [text("assistant", `${index} ${"t".repeat(2500)}`)];
 			const refs = Array.from({ length: 4 }, () => parked());
 			for (const [index, ref] of refs.entries()) await read(ref, body(index));
-			expect(parkedDigestUsage().children).toBe(3);
-			expect(parkedDigestUsage().cost).toBeLessThanOrEqual(10_000);
+			expect(snapshotUsage().children).toBe(3);
+			expect(snapshotUsage().cost).toBeLessThanOrEqual(10_000);
 			const digests = revisionWork.messageDigests;
 			await read(refs[3]!, body(3));
 			expect(revisionWork.messageDigests).toBe(digests);
 			await read(refs[0]!, body(0));
 			expect(revisionWork.messageDigests).toBe(digests + 1);
 			// Repeated reads of a cached child do not inflate its cost.
-			const cost = parkedDigestUsage().cost;
+			const cost = snapshotUsage().cost;
 			for (let index = 0; index < 5; index++) await read(refs[0]!, body(0));
-			expect(parkedDigestUsage().cost).toBe(cost);
+			expect(snapshotUsage().cost).toBe(cost);
 			expect(revisionWork.messageDigests).toBe(digests + 1);
 			// A child over the budget on its own is never retained.
 			const huge = parked();
@@ -481,21 +483,124 @@ describe("native child transcript output", () => {
 			await read(huge, hugeBody);
 			await read(huge, hugeBody);
 			expect(revisionWork.messageDigests).toBe(digests + 3);
-			expect(parkedDigestUsage().cost).toBe(cost);
+			expect(snapshotUsage().cost).toBe(cost);
 			// Span metadata counts too: many tiny segments cost far more than their text.
 			const many = parked();
 			await read(many, Array.from({ length: 100 }, (_, index) => ({ ...text("assistant", "x", index), id: `segment-${index}` })));
-			expect(parkedDigestUsage().cost).toBeLessThanOrEqual(10_000);
-			expect(parkedDigestUsage().cost).toBeGreaterThan(100 * 64);
+			expect(snapshotUsage().cost).toBeLessThanOrEqual(10_000);
+			expect(snapshotUsage().cost).toBeGreaterThan(100 * 64);
 		} finally {
-			Object.assign(parkedDigestLimits, saved);
+			Object.assign(snapshotLimits, saved);
 		}
+	});
+
+	test("frozen reads serve one revision's older pages while a live child keeps streaming", async () => {
+		const messages: Message[] = Array.from({ length: 40 }, (_, index) => ({ ...text("assistant", `line ${index}`, 100 + index), id: `m${index}` }));
+		// The same live session object throughout, with a stream that moves on.
+		const state: { streamMessage: Message | null } = { streamMessage: { ...text("assistant", "Draft", 900), id: "stream" } };
+		const ref = { id: "child", kind: "sub", session: { messages, agent: { state }, sessionManager: { getBranch: () => [] } } } as unknown as AgentRef;
+		const read = (params: Partial<AgentOutputParams>) => readAgentOutput(ref, { agentId: "child", limit: 7, ...params }, {}, noDisk, SCOPE);
+		const newest = await read({});
+		const expected = (await read({ limit: 500 })).text;
+		// The stream moves on after the newest page was read, before every older page.
+		state.streamMessage = { ...text("assistant", "Draft and more", 900), id: "stream" };
+		const moved = await read({});
+		expect(moved.revision).not.toBe(newest.revision);
+		let assembled = newest.text;
+		let next = newest.nextOffset;
+		while (next !== null) {
+			const older = await read({ offset: next, revision: newest.revision! });
+			expect(older.revision).toBe(newest.revision);
+			assembled = `${older.text}\n${assembled}`;
+			next = older.nextOffset;
+		}
+		// The frozen pages reassemble exactly the transcript the newest page was cut from.
+		expect(assembled).toBe(expected);
+	});
+
+	test("frozen reads of parked children never reload the transcript", async () => {
+		const prompt = text("user", Array.from({ length: 30 }, (_, index) => `prompt ${index}`).join("\n"), 100);
+		const h = diskHarness([prompt], []);
+		const ref = parked();
+		const newest = await readAgentOutput(ref, { agentId: "child", limit: 5 }, h.api, h.readChild, SCOPE);
+		const loads = h.calls.length;
+		const older = await readAgentOutput(ref, { agentId: "child", limit: 5, offset: newest.nextOffset!, revision: newest.revision! }, h.api, h.readChild, SCOPE);
+		expect(older.revision).toBe(newest.revision);
+		expect(older.text).toBe(Array.from({ length: 5 }, (_, index) => `prompt ${20 + index}`).join("\n"));
+		expect(h.calls.length).toBe(loads);
+	});
+
+	test("an evicted or unknown revision is reported as snapshot_expired", async () => {
+		const messages: Message[] = [{ ...text("assistant", "a\nb\nc", 1), id: "m" }];
+		const ref = live(messages, null);
+		const first = await readAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+		await expect(readAgentOutput(ref, { agentId: "child", limit: 1, offset: 2, revision: "sha256:unknown" }, {}, noDisk, SCOPE)).rejects.toMatchObject({ body: { code: "snapshot_expired" } });
+		// Two newer revisions push the first out of the per-child limit.
+		for (const tail of ["d", "e"]) {
+			messages.push({ ...text("assistant", tail, 2), id: `t${tail}` });
+			await readAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+		}
+		await expect(readAgentOutput(ref, { agentId: "child", limit: 1, offset: first.nextOffset!, revision: first.revision! }, {}, noDisk, SCOPE)).rejects.toMatchObject({ body: { code: "snapshot_expired" } });
+		for (const revision of ["", "r".repeat(257), 7, null]) {
+			await expect(readAgentOutput(ref, { agentId: "child", revision } as AgentOutputParams, {}, noDisk, SCOPE)).rejects.toMatchObject({ body: { code: "bad_request" } });
+		}
+	});
+
+	test("a child's newest snapshot survives when its snapshots together exceed the budget", async () => {
+		const saved = { ...snapshotLimits };
+		snapshotLimits.units = 5_000;
+		try {
+			const messages: Message[] = [{ ...text("assistant", `${"x".repeat(3_000)}\nend`, 1), id: "m" }];
+			const ref = live(messages, null);
+			const first = await readAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+			messages.push({ ...text("assistant", "more", 2), id: "n" });
+			const second = await readAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+			// Both no longer fit: the older one goes, the newest stays pageable.
+			expect(snapshotUsage().cost).toBeLessThanOrEqual(5_000);
+			expect((await readAgentOutput(ref, { agentId: "child", limit: 1, offset: second.nextOffset!, revision: second.revision! }, {}, noDisk, SCOPE)).revision).toBe(second.revision);
+			await expect(readAgentOutput(ref, { agentId: "child", limit: 1, offset: first.nextOffset!, revision: first.revision! }, {}, noDisk, SCOPE)).rejects.toMatchObject({ body: { code: "snapshot_expired" } });
+		} finally {
+			Object.assign(snapshotLimits, saved);
+		}
+	});
+
+	test("snapshots are ordered by when their read started, and only validated reads are retained", async () => {
+		const saved = { ...snapshotLimits };
+		snapshotLimits.perChild = 1;
+		try {
+			const messages: Message[] = [{ ...text("assistant", "a\nb", 1), id: "m" }];
+			const ref = live(messages, null);
+			const older = await renderAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+			messages.push({ ...text("assistant", "c", 2), id: "n" });
+			const newer = await renderAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+			// The older read finishes last: it must not displace the newer revision.
+			newer.retain();
+			older.retain();
+			const frozen = (read: OutputRead) => readAgentOutput(ref, { agentId: "child", limit: 1, offset: read.page.nextOffset!, revision: read.page.revision! }, {}, noDisk, SCOPE);
+			expect((await frozen(newer)).revision).toBe(newer.page.revision);
+			await expect(frozen(older)).rejects.toMatchObject({ body: { code: "snapshot_expired" } });
+			// A read whose caller never confirmed it (failed validation) displaces nothing.
+			messages.push({ ...text("assistant", "d", 3), id: "o" });
+			const failed = await renderAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+			expect(failed.page.revision).not.toBe(newer.page.revision);
+			expect((await frozen(newer)).revision).toBe(newer.page.revision);
+			await expect(frozen(failed)).rejects.toMatchObject({ body: { code: "snapshot_expired" } });
+		} finally {
+			Object.assign(snapshotLimits, saved);
+		}
+	});
+
+	test("released children's snapshots are dropped", async () => {
+		const ref = live([{ ...text("assistant", "a\nb", 1), id: "m" }], null);
+		const read = await readAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+		releaseSnapshots(ref);
+		await expect(readAgentOutput(ref, { agentId: "child", limit: 1, offset: read.nextOffset!, revision: read.revision! }, {}, noDisk, SCOPE)).rejects.toMatchObject({ body: { code: "snapshot_expired" } });
 	});
 
 	test("malformed pagination fails before live or parked reads", async () => {
 		for (const offset of [-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "2", null]) {
 			const h = diskHarness([]);
-			await expect(readAgentOutput(parked(), { agentId: "child", offset } as AgentOutputParams, h.api, h.readChild)).rejects.toMatchObject({ body: { code: "bad_request" } });
+			await expect(readAgentOutput(parked(), { agentId: "child", offset } as AgentOutputParams, h.api, h.readChild, SCOPE)).rejects.toMatchObject({ body: { code: "bad_request" } });
 			expect(h.calls).toEqual([]);
 			expect(h.reads).toEqual([]);
 		}
@@ -505,23 +610,23 @@ describe("native child transcript output", () => {
 	});
 
 	test("missing read-only API fails explicitly without calling the wrapper", async () => {
-		await expect(readAgentOutput(parked(), { agentId: "child" }, {}, noDisk)).rejects.toMatchObject({ body: { code: "capability_unavailable", capability: "agents.output", reason: "export_missing" } });
+		await expect(readAgentOutput(parked(), { agentId: "child" }, {}, noDisk, SCOPE)).rejects.toMatchObject({ body: { code: "capability_unavailable", capability: "agents.output", reason: "export_missing" } });
 		const h = diskHarness([]);
-		await expect(readAgentOutput(parked(), { agentId: "child" }, { ...h.api, loadSessionMessagesReadOnly: async () => ({}) }, h.readChild)).rejects.toBeInstanceOf(BridgeError);
-		await expect(readAgentOutput(parked(), { agentId: "child" }, { ...h.api, loadEntriesFromFile: async () => ({}) }, h.readChild)).rejects.toBeInstanceOf(BridgeError);
+		await expect(readAgentOutput(parked(), { agentId: "child" }, { ...h.api, loadSessionMessagesReadOnly: async () => ({}) }, h.readChild, SCOPE)).rejects.toBeInstanceOf(BridgeError);
+		await expect(readAgentOutput(parked(), { agentId: "child" }, { ...h.api, loadEntriesFromFile: async () => ({}) }, h.readChild, SCOPE)).rejects.toBeInstanceOf(BridgeError);
 	});
 
 	test("missing live messages or streaming API fails rather than returning an empty fallback", async () => {
 		for (const session of [{ agent: { state: { streamMessage: null } } }, { messages: [] }]) {
 			const ref = { id: "child", session } as unknown as AgentRef;
-			await expect(readAgentOutput(ref, { agentId: "child" }, {}, noDisk)).rejects.toMatchObject({ body: { code: "capability_unavailable", capability: "agents.output" } });
+			await expect(readAgentOutput(ref, { agentId: "child" }, {}, noDisk, SCOPE)).rejects.toMatchObject({ body: { code: "capability_unavailable", capability: "agents.output" } });
 		}
 	});
 
 	test("canonical read rejection propagates without bypassing the driver", async () => {
 		const h = diskHarness([]);
 		const rejectedRead = async <T>(_ref: AgentRef, _loader: (file: string) => Promise<T>): Promise<T> => { throw new BridgeError("stale_session", "ownership changed"); };
-		await expect(readAgentOutput(parked(), { agentId: "child" }, h.api, rejectedRead)).rejects.toMatchObject({ body: { code: "stale_session" } });
+		await expect(readAgentOutput(parked(), { agentId: "child" }, h.api, rejectedRead, SCOPE)).rejects.toMatchObject({ body: { code: "stale_session" } });
 		expect(h.calls).toEqual([]);
 	});
 });

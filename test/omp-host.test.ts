@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { BridgeError } from "../src/bridge";
 import type { ListResult } from "../src/protocol";
 import { createOmpHost, DEPARTED_LIMIT, type OmpHost } from "../src/omp-host";
 
@@ -788,6 +789,39 @@ describe("read-only child output isolation", () => {
 		}
 		gate.resolve();
 		await expect(reading).rejects.toMatchObject({ body: { code: "stale_session" } });
+	});
+	test.each(["root", "ref", "transcript", "symlink", "adoption", "foreign"])("a frozen read never serves a snapshot after a %s change", async kind => {
+		const ref = child("C");
+		transcriptLoader = async () => [{ role: "user", content: Array.from({ length: 10 }, (_, index) => `ROOT A SECRET ${index}`).join("\n"), timestamp: 10 }];
+		const newest = await omp.host.output({ agentId: "C", limit: 2 });
+		const frozen = () => omp.host.output({ agentId: "C", limit: 2, offset: newest.nextOffset!, revision: newest.revision! });
+		// Within the scope it was rendered under, the snapshot is served.
+		expect((await frozen()).text).toContain("ROOT A SECRET 7");
+		transcriptLoader = async () => [{ role: "user", content: "other content", timestamp: 20 }];
+		if (kind === "root") {
+			// The same ref re-attached to another root session with its own artifact directory.
+			rootFile = join(dir, "b.jsonl");
+			writeFileSync(rootFile, header);
+			mkdirSync(join(dir, "b"));
+			ref.sessionFile = join(dir, "b", "C.jsonl");
+			writeFileSync(ref.sessionFile, complete);
+		}
+		if (kind === "ref") registry.refs.set("C", { ...ref });
+		if (kind === "transcript") {
+			ref.sessionFile = join(artifactDir, "replacement.jsonl");
+			writeFileSync(ref.sessionFile, complete);
+		}
+		if (kind === "symlink") {
+			const target = join(artifactDir, "elsewhere.jsonl");
+			writeFileSync(target, complete);
+			unlinkSync(ref.sessionFile!);
+			symlinkSync(target, ref.sessionFile!);
+		}
+		if (kind === "adoption") omp.adopt(ctx);
+		if (kind === "foreign") ref.parentId = "DifferentRoot";
+		const outcome = await frozen().then(page => ({ page }), (error: BridgeError) => ({ code: error.body.code }));
+		expect(outcome).toEqual({ code: kind === "foreign" ? "unknown_agent" : "snapshot_expired" });
+		if (kind === "root") rootFile = join(dir, "root.jsonl");
 	});
 	test("missing read-only export explicitly disables output", () => {
 		delete runtimeExports.loadSessionMessagesReadOnly;

@@ -178,6 +178,13 @@ export interface AgentOutputParams {
 	/** Exclusive upper line bound; omitted selects the newest page. */
 	offset?: number;
 	limit?: number;
+	/**
+	 * v0.9.4+: serve the page from the retained transcript with this
+	 * revision (as returned by an earlier page), even if the child has
+	 * produced more output since. Fails with `snapshot_expired` once that
+	 * transcript is no longer retained. Older bridges ignore it.
+	 */
+	revision?: string;
 }
 
 export interface AgentOutputResult {
@@ -281,6 +288,7 @@ export const ERROR_CODES = [
 	"stale_session",
 	"unknown_agent",
 	"agent_absent",
+	"snapshot_expired",
 	"unknown_definition",
 	"definition_required",
 	"forbidden_kind",

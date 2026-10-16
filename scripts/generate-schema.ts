@@ -60,6 +60,7 @@ output.properties.nextOffset = { type: ["integer", "null"], minimum: 0 };
 for (const key of ["start", "end"]) output.properties.spans.items.properties[key] = { type: "integer", minimum: 0 };
 schema.$defs.AgentOutputParams.properties.offset = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 schema.$defs.AgentOutputParams.properties.limit = { type: "integer", minimum: 1, maximum: 500 };
+schema.$defs.AgentOutputParams.properties.revision = { type: "string", minLength: 1, maxLength: 256 };
 const results = schema.$defs.Result.anyOf;
 if (!results.some((result: Schema) => result.$ref === "#/$defs/AgentOutputResult")) results.push({ $ref: "#/$defs/AgentOutputResult" });
 if (!results.some((result: Schema) => result.$ref === "#/$defs/NativeControlResult")) results.push({ $ref: "#/$defs/NativeControlResult" });

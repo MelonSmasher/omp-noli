@@ -920,6 +920,7 @@
         "stale_session",
         "unknown_agent",
         "agent_absent",
+        "snapshot_expired",
         "unknown_definition",
         "definition_required",
         "forbidden_kind",
@@ -1078,6 +1079,11 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 500
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
         }
       }
     },
