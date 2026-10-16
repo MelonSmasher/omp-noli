@@ -39,7 +39,7 @@ const nativeSchema = { type: ["object", "null"], required: ["messages", "entries
 const validateSnapshot = ajv.compile<NativeSnapshot>({ type: "object", required: ["rootId", "agents"], properties: { rootId: { type: "string" }, agents: { type: "array", items: { type: "object", required: ["id", "identity", "kind", "live", "status", "native", "held"], properties: { id: { type: "string" }, identity: { type: "number" }, kind: { type: "string" }, live: { type: "boolean" }, status: { type: "string" }, native: nativeSchema, retained: { type: ["object", "null"] }, held: { type: "boolean" } } } } } });
 const validateHello = ajv.compile<Hello>({ type: "object", required: ["protocol", "sessionId", "capabilities"], properties: { protocol: { type: "number" }, sessionId: { type: "string" }, capabilities: { type: "object" } } });
 const validateList = ajv.compile<AgentList>({ type: "object", required: ["agents"], properties: { agents: { type: "array", items: { type: "object", required: ["id", "model", "effort", "requests", "inputTokens", "outputTokens", "sessionCost", "contextTokens", "contextWindow", "tokensPerSecond"] } } } });
-const validateOutput = ajv.compile<AgentOutputResult>({ type: "object", required: ["agentId", "text", "spans", "nextOffset"], properties: { agentId: { type: "string" }, text: { type: "string" }, spans: { type: "array", items: { type: "object", required: ["id", "role", "tool", "created_ms", "start", "end"], properties: { id: { type: "string" }, role: { type: "string" }, tool: { type: ["string", "null"] }, created_ms: { type: "number" }, start: { type: "integer" }, end: { type: "integer" } } } }, nextOffset: { type: ["integer", "null"] } } });
+const validateOutput = ajv.compile<AgentOutputResult>({ type: "object", required: ["agentId", "text", "spans", "nextOffset", "revision"], properties: { agentId: { type: "string" }, text: { type: "string" }, spans: { type: "array", items: { type: "object", required: ["id", "role", "tool", "created_ms", "start", "end"], properties: { id: { type: "string" }, role: { type: "string" }, tool: { type: ["string", "null"] }, created_ms: { type: "number" }, start: { type: "integer" }, end: { type: "integer" } } } }, nextOffset: { type: ["integer", "null"] }, revision: { type: "string", pattern: "^sha256:[0-9a-f]{64}$" } } });
 const validateDiskEntry = ajv.compile<NativeEntry>({ type: "object", required: ["type"], properties: { type: { type: "string" }, message: messageSchema } });
 function parse<T>(value: unknown, validate: ValidateFunction<T>): T {
 	assert(validate(value), `Invalid smoke boundary: ${ajv.errorsText(validate.errors)}`);
@@ -372,6 +372,7 @@ try {
 	while (olderOffset !== null) {
 		const older: AgentOutputResult = await bridgeCall("agents.output", { agentId: child.id, offset: olderOffset, limit: 3 });
 		assert(older.nextOffset === null || older.nextOffset < olderOffset, "older pagination does not progress");
+		assert.equal(older.revision, newest.revision, "pages of one unchanged transcript carry different revisions");
 		assembled = older.text + (older.text && assembled ? "\n" : "") + assembled;
 		olderOffset = older.nextOffset;
 	}

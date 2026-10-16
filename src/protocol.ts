@@ -193,6 +193,15 @@ export interface AgentOutputResult {
 		end: number;
 	}[];
 	nextOffset: number | null;
+	/**
+	 * Opaque identity of the whole transcript this page was cut from.
+	 * Equal on every page of one unchanged transcript; changes when any
+	 * visible line or span identity changes anywhere. Compare for equality only.
+	 * Bridges since v0.9.3 always send it; it is optional in the schema so a
+	 * client validating against it still accepts pages from older bridges,
+	 * which it must treat as having an unknown revision.
+	 */
+	revision?: string;
 }
 
 export type AgentTelemetryView = Pick<AgentView,

@@ -109,12 +109,14 @@ function sameVisibleMessage(left: RecordValue, right: RecordValue): boolean {
 	return true;
 }
 
-function* segments(messages: unknown[], identities: Map<string, MessageIdentity[]>, agentId: string): Generator<Segment> {
+/** `cursor.message` is the message that produced each yielded segment. */
+function* segments(messages: unknown[], identities: Map<string, MessageIdentity[]>, agentId: string, cursor: { message?: RecordValue } = {}): Generator<Segment> {
 	const occurrences = new Map<string, number>();
 	const usedIdentities = new Set<MessageIdentity>();
 	for (const value of messages) {
 		const message = record(value);
 		if (!message || typeof message.role !== "string") continue;
+		cursor.message = message;
 		const role = message.role;
 		const key = messageKey(message);
 		const occurrence = occurrences.get(key) ?? 0;
@@ -193,14 +195,104 @@ function clipLine(text: string, start: number, end: number): { text: string; byt
 	return { text: text.slice(start, cursor) + TRUNCATION, bytes: bytes + Buffer.byteLength(TRUNCATION, "utf8") };
 }
 
-function page(agentId: string, messages: unknown[], identities: Map<string, MessageIdentity[]>, offset: number | undefined, limit: number): AgentOutputResult {
+/**
+ * Transcript revision: SHA-256 over the per-message digests, in order. A
+ * message digest is SHA-256 over each visible segment it renders: the JSON
+ * array `[id, role, tool, created_ms, length]` followed by exactly `length`
+ * UTF-16 code units of its full unclipped text, all hashed as raw UTF-16LE
+ * code units. The encoding is injective (lone surrogates included), so the
+ * revision changes whenever any rendered line, span identity or segment
+ * boundary changes anywhere: appends, in-place rewrites of older messages,
+ * truncation and streaming updates. Page bounds never affect it.
+ */
+/** `cost` estimates what the entry retains, in UTF-16 units: its text, its span identities and a fixed per-segment overhead. */
+interface MessageDigest { segments: Segment[]; digest: Uint8Array; cost: number; }
+/** Live messages' digests by message object. */
+const messageDigests = new WeakMap<RecordValue, MessageDigest>();
+/**
+ * Parked children's digests by message position: every read loads fresh
+ * message objects. Bounded across children, least recently read evicted
+ * first: at most `children` children and `units` of cost, where cost counts
+ * the retained text and span identities in UTF-16 units plus fixed
+ * per-segment, per-message and per-child overheads. Transcripts without
+ * visible messages are not cached. An evicted child is simply hashed again.
+ * Mutable only so tests can exercise eviction with small transcripts.
+ */
+export const parkedDigestLimits = { units: 32 * 1024 * 1024, children: 1024 };
+const parkedDigests = new Map<AgentRef, { entries: MessageDigest[]; cost: number }>();
+const PARKED_ENTRY_OVERHEAD = 256;
+const SEGMENT_OVERHEAD = 64;
+/** Text is hashed in slices of this many UTF-16 units, so no message is copied whole. */
+const HASH_CHUNK_UNITS = 64 * 1024;
+let parkedCost = 0;
+/** Revision work actually performed, observed by the budget tests. */
+export const revisionWork = { messageDigests: 0 };
+/** Current parked cache occupancy, observed by the bound tests. */
+export function parkedDigestUsage(): { children: number; cost: number } {
+	return { children: parkedDigests.size, cost: parkedCost };
+}
+
+/**
+ * Reuses a message's earlier digest only while the message still renders the
+ * same segments: every field, including the full text, is compared, so cached
+ * state can never vouch for content it was not computed from. String
+ * comparison is far cheaper than hashing, and identical string instances
+ * (live sessions) compare at once.
+ */
+function messageDigest(message: RecordValue, rendered: Segment[], positional: MessageDigest | undefined): MessageDigest {
+	const cached = messageDigests.get(message) ?? positional;
+	if (cached && cached.segments.length === rendered.length && cached.segments.every((old, index) => {
+		const segment = rendered[index]!;
+		return old.id === segment.id && old.role === segment.role && old.tool === segment.tool && old.created_ms === segment.created_ms && old.text === segment.text;
+	})) {
+		messageDigests.set(message, cached);
+		return cached;
+	}
+	const hasher = new Bun.CryptoHasher("sha256");
+	let cost = 0;
+	for (const segment of rendered) {
+		hasher.update(Buffer.from(JSON.stringify([segment.id, segment.role, segment.tool, segment.created_ms, segment.text.length]), "utf16le"));
+		// Slices may split a surrogate pair; UTF-16LE encodes each code unit
+		// as-is, so the hashed bytes are identical to encoding the whole text.
+		for (let start = 0; start < segment.text.length; start += HASH_CHUNK_UNITS) {
+			hasher.update(Buffer.from(segment.text.slice(start, start + HASH_CHUNK_UNITS), "utf16le"));
+		}
+		cost += segment.text.length + segment.id.length + segment.role.length + (segment.tool?.length ?? 0) + SEGMENT_OVERHEAD;
+	}
+	const entry = { segments: rendered, digest: new Uint8Array(hasher.digest()), cost };
+	revisionWork.messageDigests++;
+	messageDigests.set(message, entry);
+	return entry;
+}
+
+/** `parked` supplies the previous read's digests by position and receives this read's. */
+function page(agentId: string, messages: unknown[], identities: Map<string, MessageIdentity[]>, offset: number | undefined, limit: number, parked?: { previous: MessageDigest[]; next: MessageDigest[] }): AgentOutputResult {
 	// Keep only source ranges for the candidate suffix. No oversized message
 	// is split or copied; clipping happens only for the returned page.
 	const ring: (Line | undefined)[] = new Array(limit);
+	const transcript = new Bun.CryptoHasher("sha256");
+	const cursor: { message?: RecordValue } = {};
+	let message: RecordValue | undefined;
+	let rendered: Segment[] = [];
+	let messageIndex = 0;
+	const finishMessage = (): void => {
+		if (message) {
+			const entry = messageDigest(message, rendered, parked?.previous[messageIndex]);
+			transcript.update(entry.digest);
+			parked?.next.push(entry);
+			messageIndex++;
+		}
+		rendered = [];
+	};
 	let total = 0;
 	let retained = 0;
 	let segmentIndex = 0;
-	for (const segment of segments(messages, identities, agentId)) {
+	for (const segment of segments(messages, identities, agentId, cursor)) {
+		if (cursor.message !== message) {
+			finishMessage();
+			message = cursor.message;
+		}
+		rendered.push(segment);
 		let start = 0;
 		while (start <= segment.text.length) {
 			const newline = segment.text.indexOf("\n", start);
@@ -215,6 +307,8 @@ function page(agentId: string, messages: unknown[], identities: Map<string, Mess
 		}
 		segmentIndex++;
 	}
+	finishMessage();
+	const revision = `sha256:${transcript.digest("hex")}`;
 	const upper = Math.min(offset ?? total, total);
 	const count = Math.min(retained, limit);
 	const selected: (Segment & { segment: number })[] = [];
@@ -243,7 +337,7 @@ function page(agentId: string, messages: unknown[], identities: Map<string, Mess
 		previousSegment = line.segment;
 	}
 	const lower = upper - selected.length;
-	return { agentId, text: textParts.join("\n"), spans, nextOffset: lower > 0 ? lower : null };
+	return { agentId, text: textParts.join("\n"), spans, nextOffset: lower > 0 ? lower : null, revision };
 }
 
 /** Read an already-authorized native child, without revival, writers or locks. */
@@ -276,5 +370,22 @@ export async function readAgentOutput(ref: AgentRef, params: AgentOutputParams, 
 		if (!Array.isArray(entries)) unavailable("loadEntriesFromFile did not return native entries");
 		return messageIdentities(entries);
 	});
-	return page(ref.id, messages, identities, offset, limit);
+	const previous = parkedDigests.get(ref);
+	const parked = { previous: previous?.entries ?? [], next: [] as MessageDigest[] };
+	const result = page(ref.id, messages, identities, offset, limit, parked);
+	if (previous) {
+		parkedDigests.delete(ref);
+		parkedCost -= previous.cost;
+	}
+	const cost = parked.next.reduce((sum, entry) => sum + entry.cost + PARKED_ENTRY_OVERHEAD, PARKED_ENTRY_OVERHEAD);
+	if (parked.next.length > 0 && cost <= parkedDigestLimits.units) {
+		parkedDigests.set(ref, { entries: parked.next, cost });
+		parkedCost += cost;
+		for (const [oldest, cached] of parkedDigests) {
+			if (parkedCost <= parkedDigestLimits.units && parkedDigests.size <= parkedDigestLimits.children) break;
+			parkedDigests.delete(oldest);
+			parkedCost -= cached.cost;
+		}
+	}
+	return result;
 }

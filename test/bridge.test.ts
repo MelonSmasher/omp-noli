@@ -97,7 +97,7 @@ const h: Harness = {
 		},
 		output: async ({ agentId }) => {
 			h.calls.push(`output:${agentId}`);
-			return { agentId, text: "prompt", spans: [{ id: "u1", role: "user", tool: null, created_ms: 1, start: 0, end: 6 }], nextOffset: null };
+			return { agentId, text: "prompt", spans: [{ id: "u1", role: "user", tool: null, created_ms: 1, start: 0, end: 6 }], nextOffset: null, revision: "sha256:test" };
 		},
 		subscribe: listener => {
 			h.listeners.push(listener);
