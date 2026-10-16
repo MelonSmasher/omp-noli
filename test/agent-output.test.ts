@@ -1,7 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { AgentRef } from "@oh-my-pi/pi-coding-agent";
 import { readAgentOutput, revisionWork } from "../src/agent-output";
 import { BridgeError } from "../src/bridge";
@@ -380,21 +377,18 @@ describe("native child transcript output", () => {
 		expect(revisionWork.messageDigests - digests).toBe(messages.length + 3);
 	});
 
-	test("parked revisions are computed once per unchanged transcript file", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "omp-noli-revision-"));
-		const file = join(dir, "child.jsonl");
-		await writeFile(file, "initial\n");
+	test("parked revisions reuse digests only for content compared equal", async () => {
 		const body = "y".repeat(1500);
 		let source: Message[] = Array.from({ length: 2000 }, (_, index) => ({ ...text("assistant", `${index} ${body}`, 1000 + index), id: `p${index}` }));
-		let touchDuringLoad = false;
+		// Each native load returns fresh message objects, as reloading a file does.
 		const api = {
-			// Each native load returns fresh message objects, as reloading a file does.
 			async loadSessionMessagesReadOnly() { return structuredClone(source); },
-			async loadEntriesFromFile() { if (touchDuringLoad) await appendFile(file, "x"); return []; },
+			async loadEntriesFromFile() { return []; },
 		};
-		const readChild = async <T>(_ref: AgentRef, loader: (file: string) => Promise<T>): Promise<T> => loader(file);
+		// The transcript file's metadata never changes in this test: nothing may be trusted from it.
+		const readChild = async <T>(_ref: AgentRef, loader: (file: string) => Promise<T>): Promise<T> => loader("/canonical/child.jsonl");
 		const ref = parked();
-		const transcripts = revisionWork.transcriptDigests;
+		const digests = revisionWork.messageDigests;
 		const began = performance.now();
 		let result = await readAgentOutput(ref, { agentId: "child", limit: 500 }, api, readChild);
 		const revision = result.revision;
@@ -405,21 +399,23 @@ describe("native child transcript output", () => {
 			reads++;
 		}
 		expect(reads).toBeGreaterThanOrEqual(30);
-		expect(revisionWork.transcriptDigests - transcripts).toBe(1);
+		// The first read hashes every message; later reads only compare.
+		expect(revisionWork.messageDigests - digests).toBe(source.length);
 		expect(performance.now() - began).toBeLessThan(10000);
-		// A changed file identity recomputes; identical content keeps its revision.
-		await appendFile(file, "appended\n");
-		expect((await readAgentOutput(ref, { agentId: "child" }, api, readChild)).revision).toBe(revision);
-		expect(revisionWork.transcriptDigests - transcripts).toBe(2);
-		source = source.map((message, index) => index === 0 ? { ...message, content: [{ type: "text", text: "rewritten" }] } : message);
-		await appendFile(file, "rewritten\n");
+		// A same-size rewrite with an identical file stamp still changes the revision,
+		// and only the rewritten message is hashed again.
+		const original = source;
+		source = source.map((message, index) => index === 7 ? { ...message, content: [{ type: "text", text: `7 ${"z".repeat(1500)}` }] } : message);
 		const rewritten = await readAgentOutput(ref, { agentId: "child" }, api, readChild);
 		expect(rewritten.revision).not.toBe(revision);
-		// A file that changes during the read is never cached.
-		touchDuringLoad = true;
-		for (let index = 0; index < 2; index++) expect((await readAgentOutput(ref, { agentId: "child" }, api, readChild)).revision).toBe(rewritten.revision);
-		expect(revisionWork.transcriptDigests - transcripts).toBe(5);
-		await rm(dir, { recursive: true, force: true });
+		expect(revisionWork.messageDigests - digests).toBe(source.length + 1);
+		source = original;
+		expect((await readAgentOutput(ref, { agentId: "child" }, api, readChild)).revision).toBe(revision);
+		expect(revisionWork.messageDigests - digests).toBe(source.length + 2);
+		// An append hashes only the new message.
+		source = [...original, { ...text("assistant", "appended", 9000), id: "tail" }];
+		expect((await readAgentOutput(ref, { agentId: "child" }, api, readChild)).revision).not.toBe(revision);
+		expect(revisionWork.messageDigests - digests).toBe(original.length + 3);
 	});
 
 	test("malformed pagination fails before live or parked reads", async () => {

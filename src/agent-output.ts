@@ -1,4 +1,3 @@
-import { stat } from "node:fs/promises";
 import type { AgentRef } from "@oh-my-pi/pi-coding-agent";
 import { BridgeError } from "./bridge";
 import type { AgentOutputParams, AgentOutputResult } from "./protocol";
@@ -206,45 +205,66 @@ function clipLine(text: string, start: number, end: number): { text: string; byt
  * boundary changes anywhere: appends, in-place rewrites of older messages,
  * truncation and streaming updates. Page bounds never affect it.
  */
-const messageDigests = new WeakMap<RecordValue, { segments: Segment[]; digest: Uint8Array }>();
-/** Parked revisions by child, valid while the canonical transcript file identity is unchanged. */
-const fileRevisions = new WeakMap<AgentRef, { stamp: string; revision: string }>();
+interface MessageDigest { segments: Segment[]; digest: Uint8Array; units: number; }
+/** Live messages' digests by message object. */
+const messageDigests = new WeakMap<RecordValue, MessageDigest>();
+/**
+ * Parked children's digests by message position: every read loads fresh
+ * message objects. Retained text is bounded across children (least recently
+ * read evicted first); an evicted child is simply hashed again.
+ */
+const parkedDigests = new Map<AgentRef, { entries: MessageDigest[]; units: number }>();
+const PARKED_DIGEST_UNITS = 32 * 1024 * 1024;
+let parkedUnits = 0;
 /** Revision work actually performed, observed by the budget tests. */
-export const revisionWork = { messageDigests: 0, transcriptDigests: 0 };
+export const revisionWork = { messageDigests: 0 };
 
 /**
- * Reuses a message's digest while it still renders the same segments, so a
- * live child rehashes only messages that changed (its streaming message).
- * Segments are compared, never trusted from object identity alone.
+ * Reuses a message's earlier digest only while the message still renders the
+ * same segments: every field, including the full text, is compared, so cached
+ * state can never vouch for content it was not computed from. String
+ * comparison is far cheaper than hashing, and identical string instances
+ * (live sessions) compare at once.
  */
-function messageDigest(message: RecordValue, rendered: Segment[]): Uint8Array {
-	const cached = messageDigests.get(message);
+function messageDigest(message: RecordValue, rendered: Segment[], positional: MessageDigest | undefined): MessageDigest {
+	const cached = messageDigests.get(message) ?? positional;
 	if (cached && cached.segments.length === rendered.length && cached.segments.every((old, index) => {
 		const segment = rendered[index]!;
 		return old.id === segment.id && old.role === segment.role && old.tool === segment.tool && old.created_ms === segment.created_ms && old.text === segment.text;
-	})) return cached.digest;
+	})) {
+		messageDigests.set(message, cached);
+		return cached;
+	}
 	const hasher = new Bun.CryptoHasher("sha256");
+	let units = 0;
 	for (const segment of rendered) {
 		hasher.update(Buffer.from(JSON.stringify([segment.id, segment.role, segment.tool, segment.created_ms, segment.text.length]), "utf16le"));
 		hasher.update(Buffer.from(segment.text, "utf16le"));
+		units += segment.text.length;
 	}
-	const digest = new Uint8Array(hasher.digest());
+	const entry = { segments: rendered, digest: new Uint8Array(hasher.digest()), units };
 	revisionWork.messageDigests++;
-	messageDigests.set(message, { segments: rendered, digest });
-	return digest;
+	messageDigests.set(message, entry);
+	return entry;
 }
 
-/** `known` is a revision already established for this exact transcript; it skips hashing. */
-function page(agentId: string, messages: unknown[], identities: Map<string, MessageIdentity[]>, offset: number | undefined, limit: number, known?: string): AgentOutputResult {
+/** `parked` supplies the previous read's digests by position and receives this read's. */
+function page(agentId: string, messages: unknown[], identities: Map<string, MessageIdentity[]>, offset: number | undefined, limit: number, parked?: { previous: MessageDigest[]; next: MessageDigest[] }): AgentOutputResult {
 	// Keep only source ranges for the candidate suffix. No oversized message
 	// is split or copied; clipping happens only for the returned page.
 	const ring: (Line | undefined)[] = new Array(limit);
-	const transcript = known === undefined ? new Bun.CryptoHasher("sha256") : undefined;
+	const transcript = new Bun.CryptoHasher("sha256");
 	const cursor: { message?: RecordValue } = {};
 	let message: RecordValue | undefined;
 	let rendered: Segment[] = [];
+	let messageIndex = 0;
 	const finishMessage = (): void => {
-		if (transcript && message) transcript.update(messageDigest(message, rendered));
+		if (message) {
+			const entry = messageDigest(message, rendered, parked?.previous[messageIndex]);
+			transcript.update(entry.digest);
+			parked?.next.push(entry);
+			messageIndex++;
+		}
 		rendered = [];
 	};
 	let total = 0;
@@ -255,7 +275,7 @@ function page(agentId: string, messages: unknown[], identities: Map<string, Mess
 			finishMessage();
 			message = cursor.message;
 		}
-		if (transcript) rendered.push(segment);
+		rendered.push(segment);
 		let start = 0;
 		while (start <= segment.text.length) {
 			const newline = segment.text.indexOf("\n", start);
@@ -271,11 +291,7 @@ function page(agentId: string, messages: unknown[], identities: Map<string, Mess
 		segmentIndex++;
 	}
 	finishMessage();
-	let revision = known;
-	if (transcript) {
-		revisionWork.transcriptDigests++;
-		revision = `sha256:${transcript.digest("hex")}`;
-	}
+	const revision = `sha256:${transcript.digest("hex")}`;
 	const upper = Math.min(offset ?? total, total);
 	const count = Math.min(retained, limit);
 	const selected: (Segment & { segment: number })[] = [];
@@ -304,7 +320,7 @@ function page(agentId: string, messages: unknown[], identities: Map<string, Mess
 		previousSegment = line.segment;
 	}
 	const lower = upper - selected.length;
-	return { agentId, text: textParts.join("\n"), spans, nextOffset: lower > 0 ? lower : null, revision: revision! };
+	return { agentId, text: textParts.join("\n"), spans, nextOffset: lower > 0 ? lower : null, revision };
 }
 
 /** Read an already-authorized native child, without revival, writers or locks. */
@@ -327,12 +343,7 @@ export async function readAgentOutput(ref: AgentRef, params: AgentOutputParams, 
 	if (typeof loadMessages !== "function") unavailable("loadSessionMessagesReadOnly is required for read-only child transcripts");
 	const loadEntries = api.loadEntriesFromFile;
 	if (typeof loadEntries !== "function") unavailable("loadEntriesFromFile is required to preserve native persisted transcript identities");
-	// The file's identity is taken before the first load and after the last,
-	// so a cached revision is reused only for a file unchanged throughout.
-	let before: string | undefined;
-	let stamp: string | undefined;
 	const messages = await readChild(ref, async file => {
-		before = await fileStamp(file);
 		const loaded: unknown = await loadMessages(file);
 		if (!Array.isArray(loaded)) unavailable("loadSessionMessagesReadOnly did not return native messages");
 		return loaded;
@@ -340,26 +351,24 @@ export async function readAgentOutput(ref: AgentRef, params: AgentOutputParams, 
 	const identities = await readChild(ref, async file => {
 		const entries: unknown = await loadEntries(file);
 		if (!Array.isArray(entries)) unavailable("loadEntriesFromFile did not return native entries");
-		const after = await fileStamp(file);
-		if (after !== undefined && after === before) stamp = after;
 		return messageIdentities(entries);
 	});
-	const cached = stamp === undefined ? undefined : fileRevisions.get(ref);
-	const result = page(ref.id, messages, identities, offset, limit, cached?.stamp === stamp ? cached?.revision : undefined);
-	if (stamp !== undefined) fileRevisions.set(ref, { stamp, revision: result.revision });
-	return result;
-}
-
-/**
- * Canonical path plus device, inode, size and nanosecond mtime/ctime of a
- * parked transcript; `undefined` when it cannot be read, so nothing is cached.
- * OMP appends to session files, and any rewrite changes size or times.
- */
-async function fileStamp(file: string): Promise<string | undefined> {
-	try {
-		const stats = await stat(file, { bigint: true });
-		return JSON.stringify([file, `${stats.dev}`, `${stats.ino}`, `${stats.size}`, `${stats.mtimeNs}`, `${stats.ctimeNs}`]);
-	} catch {
-		return undefined;
+	const previous = parkedDigests.get(ref);
+	const parked = { previous: previous?.entries ?? [], next: [] as MessageDigest[] };
+	const result = page(ref.id, messages, identities, offset, limit, parked);
+	if (previous) {
+		parkedDigests.delete(ref);
+		parkedUnits -= previous.units;
 	}
+	const units = parked.next.reduce((sum, entry) => sum + entry.units, 0);
+	if (units <= PARKED_DIGEST_UNITS) {
+		parkedDigests.set(ref, { entries: parked.next, units });
+		parkedUnits += units;
+		for (const [oldest, cached] of parkedDigests) {
+			if (parkedUnits <= PARKED_DIGEST_UNITS) break;
+			parkedDigests.delete(oldest);
+			parkedUnits -= cached.units;
+		}
+	}
+	return result;
 }
