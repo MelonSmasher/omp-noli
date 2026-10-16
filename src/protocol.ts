@@ -193,6 +193,12 @@ export interface AgentOutputResult {
 		end: number;
 	}[];
 	nextOffset: number | null;
+	/**
+	 * Opaque identity of the whole transcript this page was cut from (v0.9.3+).
+	 * Equal on every page of one unchanged transcript; changes when any
+	 * visible line or span identity changes anywhere. Compare for equality only.
+	 */
+	revision: string;
 }
 
 export type AgentTelemetryView = Pick<AgentView,

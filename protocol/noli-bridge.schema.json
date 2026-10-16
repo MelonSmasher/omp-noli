@@ -1088,7 +1088,8 @@
         "agentId",
         "text",
         "spans",
-        "nextOffset"
+        "nextOffset",
+        "revision"
       ],
       "properties": {
         "agentId": {
@@ -1147,6 +1148,9 @@
             "null"
           ],
           "minimum": 0
+        },
+        "revision": {
+          "type": "string"
         }
       }
     },

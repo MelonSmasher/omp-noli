@@ -292,11 +292,48 @@ describe("native child transcript output", () => {
 	});
 
 	test("empty, zero-offset and past-end reads are bounded", async () => {
-		expect(await output([])).toEqual({ agentId: "child", text: "", spans: [], nextOffset: null });
-		expect(await output([text("assistant", "one\ntwo")], { offset: 0 })).toEqual({ agentId: "child", text: "", spans: [], nextOffset: null });
-		const result = await output([text("assistant", "one\ntwo")], { offset: Number.MAX_SAFE_INTEGER, limit: 1 });
+		const empty = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+		expect(await output([])).toEqual({ agentId: "child", text: "", spans: [], nextOffset: null, revision: empty });
+		const lines = [text("assistant", "one\ntwo")];
+		const newest = await output(lines);
+		expect(await output(lines, { offset: 0 })).toEqual({ agentId: "child", text: "", spans: [], nextOffset: null, revision: newest.revision });
+		const result = await output(lines, { offset: Number.MAX_SAFE_INTEGER, limit: 1 });
 		expect(result.text).toBe("two");
 		expect(result.nextOffset).toBe(1);
+	});
+
+	test("revision identifies the whole transcript, not the page", async () => {
+		const messages = Array.from({ length: 30 }, (_, index) => ({ ...text(index % 2 ? "assistant" : "user", `line ${index}\nmore ${index}`, 100 + index), id: `m${index}` }));
+		const newest = await output(messages, { limit: 7 });
+		expect(newest.revision).toMatch(/^sha256:[0-9a-f]{64}$/);
+		// Every page and every page size of one transcript carries the same revision.
+		let page = newest;
+		while (page.nextOffset !== null) {
+			page = await output(messages, { offset: page.nextOffset, limit: 7 });
+			expect(page.revision).toBe(newest.revision);
+		}
+		expect((await output(messages, { limit: 500 })).revision).toBe(newest.revision);
+		// Any change anywhere changes it, even when the newest page is identical.
+		const olderRewrite = messages.map((message, index) => index === 0 ? { ...message, content: [{ type: "text", text: "line 0\nMORE 0" }] } : message);
+		const rewritten = await output(olderRewrite, { limit: 7 });
+		expect({ ...rewritten, revision: undefined }).toEqual({ ...newest, revision: undefined });
+		expect(rewritten.revision).not.toBe(newest.revision);
+		const renamed = messages.map((message, index) => index === 0 ? { ...message, id: "other" } : message);
+		expect((await output(renamed, { limit: 7 })).revision).not.toBe(newest.revision);
+		expect((await output(messages.slice(1), { limit: 7 })).revision).not.toBe(newest.revision);
+		// Segment boundaries are part of the identity: moving text between segments changes it.
+		const a = await output([text("user", "ab"), text("user", "c")]);
+		const b = await output([text("user", "a"), text("user", "bc")]);
+		expect(a.revision).not.toBe(b.revision);
+	});
+
+	test("revision follows a live child's streaming message", async () => {
+		const messages = [text("user", "prompt", 1)];
+		const before = await readAgentOutput(live(messages, text("assistant", "Work", 2)), { agentId: "child" }, {}, noDisk);
+		const after = await readAgentOutput(live(messages, text("assistant", "Working", 2)), { agentId: "child" }, {}, noDisk);
+		expect(after.revision).not.toBe(before.revision);
+		const again = await readAgentOutput(live(messages, text("assistant", "Working", 2)), { agentId: "child" }, {}, noDisk);
+		expect(again.revision).toBe(after.revision);
 	});
 
 	test("malformed pagination fails before live or parked reads", async () => {

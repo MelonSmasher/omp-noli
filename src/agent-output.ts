@@ -193,14 +193,24 @@ function clipLine(text: string, start: number, end: number): { text: string; byt
 	return { text: text.slice(start, cursor) + TRUNCATION, bytes: bytes + Buffer.byteLength(TRUNCATION, "utf8") };
 }
 
+/**
+ * Transcript revision: SHA-256 over every visible segment in order (its id,
+ * role, tool, created_ms and full unclipped text, length-prefixed so segment
+ * boundaries are unambiguous). It changes whenever any rendered line or span
+ * identity changes anywhere in the transcript, including in-place rewrites,
+ * truncation and streaming updates; page bounds never affect it.
+ */
 function page(agentId: string, messages: unknown[], identities: Map<string, MessageIdentity[]>, offset: number | undefined, limit: number): AgentOutputResult {
 	// Keep only source ranges for the candidate suffix. No oversized message
 	// is split or copied; clipping happens only for the returned page.
 	const ring: (Line | undefined)[] = new Array(limit);
+	const hasher = new Bun.CryptoHasher("sha256");
 	let total = 0;
 	let retained = 0;
 	let segmentIndex = 0;
 	for (const segment of segments(messages, identities, agentId)) {
+		hasher.update(`${JSON.stringify([segment.id, segment.role, segment.tool, segment.created_ms])}${segment.text.length}:`);
+		hasher.update(segment.text);
 		let start = 0;
 		while (start <= segment.text.length) {
 			const newline = segment.text.indexOf("\n", start);
@@ -243,7 +253,7 @@ function page(agentId: string, messages: unknown[], identities: Map<string, Mess
 		previousSegment = line.segment;
 	}
 	const lower = upper - selected.length;
-	return { agentId, text: textParts.join("\n"), spans, nextOffset: lower > 0 ? lower : null };
+	return { agentId, text: textParts.join("\n"), spans, nextOffset: lower > 0 ? lower : null, revision: `sha256:${hasher.digest("hex")}` };
 }
 
 /** Read an already-authorized native child, without revival, writers or locks. */
