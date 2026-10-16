@@ -1088,8 +1088,7 @@
         "agentId",
         "text",
         "spans",
-        "nextOffset",
-        "revision"
+        "nextOffset"
       ],
       "properties": {
         "agentId": {
@@ -1150,7 +1149,11 @@
           "minimum": 0
         },
         "revision": {
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            }
+          ]
         }
       }
     },

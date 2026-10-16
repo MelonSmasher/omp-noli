@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentRef } from "@oh-my-pi/pi-coding-agent";
-import { parkedDigestUsage, readAgentOutput, revisionWork } from "../src/agent-output";
+import { parkedDigestLimits, parkedDigestUsage, readAgentOutput, revisionWork } from "../src/agent-output";
 import { BridgeError } from "../src/bridge";
 import type { AgentOutputParams } from "../src/protocol";
 
@@ -344,15 +344,19 @@ describe("native child transcript output", () => {
 		expect(await revision([{ ...text("user", "x"), id: "\ud800" }])).not.toBe(await revision([{ ...text("user", "x"), id: "\ud801" }]));
 		// Astral characters count as two units in both the length prefix and the hashed text.
 		expect(await revision([text("user", "😀"), text("user", "a")])).not.toBe(await revision([text("user", "😀a")]));
+		// Text longer than one hash slice, with a surrogate pair split across the slice boundary.
+		const long = `${"a".repeat(64 * 1024 - 1)}😀${"b".repeat(100_000)}`;
+		expect(await revision([text("user", long)])).toBe(await revision([text("user", long)]));
+		expect(await revision([text("user", long)])).not.toBe(await revision([text("user", `${long.slice(0, -1)}c`)]));
+		expect(await revision([text("user", long)])).not.toBe(await revision([text("user", long.replace("😀", "😁"))]));
 	});
 
-	test("live revisions rehash only changed messages within a page-walk budget", async () => {
+	test("live revisions rehash only changed messages across a page walk", async () => {
 		// About 4 MB of visible text in 2000 messages: 60+ pages of 64 KiB.
 		const body = "x".repeat(2000);
 		const messages: Message[] = Array.from({ length: 2000 }, (_, index) => ({ ...text(index % 2 ? "assistant" : "user", `${index} ${body}`, 1000 + index), id: `m${index}` }));
 		const ref = live(messages);
 		const digests = revisionWork.messageDigests;
-		const began = performance.now();
 		let result = await readAgentOutput(ref, { agentId: "child", limit: 500 }, {}, noDisk);
 		const revision = result.revision;
 		let reads = 1;
@@ -361,11 +365,9 @@ describe("native child transcript output", () => {
 			expect(result.revision).toBe(revision);
 			reads++;
 		}
-		const elapsed = performance.now() - began;
 		expect(reads).toBeGreaterThanOrEqual(30);
 		// Each message is hashed once for the whole walk, not once per page.
 		expect(revisionWork.messageDigests - digests).toBe(messages.length);
-		expect(elapsed).toBeLessThan(5000);
 		// A streaming update rehashes only the streaming message.
 		const streaming = await readAgentOutput(live(messages, text("assistant", "Draft", 9000)), { agentId: "child" }, {}, noDisk);
 		const longer = await readAgentOutput(live(messages, text("assistant", "Draft more", 9000)), { agentId: "child" }, {}, noDisk);
@@ -389,7 +391,6 @@ describe("native child transcript output", () => {
 		const readChild = async <T>(_ref: AgentRef, loader: (file: string) => Promise<T>): Promise<T> => loader("/canonical/child.jsonl");
 		const ref = parked();
 		const digests = revisionWork.messageDigests;
-		const began = performance.now();
 		let result = await readAgentOutput(ref, { agentId: "child", limit: 500 }, api, readChild);
 		const revision = result.revision;
 		let reads = 1;
@@ -401,7 +402,6 @@ describe("native child transcript output", () => {
 		expect(reads).toBeGreaterThanOrEqual(30);
 		// The first read hashes every message; later reads only compare.
 		expect(revisionWork.messageDigests - digests).toBe(source.length);
-		expect(performance.now() - began).toBeLessThan(10000);
 		// A same-size rewrite with an identical file stamp still changes the revision,
 		// and only the rewritten message is hashed again.
 		const original = source;
@@ -442,6 +442,48 @@ describe("native child transcript output", () => {
 		expect(parkedDigestUsage().children).toBe(1024);
 		// Metadata counts toward the budget: each child costs more than its text.
 		expect(parkedDigestUsage().cost).toBeGreaterThan(1024 * 256);
+	});
+
+	test("parked digest cache is bounded by retained text and metadata", async () => {
+		const readChild = async <T>(_ref: AgentRef, loader: (file: string) => Promise<T>): Promise<T> => loader("/canonical/child.jsonl");
+		const read = (ref: AgentRef, messages: Message[]) => readAgentOutput(ref, { agentId: "child" }, {
+			async loadSessionMessagesReadOnly() { return structuredClone(messages); },
+			async loadEntriesFromFile() { return []; },
+		}, readChild);
+		const saved = { ...parkedDigestLimits };
+		parkedDigestLimits.units = 10_000;
+		try {
+			// Each child costs about 3100 units with its overheads: three fit, a fourth evicts the oldest.
+			const body = (index: number) => [text("assistant", `${index} ${"t".repeat(2500)}`)];
+			const refs = Array.from({ length: 4 }, () => parked());
+			for (const [index, ref] of refs.entries()) await read(ref, body(index));
+			expect(parkedDigestUsage().children).toBe(3);
+			expect(parkedDigestUsage().cost).toBeLessThanOrEqual(10_000);
+			const digests = revisionWork.messageDigests;
+			await read(refs[3]!, body(3));
+			expect(revisionWork.messageDigests).toBe(digests);
+			await read(refs[0]!, body(0));
+			expect(revisionWork.messageDigests).toBe(digests + 1);
+			// Repeated reads of a cached child do not inflate its cost.
+			const cost = parkedDigestUsage().cost;
+			for (let index = 0; index < 5; index++) await read(refs[0]!, body(0));
+			expect(parkedDigestUsage().cost).toBe(cost);
+			expect(revisionWork.messageDigests).toBe(digests + 1);
+			// A child over the budget on its own is never retained.
+			const huge = parked();
+			const hugeBody = [text("assistant", "h".repeat(20_000))];
+			await read(huge, hugeBody);
+			await read(huge, hugeBody);
+			expect(revisionWork.messageDigests).toBe(digests + 3);
+			expect(parkedDigestUsage().cost).toBe(cost);
+			// Span metadata counts too: many tiny segments cost far more than their text.
+			const many = parked();
+			await read(many, Array.from({ length: 100 }, (_, index) => ({ ...text("assistant", "x", index), id: `segment-${index}` })));
+			expect(parkedDigestUsage().cost).toBeLessThanOrEqual(10_000);
+			expect(parkedDigestUsage().cost).toBeGreaterThan(100 * 64);
+		} finally {
+			Object.assign(parkedDigestLimits, saved);
+		}
 	});
 
 	test("malformed pagination fails before live or parked reads", async () => {

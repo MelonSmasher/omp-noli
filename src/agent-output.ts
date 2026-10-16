@@ -205,21 +205,25 @@ function clipLine(text: string, start: number, end: number): { text: string; byt
  * boundary changes anywhere: appends, in-place rewrites of older messages,
  * truncation and streaming updates. Page bounds never affect it.
  */
-interface MessageDigest { segments: Segment[]; digest: Uint8Array; units: number; }
+/** `cost` estimates what the entry retains, in UTF-16 units: its text, its span identities and a fixed per-segment overhead. */
+interface MessageDigest { segments: Segment[]; digest: Uint8Array; cost: number; }
 /** Live messages' digests by message object. */
 const messageDigests = new WeakMap<RecordValue, MessageDigest>();
 /**
  * Parked children's digests by message position: every read loads fresh
  * message objects. Bounded across children, least recently read evicted
- * first: at most `PARKED_DIGEST_CHILDREN` children and `PARKED_DIGEST_UNITS`
- * cost, where cost is the retained text in UTF-16 units plus a fixed
- * per-message and per-child overhead for metadata. Transcripts without
+ * first: at most `children` children and `units` of cost, where cost counts
+ * the retained text and span identities in UTF-16 units plus fixed
+ * per-segment, per-message and per-child overheads. Transcripts without
  * visible messages are not cached. An evicted child is simply hashed again.
+ * Mutable only so tests can exercise eviction with small transcripts.
  */
+export const parkedDigestLimits = { units: 32 * 1024 * 1024, children: 1024 };
 const parkedDigests = new Map<AgentRef, { entries: MessageDigest[]; cost: number }>();
-const PARKED_DIGEST_UNITS = 32 * 1024 * 1024;
-const PARKED_DIGEST_CHILDREN = 1024;
 const PARKED_ENTRY_OVERHEAD = 256;
+const SEGMENT_OVERHEAD = 64;
+/** Text is hashed in slices of this many UTF-16 units, so no message is copied whole. */
+const HASH_CHUNK_UNITS = 64 * 1024;
 let parkedCost = 0;
 /** Revision work actually performed, observed by the budget tests. */
 export const revisionWork = { messageDigests: 0 };
@@ -245,13 +249,17 @@ function messageDigest(message: RecordValue, rendered: Segment[], positional: Me
 		return cached;
 	}
 	const hasher = new Bun.CryptoHasher("sha256");
-	let units = 0;
+	let cost = 0;
 	for (const segment of rendered) {
 		hasher.update(Buffer.from(JSON.stringify([segment.id, segment.role, segment.tool, segment.created_ms, segment.text.length]), "utf16le"));
-		hasher.update(Buffer.from(segment.text, "utf16le"));
-		units += segment.text.length;
+		// Slices may split a surrogate pair; UTF-16LE encodes each code unit
+		// as-is, so the hashed bytes are identical to encoding the whole text.
+		for (let start = 0; start < segment.text.length; start += HASH_CHUNK_UNITS) {
+			hasher.update(Buffer.from(segment.text.slice(start, start + HASH_CHUNK_UNITS), "utf16le"));
+		}
+		cost += segment.text.length + segment.id.length + segment.role.length + (segment.tool?.length ?? 0) + SEGMENT_OVERHEAD;
 	}
-	const entry = { segments: rendered, digest: new Uint8Array(hasher.digest()), units };
+	const entry = { segments: rendered, digest: new Uint8Array(hasher.digest()), cost };
 	revisionWork.messageDigests++;
 	messageDigests.set(message, entry);
 	return entry;
@@ -369,12 +377,12 @@ export async function readAgentOutput(ref: AgentRef, params: AgentOutputParams, 
 		parkedDigests.delete(ref);
 		parkedCost -= previous.cost;
 	}
-	const cost = parked.next.reduce((sum, entry) => sum + entry.units + PARKED_ENTRY_OVERHEAD, PARKED_ENTRY_OVERHEAD);
-	if (parked.next.length > 0 && cost <= PARKED_DIGEST_UNITS) {
+	const cost = parked.next.reduce((sum, entry) => sum + entry.cost + PARKED_ENTRY_OVERHEAD, PARKED_ENTRY_OVERHEAD);
+	if (parked.next.length > 0 && cost <= parkedDigestLimits.units) {
 		parkedDigests.set(ref, { entries: parked.next, cost });
 		parkedCost += cost;
 		for (const [oldest, cached] of parkedDigests) {
-			if (parkedCost <= PARKED_DIGEST_UNITS && parkedDigests.size <= PARKED_DIGEST_CHILDREN) break;
+			if (parkedCost <= parkedDigestLimits.units && parkedDigests.size <= parkedDigestLimits.children) break;
 			parkedDigests.delete(oldest);
 			parkedCost -= cached.cost;
 		}
