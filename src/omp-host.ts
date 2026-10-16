@@ -10,7 +10,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AgentRef, AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { type BridgeHost, BridgeError } from "./bridge";
 import { type Probe, available, probeJobCanceller, probeLifecycle, probeRosterReader, probeWork, unavailable } from "./capabilities";
-import { readAgentOutput } from "./agent-output";
+import { clearSnapshots, readAgentOutput } from "./agent-output";
 import { AgentTelemetry } from "./agent-telemetry";
 import { nativeCapabilities, nativeControl } from "./native-controls";
 import {
@@ -150,6 +150,8 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 
 	let current: ExtensionContext | undefined;
 	let adoption = 0;
+	/** Distinguishes this bridge instance's snapshot scopes from any other's. */
+	const instance = crypto.randomUUID();
 	let stopObservers: (() => void) | undefined;
 	let warned = "";
 	const capabilityListeners = new Set<(c: Capabilities) => void>();
@@ -644,7 +646,10 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 			}
 			if (ref.kind !== "sub") throw new BridgeError("forbidden_kind", "only subagent transcripts can be read");
 			if (!ownedChild(ref)) throw new BridgeError("unknown_agent", "child does not belong to this root session");
-			return readChild(ref, () => readAgentOutput(ref, params, exportsRecord, readChild));
+			// Frozen reads are served only within the exact authorized scope the
+			// snapshot was rendered under; `readChild` rechecks it afterwards.
+			return readChild(ref, file => readAgentOutput(ref, params, exportsRecord, readChild,
+				JSON.stringify([instance, adoption, artifactRoot() ?? null, current?.sessionManager.getSessionId() ?? null, ref.id, file])));
 		},
 		subscribe: listener => {
 			agentListeners.add(listener);
@@ -814,6 +819,7 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 			// Subagent sessions re-run session_start when revived; only the top-level session owns the bridge.
 			if (ctx.agent.kind !== "main") return;
 			adoption++;
+			clearSnapshots();
 			stopObservers?.();
 			stopObservers = undefined;
 			// Same-root branch/tree adoption keeps observed data on the actual refs.
@@ -829,6 +835,7 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 		},
 		release: () => {
 			adoption++;
+			clearSnapshots();
 			stopObservers?.();
 			stopObservers = undefined;
 			agentTelemetry.clear();
