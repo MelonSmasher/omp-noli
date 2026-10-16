@@ -215,7 +215,7 @@ interface MessageDigest { segments: Segment[]; digest: Uint8Array; cost: number;
  * live session object it was rendered from (null when parked). It is served
  * only to a read with exactly the same provenance.
  */
-interface Snapshot { revision: string; entries: MessageDigest[]; cost: number; scope: string; session: unknown; }
+interface Snapshot { revision: string; entries: MessageDigest[]; cost: number; scope: string; session: unknown; sequence: number; }
 /** Live messages' digests by message object. */
 const messageDigests = new WeakMap<RecordValue, MessageDigest>();
 /**
@@ -239,6 +239,8 @@ const HASH_CHUNK_UNITS = 64 * 1024;
 /** Longest `revision` parameter accepted. */
 const MAX_REVISION_LENGTH = 256;
 let snapshotCost = 0;
+/** Orders renderings by when their read started, not when it finished. */
+let readSequence = 0;
 /** Revision work actually performed, observed by the budget tests. */
 export const revisionWork = { messageDigests: 0 };
 /** Current snapshot cache occupancy, observed by the bound tests. */
@@ -254,8 +256,8 @@ export function clearSnapshots(): void {
 	snapshotCost = 0;
 }
 
-/** Drops a child's snapshots, e.g. once its provenance no longer matches. */
-function forget(ref: AgentRef): void {
+/** Drops a child's snapshots, e.g. once its provenance no longer matches or OMP released it. */
+export function releaseSnapshots(ref: AgentRef): void {
 	const list = snapshots.get(ref);
 	if (!list) return;
 	snapshots.delete(ref);
@@ -270,31 +272,43 @@ function forget(ref: AgentRef): void {
 function scoped(ref: AgentRef, scope: string): Snapshot[] | undefined {
 	const list = snapshots.get(ref);
 	if (list && list.every(snapshot => snapshot.scope === scope && snapshot.session === (ref.session ?? null))) return list;
-	forget(ref);
+	releaseSnapshots(ref);
 	return undefined;
 }
 
-/** Retains a freshly rendered transcript as the child's newest snapshot, within the cache bounds. */
-function remember(ref: AgentRef, scope: string, revision: string, entries: MessageDigest[]): void {
-	if (entries.length === 0) return;
-	const previous = scoped(ref, scope) ?? [];
+/**
+ * Retains a rendered transcript among the child's snapshots, newest read
+ * first, within the cache bounds. Other children are evicted (least recently
+ * used first) before this child's older snapshots, and its newest snapshot is
+ * kept whenever it fits the budget on its own.
+ */
+function remember(ref: AgentRef, scope: string, snapshot: Omit<Snapshot, "cost" | "scope">): void {
+	if (snapshot.entries.length === 0) return;
+	const list = [...(scoped(ref, scope) ?? [])];
 	snapshots.delete(ref);
-	let list = previous;
-	if (previous[0]?.revision !== revision) {
-		const cost = entries.reduce((sum, entry) => sum + entry.cost + ENTRY_OVERHEAD, ENTRY_OVERHEAD);
-		list = [{ revision, entries, cost, scope, session: ref.session ?? null }, ...previous];
-		snapshotCost += cost;
-		for (const dropped of list.splice(snapshotLimits.perChild)) snapshotCost -= dropped.cost;
+	const retained = list.find(candidate => candidate.revision === snapshot.revision);
+	if (retained) {
+		// Seen again: it is this child's transcript as of this read.
+		retained.sequence = Math.max(retained.sequence, snapshot.sequence);
+	} else {
+		const cost = snapshot.entries.reduce((sum, entry) => sum + entry.cost + ENTRY_OVERHEAD, ENTRY_OVERHEAD);
 		// A snapshot over the whole budget on its own is never retained.
-		while (list.length > 0 && list[0]!.cost > snapshotLimits.units) snapshotCost -= list.shift()!.cost;
+		if (cost <= snapshotLimits.units) {
+			list.push({ ...snapshot, cost, scope });
+			snapshotCost += cost;
+		}
 	}
+	list.sort((left, right) => right.sequence - left.sequence);
+	for (const dropped of list.splice(snapshotLimits.perChild)) snapshotCost -= dropped.cost;
 	if (list.length === 0) return;
 	snapshots.set(ref, list);
 	for (const [oldest, cached] of snapshots) {
 		if (snapshotCost <= snapshotLimits.units && snapshots.size <= snapshotLimits.children) break;
+		if (oldest === ref) continue;
 		snapshots.delete(oldest);
-		for (const snapshot of cached) snapshotCost -= snapshot.cost;
+		for (const evicted of cached) snapshotCost -= evicted.cost;
 	}
+	while (snapshotCost > snapshotLimits.units && list.length > 1) snapshotCost -= list.pop()!.cost;
 }
 
 /**
@@ -414,12 +428,25 @@ function page(agentId: string, entries: MessageDigest[], revision: string, offse
 	return { agentId, text: textParts.join("\n"), spans, nextOffset: lower > 0 ? lower : null, revision };
 }
 
+/** A page and the deferred retention of the transcript it was cut from. */
+export interface OutputRead { page: AgentOutputResult; retain(): void; }
+
+/** Reads and immediately retains; for callers that validate nothing afterwards. */
+export async function readAgentOutput(ref: AgentRef, params: AgentOutputParams, api: Record<string, unknown>, readChild: ReadChild, scope: string): Promise<AgentOutputResult> {
+	const read = await renderAgentOutput(ref, params, api, readChild, scope);
+	read.retain();
+	return read.page;
+}
+
 /**
  * Read an already-authorized native child, without revival, writers or
  * locks. `scope` identifies the authorized read (see `Snapshot`); a frozen
- * read is served only from a snapshot retained under the same scope.
+ * read is served only from a snapshot retained under the same scope. The
+ * rendered transcript is retained only when the caller calls `retain()`,
+ * after its own post-read validation succeeded, so a failed read never
+ * displaces a snapshot a client may still be paging.
  */
-export async function readAgentOutput(ref: AgentRef, params: AgentOutputParams, api: Record<string, unknown>, readChild: ReadChild, scope: string): Promise<AgentOutputResult> {
+export async function renderAgentOutput(ref: AgentRef, params: AgentOutputParams, api: Record<string, unknown>, readChild: ReadChild, scope: string): Promise<OutputRead> {
 	const { offset, limit = DEFAULT_LIMIT, revision } = params;
 	if (offset !== undefined && (!Number.isSafeInteger(offset) || offset < 0)) throw new BridgeError("bad_request", "offset must be a safe integer >= 0");
 	if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_LINES) throw new BridgeError("bad_request", "limit must be an integer from 1 to 500");
@@ -431,10 +458,19 @@ export async function readAgentOutput(ref: AgentRef, params: AgentOutputParams, 
 		const list = scoped(ref, scope);
 		const snapshot = list?.find(candidate => candidate.revision === revision);
 		if (!list || !snapshot) throw new BridgeError("snapshot_expired", "the requested transcript revision is no longer retained; read the newest page again");
-		snapshots.delete(ref);
-		snapshots.set(ref, list);
-		return page(ref.id, snapshot.entries, snapshot.revision, offset, limit);
+		return {
+			page: page(ref.id, snapshot.entries, snapshot.revision, offset, limit),
+			// Touch the child's snapshots in the LRU order once the read is valid.
+			retain: () => {
+				if (snapshots.get(ref) !== list) return;
+				snapshots.delete(ref);
+				snapshots.set(ref, list);
+			},
+		};
 	}
+	const sequence = ++readSequence;
+	const renderedSession = ref.session ?? null;
+	let rendered: { entries: MessageDigest[]; revision: string };
 	if (ref.session) {
 		const session = ref.session;
 		if (!Array.isArray(session.messages)) unavailable("The live child session.messages API is unavailable");
@@ -444,25 +480,26 @@ export async function readAgentOutput(ref: AgentRef, params: AgentOutputParams, 
 		if (streamMessage && !messages.includes(streamMessage)) messages.push(streamMessage);
 		// This is an existing in-memory reader only; never instantiate a manager.
 		const branch = typeof session.sessionManager?.getBranch === "function" ? session.sessionManager.getBranch() : [];
-		const rendered = render(ref.id, messages, messageIdentities(branch));
-		remember(ref, scope, rendered.revision, rendered.entries);
-		return page(ref.id, rendered.entries, rendered.revision, offset, limit);
+		rendered = render(ref.id, messages, messageIdentities(branch));
+	} else {
+		const loadMessages = api.loadSessionMessagesReadOnly;
+		if (typeof loadMessages !== "function") unavailable("loadSessionMessagesReadOnly is required for read-only child transcripts");
+		const loadEntries = api.loadEntriesFromFile;
+		if (typeof loadEntries !== "function") unavailable("loadEntriesFromFile is required to preserve native persisted transcript identities");
+		const messages = await readChild(ref, async file => {
+			const loaded: unknown = await loadMessages(file);
+			if (!Array.isArray(loaded)) unavailable("loadSessionMessagesReadOnly did not return native messages");
+			return loaded;
+		});
+		const identities = await readChild(ref, async file => {
+			const entries: unknown = await loadEntries(file);
+			if (!Array.isArray(entries)) unavailable("loadEntriesFromFile did not return native entries");
+			return messageIdentities(entries);
+		});
+		rendered = render(ref.id, messages, identities, scoped(ref, scope)?.[0]?.entries);
 	}
-	const loadMessages = api.loadSessionMessagesReadOnly;
-	if (typeof loadMessages !== "function") unavailable("loadSessionMessagesReadOnly is required for read-only child transcripts");
-	const loadEntries = api.loadEntriesFromFile;
-	if (typeof loadEntries !== "function") unavailable("loadEntriesFromFile is required to preserve native persisted transcript identities");
-	const messages = await readChild(ref, async file => {
-		const loaded: unknown = await loadMessages(file);
-		if (!Array.isArray(loaded)) unavailable("loadSessionMessagesReadOnly did not return native messages");
-		return loaded;
-	});
-	const identities = await readChild(ref, async file => {
-		const entries: unknown = await loadEntries(file);
-		if (!Array.isArray(entries)) unavailable("loadEntriesFromFile did not return native entries");
-		return messageIdentities(entries);
-	});
-	const rendered = render(ref.id, messages, identities, scoped(ref, scope)?.[0]?.entries);
-	remember(ref, scope, rendered.revision, rendered.entries);
-	return page(ref.id, rendered.entries, rendered.revision, offset, limit);
+	return {
+		page: page(ref.id, rendered.entries, rendered.revision, offset, limit),
+		retain: () => remember(ref, scope, { revision: rendered.revision, entries: rendered.entries, sequence, session: renderedSession }),
+	};
 }

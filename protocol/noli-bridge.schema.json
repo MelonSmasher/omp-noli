@@ -1081,11 +1081,9 @@
           "maximum": 500
         },
         "revision": {
-          "anyOf": [
-            {
-              "type": "string"
-            }
-          ]
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
         }
       }
     },

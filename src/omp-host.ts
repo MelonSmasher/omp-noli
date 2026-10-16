@@ -10,7 +10,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AgentRef, AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { type BridgeHost, BridgeError } from "./bridge";
 import { type Probe, available, probeJobCanceller, probeLifecycle, probeRosterReader, probeWork, unavailable } from "./capabilities";
-import { clearSnapshots, readAgentOutput } from "./agent-output";
+import { clearSnapshots, releaseSnapshots, renderAgentOutput } from "./agent-output";
 import { AgentTelemetry } from "./agent-telemetry";
 import { nativeCapabilities, nativeControl } from "./native-controls";
 import {
@@ -490,7 +490,11 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 		const unsubscribeRegistry = registry().onChange(event => {
 			if (!("ref" in event)) return;
 			const ref = event.ref;
-			if (event.type === "removed") depart(ref.id);
+			if (event.type === "removed") {
+				depart(ref.id);
+				// A released child's retained transcripts must not pin its session.
+				releaseSnapshots(ref);
+			}
 			if (event.type === "removed" || scopedRef(ref.id) !== ref || (ref.kind === "sub" && !ownedChild(ref))) {
 				sessions.get(ref)?.unsubscribe();
 				sessions.delete(ref);
@@ -647,9 +651,12 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 			if (ref.kind !== "sub") throw new BridgeError("forbidden_kind", "only subagent transcripts can be read");
 			if (!ownedChild(ref)) throw new BridgeError("unknown_agent", "child does not belong to this root session");
 			// Frozen reads are served only within the exact authorized scope the
-			// snapshot was rendered under; `readChild` rechecks it afterwards.
-			return readChild(ref, file => readAgentOutput(ref, params, exportsRecord, readChild,
+			// snapshot was rendered under; `readChild` rechecks it afterwards, and
+			// only a read that passed that recheck retains its transcript.
+			const read = await readChild(ref, file => renderAgentOutput(ref, params, exportsRecord, readChild,
 				JSON.stringify([instance, adoption, artifactRoot() ?? null, current?.sessionManager.getSessionId() ?? null, ref.id, file])));
+			read.retain();
+			return read.page;
 		},
 		subscribe: listener => {
 			agentListeners.add(listener);

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentRef } from "@oh-my-pi/pi-coding-agent";
-import { snapshotLimits, snapshotUsage, readAgentOutput, revisionWork } from "../src/agent-output";
+import { type OutputRead, releaseSnapshots, renderAgentOutput, snapshotLimits, snapshotUsage, readAgentOutput, revisionWork } from "../src/agent-output";
 import { BridgeError } from "../src/bridge";
 import type { AgentOutputParams } from "../src/protocol";
 
@@ -544,6 +544,57 @@ describe("native child transcript output", () => {
 		for (const revision of ["", "r".repeat(257), 7, null]) {
 			await expect(readAgentOutput(ref, { agentId: "child", revision } as AgentOutputParams, {}, noDisk, SCOPE)).rejects.toMatchObject({ body: { code: "bad_request" } });
 		}
+	});
+
+	test("a child's newest snapshot survives when its snapshots together exceed the budget", async () => {
+		const saved = { ...snapshotLimits };
+		snapshotLimits.units = 5_000;
+		try {
+			const messages: Message[] = [{ ...text("assistant", `${"x".repeat(3_000)}\nend`, 1), id: "m" }];
+			const ref = live(messages, null);
+			const first = await readAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+			messages.push({ ...text("assistant", "more", 2), id: "n" });
+			const second = await readAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+			// Both no longer fit: the older one goes, the newest stays pageable.
+			expect(snapshotUsage().cost).toBeLessThanOrEqual(5_000);
+			expect((await readAgentOutput(ref, { agentId: "child", limit: 1, offset: second.nextOffset!, revision: second.revision! }, {}, noDisk, SCOPE)).revision).toBe(second.revision);
+			await expect(readAgentOutput(ref, { agentId: "child", limit: 1, offset: first.nextOffset!, revision: first.revision! }, {}, noDisk, SCOPE)).rejects.toMatchObject({ body: { code: "snapshot_expired" } });
+		} finally {
+			Object.assign(snapshotLimits, saved);
+		}
+	});
+
+	test("snapshots are ordered by when their read started, and only validated reads are retained", async () => {
+		const saved = { ...snapshotLimits };
+		snapshotLimits.perChild = 1;
+		try {
+			const messages: Message[] = [{ ...text("assistant", "a\nb", 1), id: "m" }];
+			const ref = live(messages, null);
+			const older = await renderAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+			messages.push({ ...text("assistant", "c", 2), id: "n" });
+			const newer = await renderAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+			// The older read finishes last: it must not displace the newer revision.
+			newer.retain();
+			older.retain();
+			const frozen = (read: OutputRead) => readAgentOutput(ref, { agentId: "child", limit: 1, offset: read.page.nextOffset!, revision: read.page.revision! }, {}, noDisk, SCOPE);
+			expect((await frozen(newer)).revision).toBe(newer.page.revision);
+			await expect(frozen(older)).rejects.toMatchObject({ body: { code: "snapshot_expired" } });
+			// A read whose caller never confirmed it (failed validation) displaces nothing.
+			messages.push({ ...text("assistant", "d", 3), id: "o" });
+			const failed = await renderAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+			expect(failed.page.revision).not.toBe(newer.page.revision);
+			expect((await frozen(newer)).revision).toBe(newer.page.revision);
+			await expect(frozen(failed)).rejects.toMatchObject({ body: { code: "snapshot_expired" } });
+		} finally {
+			Object.assign(snapshotLimits, saved);
+		}
+	});
+
+	test("released children's snapshots are dropped", async () => {
+		const ref = live([{ ...text("assistant", "a\nb", 1), id: "m" }], null);
+		const read = await readAgentOutput(ref, { agentId: "child", limit: 1 }, {}, noDisk, SCOPE);
+		releaseSnapshots(ref);
+		await expect(readAgentOutput(ref, { agentId: "child", limit: 1, offset: read.nextOffset!, revision: read.revision! }, {}, noDisk, SCOPE)).rejects.toMatchObject({ body: { code: "snapshot_expired" } });
 	});
 
 	test("malformed pagination fails before live or parked reads", async () => {
