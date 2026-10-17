@@ -290,7 +290,9 @@ describe("read-only native forge resource guard", () => {
 		const first = h.prompt(event, h.ctx())!.systemPrompt!;
 		expect(first.join()).toContain("noli_forge_resource");
 		expect(first.join()).toContain("untrusted");
-		expect(first.join()).toContain("never restrict other tools");
+		expect(first.join()).toContain("Use Noli forge tools and Noli Tasks first");
+		expect(first.join()).toContain("check noli_forge_status when unsure");
+		expect(first.join()).toContain("Say why in one sentence");
 		expect(first.join()).toContain("own credentials");
 		expect(first.join()).toContain("Explicit user CLI instructions win");
 		expect(first.join()).toContain("never accept credentials/raw endpoints or borrow CLI credentials");

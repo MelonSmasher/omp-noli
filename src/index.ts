@@ -5,6 +5,7 @@ import { type Bridge, startBridge } from "./bridge";
 import { installImagePublisher } from "./images";
 import { createOmpHost } from "./omp-host";
 import { installThreadControl } from "./thread-control";
+import { bindForgeRoot, installForgeRelay, releaseForgeRoot } from "./forge-relay";
 import { registerGateway, rejoinGateway } from "./gateway";
 
 /** Set by the launcher; a directory and bootstrap input enable Bridge and Gateway setup. */
@@ -27,17 +28,19 @@ function consumeBootstrap(path: string): string {
 export default function noli(pi: ExtensionAPI): void {
 	let bridge: Bridge | undefined;
 	let boundSession: string | undefined;
-	installThreadControl(pi, sessionId => bridge?.authenticatedGeneration(sessionId));
 	const dir = process.env[ENV_DIR];
 	const tokenFile = process.env[ENV_TOKEN_FILE];
 	const legacyToken = process.env.NOLI_BRIDGE_TOKEN;
 	delete process.env[ENV_TOKEN_FILE];
 	delete process.env.NOLI_BRIDGE_TOKEN;
 	// A subagent of the bound root re-runs this factory after the bootstrap was consumed; it only needs the Gateway models.
-	if (!dir || (!tokenFile && !legacyToken)) { rejoinGateway(pi, dir); return; }
+	// It also reaches its root's Noli forge tools through the relay, under the root's authority.
+	if (!dir || (!tokenFile && !legacyToken)) { rejoinGateway(pi, dir); installForgeRelay(pi, dir); return; }
 	if (!tokenFile && existsSync(join(dir, "gateway-providers.json"))) {
 		throw new Error("Noli gateway binding requires NOLI_BRIDGE_TOKEN_FILE");
 	}
+	// Root sessions only: subagents use the relay's own guard, never these host-tool hooks.
+	installThreadControl(pi, sessionId => bridge?.authenticatedGeneration(sessionId), dir);
 	const token = tokenFile ? consumeBootstrap(tokenFile) : legacyToken!;
 	installImagePublisher(pi, sessionId => bridge?.hasAuthenticatedSession(sessionId) ?? false);
     const gateway = registerGateway(pi, dir);
@@ -53,6 +56,13 @@ export default function noli(pi: ExtensionAPI): void {
 		bridge?.invalidateAuthentication();
 		omp.adopt(ctx);
         bridge ??= startBridge({ dir, token, host: omp.host, gateway });
+		// Subagents reach only this session's genuine RPC host tools; a new session replaces the root.
+		const registry = (pi as unknown as { pi?: { AgentRegistry?: { global(): { get(id: string): { session?: unknown } | undefined } } } }).pi?.AgentRegistry;
+		const agentId = ctx.agent.id;
+		bindForgeRoot({ dir, sessionId, generation: id => bridge?.authenticatedGeneration(id), tool(name) {
+			const session = registry?.global().get(agentId)?.session as { hasRpcHostTool?(name: string): boolean; getToolByName?(name: string): unknown } | undefined;
+			return session?.hasRpcHostTool?.(name) ? session.getToolByName?.(name) as never : undefined;
+		} });
 	};
 
 	pi.on("session_start", (_event, ctx) => adopt(ctx));
@@ -63,6 +73,7 @@ export default function noli(pi: ExtensionAPI): void {
 		if (ctx.agent.kind !== "main") return;
 		bridge?.close();
 		bridge = undefined;
+		releaseForgeRoot(dir);
 		boundSession = undefined;
 		omp.release();
 	});
