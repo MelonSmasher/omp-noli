@@ -3,7 +3,11 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { BeforeAgentStartEvent, BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult } from "@oh-my-pi/pi-coding-agent";
+import type { BeforeAgentStartEvent, BeforeAgentStartEventResult, ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult, ToolResultEvent, ToolResultEventResult } from "@oh-my-pi/pi-coding-agent";
+import { Settings } from "@oh-my-pi/pi-coding-agent";
+import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
+import { RpcHostToolBridge } from "@oh-my-pi/pi-coding-agent/modes/rpc/host-tools";
+import type { RpcHostToolCallRequest } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
 import { installThreadControl } from "../src/thread-control";
 import { bindForgeRoot, installForgeRelay, releaseForgeRoot } from "../src/forge-relay";
 import { forgeWriteArguments } from "../src/forge-write-tools";
@@ -89,54 +93,119 @@ describe("#237/#240 callers in the root session", () => {
 	});
 });
 
-describe("#240 subagent relay", () => {
-	function relay(generation: { value: number | undefined }) {
-		const dir = mkdtempSync(join(tmpdir(), "noli-forge-"));
-		const sent: Record<string, unknown>[] = [];
-		const host = (name: string) => ({ description: name, parameters: { type: "object" }, async execute(_id: string, params: Record<string, unknown>) {
-			sent.push(params);
-			return name === "noli_forge_write_v1" ? { content: [], details: { status: "pending_approval", operation_id: "op" } } : { content: [{ type: "text", text: "{}" }] };
-		} });
-		bindForgeRoot({ dir, sessionId: "root-session", generation: id => id === "root-session" ? generation.value : undefined, tool: name => FORGE_TOOLS.includes(name) ? host(name) : undefined });
+describe("#240 subagent relay through the SDK's real host-tool wrapper", () => {
+	/**
+	 * A root session as OMP builds it: the RPC host-tool bridge's adapters, each wrapped
+	 * in the SDK's ExtensionToolWrapper whose runner emits the plugin's real root hooks.
+	 */
+	function rootSession(sessionId: string, generation: { value: number | undefined }) {
+		let call!: (event: ToolCallEvent, ctx: ExtensionContext) => ToolCallEventResult | undefined;
+		let result!: (event: ToolResultEvent, ctx: ExtensionContext) => ToolResultEventResult | undefined;
+		const pi = {
+			on(name: string, handler: unknown) {
+				if (name === "tool_call") call = handler as typeof call;
+				if (name === "tool_result") result = handler as typeof result;
+			},
+			getAllTools: () => FORGE_TOOLS.map(name => ({ name, sourceInfo: { source: "sdk" } })),
+		} as unknown as ExtensionAPI;
+		installThreadControl(pi, id => id === sessionId ? generation.value : undefined);
+		const main = { agent: { kind: "main", id: "Main" }, sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
+		// The root session's own settings decide tool approval, exactly as for the main agent.
+		const runner = {
+			sessionSettings: Settings.isolated({ "tools.approvalMode": "yolo", "memory.backend": "off" }),
+			hasHandlers: (name: string) => name === "tool_call" || name === "tool_result",
+			consumeToolCallEmitted: () => false,
+			sessionId,
+			runScoped: <T>(run: () => T) => run(),
+			emitToolCall: async (event: ToolCallEvent) => call(event, main),
+			emitToolResult: async (event: ToolResultEvent) => result(event, main),
+		};
+		const frames: RpcHostToolCallRequest[] = [];
+		const bridge = new RpcHostToolBridge(frame => {
+			if (frame.type !== "host_tool_call") return;
+			frames.push(frame);
+			const details = frame.toolName === "noli_forge_write_v1" ? { status: "pending_approval", operation_id: "op" } : undefined;
+			queueMicrotask(() => bridge.handleResult({ type: "host_tool_result", id: frame.id, result: { content: [{ type: "text", text: "{}" }], details } }));
+		});
+		const wrapped = new Map(bridge.setTools(FORGE_TOOLS.map(name => ({ name, label: name, description: name, parameters: { type: "object" } })))
+			.map(tool => [tool.name, new ExtensionToolWrapper(tool, runner as never)]));
+		return { frames, tool: (name: string) => wrapped.get(name) as unknown as { description: string; parameters: unknown; execute(id: string, params: Record<string, unknown>, signal?: AbortSignal, onUpdate?: unknown): Promise<{ content: unknown[]; details?: unknown }> } | undefined, sessionId };
+	}
+	function child(dir: string) {
 		const tools = new Map<string, { execute(id: string, params: unknown, signal: undefined, update: undefined, ctx: ExtensionContext): Promise<unknown> }>();
 		installForgeRelay({ registerTool: (tool: { name: string }) => tools.set(tool.name, tool as never), on() {} } as unknown as ExtensionAPI, dir);
-		const child = (id: string) => ({ agent: { kind: "sub", id }, sessionManager: { getSessionId: () => `child-${id}` } }) as unknown as ExtensionContext;
-		return { dir, sent, tools, child };
+		const as = (id: string) => ({ agent: { kind: "sub", id }, sessionManager: { getSessionId: () => `child-${id}` } }) as unknown as ExtensionContext;
+		return { tools, run: (name: string, params: unknown, id = "0-Explore") => tools.get(name)!.execute(`model-${name}`, params, undefined, undefined, as(id)) };
 	}
-	test("children call the root's host tools with their own identity, and lose access with the parent", async () => {
+	const bind = (dir: string, parent: ReturnType<typeof rootSession>, generation: { value: number | undefined }) =>
+		bindForgeRoot({ dir, sessionId: parent.sessionId, generation: id => id === parent.sessionId ? generation.value : undefined, tool: parent.tool });
+
+	test("relayed calls pass the root guard and reach the RPC transport with the child's identity", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "noli-forge-"));
 		const generation = { value: 1 as number | undefined };
-		const r = relay(generation);
-		expect([...r.tools.keys()].sort()).toEqual([...FORGE_TOOLS].sort());
-		await r.tools.get("noli_forge_read_v1")!.execute("c1", read, undefined, undefined, r.child("0-Explore"));
-		await r.tools.get("noli_forge_write_v1")!.execute("c2", { payload: { kind: "merge", number: "12" } }, undefined, undefined, r.child("0-Explore"));
-		expect(r.sent).toEqual([{ ...read, noli_requester: { kind: "child", agent_id: "0-Explore" } },
-			{ payload: { kind: "merge", number: "12" }, noli_requester: { kind: "child", agent_id: "0-Explore" } }]);
-		// Forged identity and malformed input never reach Noli.
-		await expect(r.tools.get("noli_forge_read_v1")!.execute("c3", { ...read, noli_requester: { kind: "child", agent_id: "1-Other" } }, undefined, undefined, r.child("0-Explore"))).rejects.toThrow("Invalid");
-		await expect(r.tools.get("noli_forge_status")!.execute("c4", { session: "other" }, undefined, undefined, r.child("0-Explore"))).rejects.toThrow("Invalid");
-		await expect(r.tools.get("noli_forge_write_v1")!.execute("c5", { payload: { kind: "merge", number: "1" } }, undefined, undefined, r.child("advisor"))).rejects.toThrow("read-only");
-		expect(r.sent.length).toBe(2);
-		// Revoked parent authentication ends every child grant.
+		const parent = rootSession("root-session", generation);
+		bind(dir, parent, generation);
+		const c = child(dir);
+		expect([...c.tools.keys()].sort()).toEqual([...FORGE_TOOLS].sort());
+		await c.run("noli_forge_status", {});
+		await c.run("noli_forge_read_v1", read);
+		await c.run("noli_forge_write_v1", { payload: { kind: "merge", number: "12" } });
+		const child0 = { kind: "child", agent_id: "0-Explore" };
+		expect(parent.frames.map(frame => [frame.toolName, frame.arguments])).toEqual([
+			["noli_forge_status", { noli_requester: child0 }],
+			["noli_forge_read_v1", { ...read, noli_requester: child0 }],
+			["noli_forge_write_v1", { payload: { kind: "merge", number: "12" }, noli_requester: child0 }],
+		]);
+		// The relay ID is consumed; a model cannot reuse it or set the requester itself.
+		await expect(c.run("noli_forge_read_v1", { ...read, noli_requester: { kind: "child", agent_id: "1-Other" } })).rejects.toThrow("Invalid");
+		await expect(c.run("noli_forge_status", { session: "other" })).rejects.toThrow("Invalid");
+		await expect(c.run("noli_forge_write_v1", { payload: { kind: "merge", number: "1" } }, "advisor")).rejects.toThrow("read-only");
+		await expect(parent.tool("noli_forge_status")!.execute("model-call", { noli_requester: child0 })).rejects.toThrow();
+		expect(parent.frames.length).toBe(3);
+		releaseForgeRoot(dir);
+	});
+
+	test("a same-directory replacement parent never inherits an existing child's relay", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "noli-forge-"));
+		const generation = { value: 1 as number | undefined };
+		const old = rootSession("old-parent", generation);
+		bind(dir, old, generation);
+		const c = child(dir);
+		await c.run("noli_forge_status", {});
+		const replacement = rootSession("replacement-parent", generation);
+		bind(dir, replacement, generation);
+		await expect(c.run("noli_forge_status", {})).rejects.toThrow("ended with the parent session");
+		await expect(c.run("noli_forge_write_v1", { payload: { kind: "merge", number: "12" } })).rejects.toThrow("ended with the parent session");
+		expect(replacement.frames).toEqual([]);
+		expect(old.frames.length).toBe(1);
+		// A child started under the replacement gets the replacement's tools.
+		await child(dir).run("noli_forge_status", {});
+		expect(replacement.frames.length).toBe(1);
+		releaseForgeRoot(dir);
+	});
+
+	test("revoked parent authentication ends every child grant, and late results are discarded", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "noli-forge-"));
+		const generation = { value: 1 as number | undefined };
+		const parent = rootSession("root-session", generation);
+		bind(dir, parent, generation);
+		const c = child(dir);
 		generation.value = undefined;
-		await expect(r.tools.get("noli_forge_status")!.execute("c6", {}, undefined, undefined, r.child("0-Explore"))).rejects.toThrow("unavailable");
+		await expect(c.run("noli_forge_status", {})).rejects.toThrow("unavailable");
 		generation.value = 2;
-		releaseForgeRoot(r.dir);
-		await expect(r.tools.get("noli_forge_status")!.execute("c7", {}, undefined, undefined, r.child("0-Explore"))).rejects.toThrow("ended with the parent session");
-		expect(r.sent.length).toBe(2);
+		const late = c.run("noli_forge_status", {});
+		generation.value = 3;
+		await expect(late).rejects.toThrow();
+		releaseForgeRoot(dir);
+		await expect(c.run("noli_forge_status", {})).rejects.toThrow("ended with the parent session");
+		expect(parent.frames.length).toBeLessThanOrEqual(1);
 	});
-	test("a result that outlives the parent's authentication is discarded", async () => {
-		const generation = { value: 1 as number | undefined };
-		const r = relay(generation);
-		const host = r.tools.get("noli_forge_status")!;
-		bindForgeRoot({ dir: r.dir, sessionId: "root-session", generation: () => generation.value, tool: () => ({ description: "", parameters: {}, async execute() { generation.value = 2; return { content: [] }; } }) });
-		await expect(host.execute("c", {}, undefined, undefined, r.child("0-Explore"))).rejects.toThrow("lost its authenticated parent session");
-		releaseForgeRoot(r.dir);
-	});
+
 	test("another launch's subagents get no tools", () => {
-		const r = relay({ value: 1 });
-		const tools: string[] = [];
-		installForgeRelay({ registerTool: (tool: { name: string }) => tools.push(tool.name), on() {} } as unknown as ExtensionAPI, join(r.dir, "other"));
-		expect(tools).toEqual([]);
-		releaseForgeRoot(r.dir);
+		const dir = mkdtempSync(join(tmpdir(), "noli-forge-"));
+		const generation = { value: 1 };
+		bind(dir, rootSession("root-session", generation), generation);
+		expect(child(join(dir, "other")).tools.size).toBe(0);
+		releaseForgeRoot(dir);
 	});
 });

@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { FORGE_READ_TOOL, forgeReadArguments } from "./forge-read-tools";
 import { FORGE_WRITE_TOOLS, forgeWriteAdmission, forgeWriteArguments, forgeWriteStatusArguments } from "./forge-write-tools";
-import { FORGE_STATUS_TOOL, RELAYED_TOOLS, REQUESTER_KEY, forgeContextBlock, requesterOf, requesterPermits, taskReminder } from "./forge-agents";
+import { FORGE_STATUS_TOOL, RELAYED_TOOLS, REQUESTER_KEY, forgeContextBlock, relayCalls, requesterOf, requesterPermits, taskReminder } from "./forge-agents";
 import { FORGE_CLI_INSTRUCTION, forgeArguments } from "./thread-control";
 
 /** What a subagent needs from its root session's Noli host tools. */
@@ -17,11 +17,12 @@ export interface ForgeRoot {
 	sessionId: string;
 	/** Current socket authentication of the root session; undefined after revocation. */
 	generation(sessionId: string): number | undefined;
-	/** The root's genuine RPC host tool, never an extension tool. */
+	/** The root's genuine RPC host tool as the SDK registered it (wrapped by the root's extension runner). */
 	tool(name: string): HostTool | undefined;
 }
 
-/** The bound root of this OMP process. Subagent sessions in the same process share it. */
+/** The bound root of this OMP process. Subagent sessions in the same process share it.
+ *  Each adoption binds a new object, so identity distinguishes a same-directory replacement. */
 let root: ForgeRoot | undefined;
 export function bindForgeRoot(binding: ForgeRoot): void { root = binding; }
 /** The parent session ended or changed: every subagent grant ends with it. */
@@ -51,21 +52,26 @@ export function installForgeRelay(pi: ExtensionAPI, dir: string | undefined): vo
 			name, label: tool.label ?? name, description: tool.description,
 			parameters: tool.parameters as never,
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
-				const binding = root;
-				if (!binding || binding.dir !== dir) throw new Error("Noli forge tools ended with the parent session.");
+				// Pinned to the parent bound when this subagent started: a replacement parent,
+				// even in the same launch directory, never inherits this subagent.
+				if (root !== bound) throw new Error("Noli forge tools ended with the parent session.");
 				const requester = requesterOf(ctx);
 				if (!requester || !requesterPermits(name, requester)) throw new Error(requester?.kind === "advisor" ? "The advisor is read-only." : "Noli forge tools need an identified subagent.");
 				const input: unknown = params;
 				if (!record(input) || REQUESTER_KEY in input || !validArguments(name, input, toolCallId)) {
 					throw new Error("Invalid Noli forge arguments; caller identity, credentials and raw endpoints are not accepted.");
 				}
-				const session = binding.sessionId;
-				const generation = binding.generation(session);
-				const host = binding.tool(name);
+				const generation = bound.generation(bound.sessionId);
+				const host = bound.tool(name);
 				if (generation === undefined || !host) throw new Error("Authenticated Noli forge access is unavailable for the parent session.");
-				const result = await host.execute(toolCallId, { ...input, [REQUESTER_KEY]: requester }, signal, onUpdate);
-				// A result that outlived its parent's authentication is discarded, never adopted.
-				if (root !== binding || binding.generation(session) !== generation) {
+				// The root guard attributes this call from the out-of-band entry, not from input.
+				const relayId = `noli-relay:${crypto.randomUUID()}`;
+				relayCalls.set(relayId, { toolName: name, sessionId: bound.sessionId, generation, requester });
+				let result: Awaited<ReturnType<HostTool["execute"]>>;
+				try { result = await host.execute(relayId, input, signal, onUpdate); }
+				finally { relayCalls.delete(relayId); }
+				// A result that outlived its parent or its authentication is discarded, never adopted.
+				if (root !== bound || bound.generation(bound.sessionId) !== generation) {
 					throw new Error("This Noli forge result lost its authenticated parent session; discard it. A write's outcome is unknown: do not retry automatically.");
 				}
 				if (name === FORGE_WRITE_TOOLS[0] && !forgeWriteAdmission(result.details)) {
@@ -78,7 +84,7 @@ export function installForgeRelay(pi: ExtensionAPI, dir: string | undefined): vo
 	if (tools.length === 0) return;
 	const delivered = new Map<string, string>();
 	pi.on("before_agent_start", (event, ctx) => {
-		if (ctx.agent.kind === "main" || root?.dir !== dir) return;
+		if (ctx.agent.kind === "main" || root !== bound) return;
 		const block = forgeContextBlock(dir);
 		const message = taskReminder(delivered, ctx.sessionManager.getSessionId(), dir);
 		const guidance = [FORGE_CLI_INSTRUCTION, ...(block ? [block] : [])];

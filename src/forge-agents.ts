@@ -16,6 +16,14 @@ export const REQUESTER_KEY = "noli_requester";
 export type Requester = { kind: "child"; agent_id: string } | { kind: "advisor" };
 
 /**
+ * Out-of-band attribution for relayed subagent calls. The relay mints an unguessable
+ * call ID, records the requester here and executes the root's genuine (wrapped) host
+ * tool with that ID; the root guard reads the requester from here, never from input.
+ */
+export interface RelayCall { toolName: string; sessionId: string; generation: number; requester: Requester }
+export const relayCalls = new Map<string, RelayCall>();
+
+/**
  * The calling agent, from OMP's runtime identity rather than tool input. OMP names
  * an advisor's calls `advisor` in the advising session's runner. Undefined means
  * the main agent; null means an identity that cannot be attributed.
