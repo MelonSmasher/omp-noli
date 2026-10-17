@@ -54,7 +54,7 @@ function view(over: Partial<AgentView>): AgentView {
 }
 
 function allAvailable(): Capabilities {
-	return Object.fromEntries(CAPABILITY_NAMES.map(name => [name, available(name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" || name.startsWith("host.forge_") ? "main-only-v1" : "public", "test")])) as Capabilities; // Every key is filled from CAPABILITY_NAMES.
+	return Object.fromEntries(CAPABILITY_NAMES.map(name => [name, available(name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" ? "main-only-v1" : name.startsWith("host.forge_") ? "session-v2" : "public", "test")])) as Capabilities; // Every key is filled from CAPABILITY_NAMES.
 }
 
 interface Harness {
@@ -717,13 +717,13 @@ describe("capabilities", () => {
 	});
 
 	test.each(["host.forge_resource", "host.forge_read", "host.forge_write"] as const)("%s policy requires explicit authenticated bootstrap negotiation", async capability => {
-		h.caps[capability] = available("main-only-v1", "owning-main forge guard");
+		h.caps[capability] = available("session-v2", "owning-main forge guard");
 		const client = await Client.connect(bridge.socketPath);
 		const hello = await client.call({ id: 1, method: "hello", params: { token: TOKEN } });
 		expect(responseCapabilities(hello)).not.toHaveProperty(capability);
 		expect(responseCapabilities(await call(client, "capabilities.get"))).not.toHaveProperty(capability);
 		const negotiated = await call(client, "capabilities.get", { hostTools: true });
-		expect(responseCapabilities(negotiated)[capability]).toEqual({ available: true, api: "main-only-v1", detail: "owning-main forge guard" });
+		expect(responseCapabilities(negotiated)[capability]).toEqual({ available: true, api: "session-v2", detail: "owning-main forge guard" });
 		for (const listener of h.capabilityListeners) listener(h.caps);
 		expect((await client.next()).capabilities).not.toHaveProperty(capability);
 	});

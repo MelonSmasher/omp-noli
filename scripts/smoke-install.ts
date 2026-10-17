@@ -71,12 +71,12 @@ if (selection === "--verify") {
 	if (forgeResources) assert(protocol.CAPABILITY_NAMES.includes("host.forge_resource"), "v0.8+ requires the legacy forge contract");
 	if (forgeResources) {
 		assert(!schema.$defs.Capabilities.required.includes("host.forge_resource"), "Forge bootstrap marker is optional in protocol 1");
-		assert.equal(schema.$defs.Capabilities.properties["host.forge_resource"].allOf[1].properties.api.const, "main-only-v1");
+		assert.equal(schema.$defs.Capabilities.properties["host.forge_resource"].allOf[1].properties.api.const, "session-v2");
 	}
 	if (versionedForge) for (const capability of ["host.forge_read", "host.forge_write"]) {
 		assert(protocol.CAPABILITY_NAMES.includes(capability), `v0.9+ requires ${capability}; absence is not an older-release fallback`);
 		assert(!schema.$defs.Capabilities.required.includes(capability), "Compatible optional protocol-1 wire field is still required release support");
-		assert.equal(schema.$defs.Capabilities.properties[capability].allOf[1].properties.api.const, "main-only-v1");
+		assert.equal(schema.$defs.Capabilities.properties[capability].allOf[1].properties.api.const, "session-v2");
 	}
 	if (referenceReads) {
 		assert(protocol.CAPABILITY_NAMES.includes("host.thread_read"));

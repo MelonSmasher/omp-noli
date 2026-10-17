@@ -75,14 +75,13 @@ export async function verifyInstalledForgeRuntime(session: AgentSession, install
 		assert(negotiated.type === "response" && negotiated.ok);
 		const advertised = negotiated.result as { capabilities: Record<string, { api: string; available: boolean }> };
 		for (const capability of ["host.forge_read", "host.forge_write"]) {
-			assert.equal(advertised.capabilities[capability]?.api, "main-only-v1");
+			assert.equal(advertised.capabilities[capability]?.api, "session-v2");
 			assert.equal(advertised.capabilities[capability]?.available, true, "Required support must precede host-tool registration");
 		}
 		for (const item of cases) assert.equal((await runtime.emitToolCall({ type: "tool_call", toolName: item.name, toolCallId: `installed-absent-${item.name}`, input: item.input }))?.block, true, "Authenticated but unregistered tools are denied");
 		await session.refreshRpcHostTools(adapters);
 		for (const [index, item] of cases.entries()) {
 			const tool = session.getToolByName(item.name); assert(tool && session.hasRpcHostTool(item.name));
-			assert(!session.getAdvisorAvailableToolNames().includes(item.name));
 			const admitted = tool.execute(`installed-main-${item.name}`, item.input);
 			const frame = await nextFrame();
 			assert(frame.type === "host_tool_call");
@@ -90,13 +89,29 @@ export async function verifyInstalledForgeRuntime(session: AgentSession, install
 			assert.deepEqual(frame.arguments, item.input);
 			answer(frame, item.name);
 			assert.deepEqual(await admitted, { content, details: detailsFor(item.name) }, "Actual SDK wrapper consumes installed admission and result policy");
-			for (const kind of ["sub", "advisor"]) {
-				const identity = { kind, id: kind, name: kind, depth: 1, parentId: "Main" } as unknown as ExtensionAgentIdentity;
-				const caller = new ExtensionToolWrapper(adapters[index]!, runtime, identity);
-				await assert.rejects(caller.execute(`installed-${kind}-${item.name}`, item.input), /restricted to the owning session/);
-				assert.equal(frames.length, 0);
+			for (const id of ["fixture-child", "advisor"]) {
+				const identity = { kind: "sub", id, name: id, depth: 1, parentId: "Main" } as ExtensionAgentIdentity;
+				const caller: ExtensionToolWrapper = new ExtensionToolWrapper(adapters[index]!, runtime, identity);
+				if (id === "advisor" && item.name !== "noli_forge_read_v1") {
+					await assert.rejects(caller.execute(`installed-${id}-${item.name}`, item.input), /advisor is read-only/);
+					assert.equal(frames.length, 0, "Advisors cannot propose writes or inspect write operations");
+					continue;
+				}
+				const pending: Promise<AgentToolResult<unknown>> = caller.execute(`installed-${id}-${item.name}`, item.input);
+				const callerFrame = await nextFrame();
+				assert(callerFrame.type === "host_tool_call");
+				assert.equal(callerFrame.toolName, item.name);
+				const requester = id === "advisor" ? { kind: "advisor" } : { kind: "child", agent_id: id };
+				assert.deepEqual(callerFrame.arguments, { ...item.input, noli_requester: requester });
+				answer(callerFrame, item.name);
+				assert.deepEqual(await pending, { content, details: detailsFor(item.name) }, "Installed guard admits runtime-attributed session callers");
+				await assert.rejects(caller.execute(`installed-forged-${id}-${item.name}`, { ...item.input, noli_requester: requester }), /Invalid/);
+				assert.equal(frames.length, 0, "Callers cannot supply their own attribution");
 			}
-			for (const key of ["caller", "token", "endpoint", "session_id", "grant", "approved", "unknown"]) {
+			const unattributed = new ExtensionToolWrapper(adapters[index]!, runtime, { kind: "sub", id: "", name: "unknown", depth: 1, parentId: "Main" } as ExtensionAgentIdentity);
+			await assert.rejects(unattributed.execute(`installed-unattributed-${item.name}`, item.input), /restricted to the owning session/);
+			assert.equal(frames.length, 0);
+			for (const key of ["caller", "noli_requester", "token", "endpoint", "session_id", "grant", "approved", "unknown"]) {
 				await assert.rejects(tool.execute(`installed-invalid-${item.name}-${key}`, { ...item.input, [key]: "forged" }), /Invalid/);
 				assert.equal(frames.length, 0, "Unknown envelope fields cannot reach fixture backend");
 			}
@@ -138,7 +153,7 @@ export async function verifyInstalledForgeRuntime(session: AgentSession, install
 				assert.deepEqual(stale.details, {});
 				assert(!JSON.stringify(stale).includes("private-installed"), "Stale success, error and metadata must be scrubbed by the installed consumer");
 			}
-			const fresh = tool.execute(`installed-fresh-${item.name}`, item.input); answer(await nextFrame(), item.name);
+			const fresh: Promise<AgentToolResult<unknown>> = tool.execute(`installed-fresh-${item.name}`, item.input); answer(await nextFrame(), item.name);
 			assert.deepEqual(await fresh, { content, details: detailsFor(item.name) }, "Fresh authenticated control succeeds after stale-result checks");
 		}
 		const proposalTool = session.getToolByName(cases[1].name)!;

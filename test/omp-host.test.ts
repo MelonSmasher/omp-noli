@@ -243,9 +243,9 @@ test("thread-read negotiation advertises only reference_id main-only-v2 and trac
 });
 
 test("forge guard bootstrap precedes SDK registration and follows owning-main lifetime", () => {
-	expect(omp.host.capabilities()["host.forge_resource"]).toMatchObject({ available: true, api: "main-only-v1" });
+	expect(omp.host.capabilities()["host.forge_resource"]).toMatchObject({ available: true, api: "session-v2" });
 	omp.release();
-	expect(omp.host.capabilities()["host.forge_resource"]).toMatchObject({ available: false, api: "main-only-v1", reason: "not_ready" });
+	expect(omp.host.capabilities()["host.forge_resource"]).toMatchObject({ available: false, api: "session-v2", reason: "not_ready" });
 	omp.adopt(ctx);
 	expect(omp.host.capabilities()["host.forge_resource"].available).toBe(true);
 	registry.refs.delete("Main"); omp.adopt(ctx);

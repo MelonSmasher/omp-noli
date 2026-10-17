@@ -15,7 +15,7 @@ export async function verifyForgeRuntime(session: AgentSession, request: (method
 	assert(negotiated.type === "response" && negotiated.ok);
 	const advertised = type({ capabilities: { "host.forge_resource": { available: "boolean", api: "string" } } }).assert(negotiated.result);
 	const capabilities = advertised.capabilities;
-	assert.equal(capabilities["host.forge_resource"]?.api, "main-only-v1");
+	assert.equal(capabilities["host.forge_resource"]?.api, "session-v2");
 	assert.equal(capabilities["host.forge_resource"]?.available, true, "Bootstrap guard support precedes registration");
 	const input = { action: "resolve_review", number: "9007199254740993" };
 	const call = { type: "tool_call" as const, toolName: "noli_forge_resource", toolCallId: "unregistered-forge", input };
@@ -35,7 +35,6 @@ export async function verifyForgeRuntime(session: AgentSession, request: (method
 	const tool = session.getToolByName("noli_forge_resource");
 	assert(tool);
 	assert(session.hasRpcHostTool("noli_forge_resource"));
-	assert(!session.getAdvisorAvailableToolNames().includes("noli_forge_resource"), "Official advisor pool excludes dynamic host tools");
 	const details = { trust: "untrusted_provider_content", result: { snapshot: { state: "fresh", content: "bounded backend snapshot" }, link: "forge:native-handle" } };
 	const content = [{ type: "text" as const, text: "bounded provider content\n".repeat(2048) }];
 	function answer(frame: RpcHostToolCallRequest | RpcHostToolCancelRequest, isError = false): void {
@@ -65,14 +64,23 @@ export async function verifyForgeRuntime(session: AgentSession, request: (method
 	await request("capabilities.get", { hostTools: true });
 	answer(disconnectFrame);
 	assert.deepEqual(await disconnectPending, { content, details }, "An unrelated socket disconnect cannot revoke the owning read");
-	for (const kind of ["sub", "advisor"]) {
-		// The SDK currently types main/sub only; also exercise an unrecognized advisor identity fail-closed.
-		const identity = { kind, id: kind, name: kind, depth: 1, parentId: "Main" } as unknown as ExtensionAgentIdentity;
-		const caller = new ExtensionToolWrapper(adapters[0]!, runtime, identity);
-		await assert.rejects(caller.execute(`forge-${kind}`, input), /restricted to the owning session/);
-		assert.equal(frames.length, 0, "Denied callers never reach the host backend");
+	for (const id of ["fixture-child", "advisor"]) {
+		const identity = { kind: "sub", id, name: id, depth: 1, parentId: "Main" } as ExtensionAgentIdentity;
+		const caller: ExtensionToolWrapper = new ExtensionToolWrapper(adapters[0]!, runtime, identity);
+		const pending: Promise<AgentToolResult<unknown>> = caller.execute(`forge-${id}`, input);
+		const frame = await nextFrame();
+		assert(frame.type === "host_tool_call");
+		const requester = id === "advisor" ? { kind: "advisor" } : { kind: "child", agent_id: id };
+		assert.deepEqual(frame.arguments, { ...input, noli_requester: requester }, "Only the runtime adds caller attribution");
+		answer(frame);
+		assert.deepEqual(await pending, { content, details }, "Attributed session callers receive current forge reads");
+		await assert.rejects(caller.execute(`forge-forged-${id}`, { ...input, noli_requester: requester }), /Invalid/);
+		assert.equal(frames.length, 0, "Model-supplied requester attribution never reaches the backend");
 	}
-	for (const forged of [{ ...input, caller: "Main" }, { ...input, token: "forged" }, { ...input, endpoint: "https://github.com/api" }, { action: "read", handle: { ...handle, account: 7 }, offline: false }, { action: "read", handle: { ...handle, repository: { ...handle.repository, credential: "forged" } }, offline: false }]) {
+	const unattributed = new ExtensionToolWrapper(adapters[0]!, runtime, { kind: "sub", id: "", name: "unknown", depth: 1, parentId: "Main" } as ExtensionAgentIdentity);
+	await assert.rejects(unattributed.execute("forge-unattributed", input), /restricted to the owning session/);
+	assert.equal(frames.length, 0, "Unattributed callers cannot reach the backend");
+	for (const forged of [{ ...input, noli_requester: { kind: "child", agent_id: "fixture-child" } }, { ...input, caller: "Main" }, { ...input, token: "forged" }, { ...input, endpoint: "https://github.com/api" }, { action: "read", handle: { ...handle, account: 7 }, offline: false }, { action: "read", handle: { ...handle, repository: { ...handle.repository, credential: "forged" } }, offline: false }]) {
 		await assert.rejects(tool.execute("forge-invalid", forged), /Invalid forge resource arguments/);
 		assert.equal(frames.length, 0);
 	}
@@ -114,5 +122,5 @@ export async function verifyForgeRuntime(session: AgentSession, request: (method
 	assert.deepEqual(await fresh, { content, details });
 	await session.refreshRpcHostTools([]);
 	bridge.close("Disposable smoke complete");
-	console.log("OFFICIAL FORGE RUNTIME OK: main resolve/read admission, lossless decimal IDs, unchanged bounded content, current backend denial, native cancellation, child/advisor/absent SDK/foreign/forged arguments denied, unrelated secondary hello/disconnect preserve owning reads, stale tree/reconnect/adoption RPC success and error text discarded");
+	console.log("OFFICIAL FORGE RUNTIME OK: session-v2 main/child/advisor read admission with runtime attribution, lossless decimal IDs, unchanged bounded content, current backend denial, native cancellation, unattributed/absent SDK/foreign/forged arguments denied, unrelated secondary hello/disconnect preserve owning reads, stale tree/reconnect/adoption RPC success and error text discarded");
 }

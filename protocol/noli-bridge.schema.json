@@ -387,7 +387,8 @@
         "public",
         "internal",
         "main-only-v1",
-        "main-only-v2"
+        "main-only-v2",
+        "session-v2"
       ]
     },
     "CapabilityState": {
@@ -547,7 +548,7 @@
               ],
               "properties": {
                 "api": {
-                  "const": "main-only-v1"
+                  "const": "session-v2"
                 }
               }
             }
@@ -565,7 +566,7 @@
               ],
               "properties": {
                 "api": {
-                  "const": "main-only-v1"
+                  "const": "session-v2"
                 }
               }
             }
@@ -583,7 +584,7 @@
               ],
               "properties": {
                 "api": {
-                  "const": "main-only-v1"
+                  "const": "session-v2"
                 }
               }
             }
