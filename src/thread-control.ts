@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { FORGE_READ_TOOL, FORGE_READ_INSTRUCTION, forgeReadArguments } from "./forge-read-tools";
 import { forgeResourceHandle } from "./forge-resource-handle";
 import { FORGE_WRITE_TOOLS, FORGE_WRITE_INSTRUCTION, forgeWriteArguments, forgeWriteStatusArguments, forgeWriteAdmission } from "./forge-write-tools";
-import { FORGE_STATUS_TOOL, REQUESTER_KEY, type Requester, forgeContextBlock, relayCalls, requesterOf, requesterPermits, taskReminder } from "./forge-agents";
+import { FORGE_STATUS_TOOL, RELAY_PREFIX, REQUESTER_KEY, type Requester, argumentsDigest, forgeContextBlock, relayCalls, requesterOf, requesterPermits, taskReminder } from "./forge-agents";
 
 export const THREAD_TOOLS = ["noli_thread_get", "noli_thread_finish", "noli_thread_read", "noli_thread_open", "noli_attach_file", "noli_forge_resource", FORGE_READ_TOOL, FORGE_STATUS_TOOL, ...FORGE_WRITE_TOOLS] as const;
 const INSTRUCTION = "Authenticated Noli current-thread control is available. Read skill://noli before requesting deferred settle/archive; scheduled is not completed.";
@@ -37,15 +37,24 @@ export function installThreadControl(pi: ExtensionAPI, authenticatedGeneration: 
 	const sessionId = (ctx: ExtensionContext): string => ctx.sessionManager.getSessionId();
 	/** Require current socket authentication and SDK provenance for each requested tool. */
 	/**
-	 * The caller: a relayed subagent recorded out of band for this exact call, tool, root
-	 * session and authentication generation; otherwise OMP's runtime identity. A relay
-	 * entry that does not match is unattributable (null) and fails closed.
+	 * Admission's caller: a relayed subagent recorded out of band for this exact call ID,
+	 * tool, arguments, root session and authentication generation; otherwise OMP's runtime
+	 * identity. The first admission claims the relay entry, so a replayed relay ID (with
+	 * the same or other arguments) is unattributable (null) and fails closed.
 	 */
-	const callerOf = (toolCallId: string, toolName: string, ctx: ExtensionContext): Requester | null | undefined => {
+	const admitCaller = (toolCallId: string, toolName: string, input: unknown, ctx: ExtensionContext): Requester | null | undefined => {
 		const relayed = relayCalls.get(toolCallId);
-		if (!relayed) return requesterOf(ctx);
-		return ctx.agent.kind === "main" && relayed.toolName === toolName && relayed.sessionId === sessionId(ctx)
-			&& relayed.generation === authenticatedGeneration(sessionId(ctx)) ? relayed.requester : null;
+		if (!relayed) return toolCallId.startsWith(RELAY_PREFIX) ? null : requesterOf(ctx);
+		if (relayed.claimed || ctx.agent.kind !== "main" || relayed.toolName !== toolName || relayed.sessionId !== sessionId(ctx)
+			|| relayed.generation !== authenticatedGeneration(sessionId(ctx)) || relayed.arguments !== argumentsDigest(input)) return null;
+		relayed.claimed = true;
+		return relayed.requester;
+	};
+	/** Completion's caller: the claimed relay entry for this ID, else OMP's runtime identity. */
+	const completedCaller = (toolCallId: string, ctx: ExtensionContext): Requester | null | undefined => {
+		const relayed = relayCalls.get(toolCallId);
+		if (relayed) return relayed.claimed ? relayed.requester : null;
+		return toolCallId.startsWith(RELAY_PREFIX) ? null : requesterOf(ctx);
 	};
 	const available = (ctx: ExtensionContext, name?: string): boolean => authenticatedGeneration(sessionId(ctx)) !== undefined &&
 		(name ? [name] : ["noli_thread_get", "noli_thread_finish"]).every(name =>
@@ -59,7 +68,7 @@ export function installThreadControl(pi: ExtensionAPI, authenticatedGeneration: 
 	pi.on("tool_call", (event, ctx) => {
 		if (!THREAD_TOOLS.some(name => name === event.toolName)) return;
 		// The advisor runs in this session's runner; it reaches forge reads only, as itself.
-		const requester = callerOf(event.toolCallId, event.toolName, ctx);
+		const requester = admitCaller(event.toolCallId, event.toolName, event.input, ctx);
 		if (requester === null || (requester && !requesterPermits(event.toolName, requester))) {
 			return { block: true, reason: requester?.kind === "advisor" ? "The advisor is read-only; return Noli forge writes to the main agent" : "Noli thread control is restricted to the owning session's main agent" };
 		}
@@ -112,7 +121,7 @@ export function installThreadControl(pi: ExtensionAPI, authenticatedGeneration: 
 		if (matchingInvocation) calls.delete(event.toolCallId);
 		const forgeRead = event.toolName === "noli_forge_resource" || event.toolName === FORGE_READ_TOOL || event.toolName === FORGE_STATUS_TOOL;
 		const forgeWrite = FORGE_WRITE_TOOLS.some(name => name === event.toolName);
-		if ((forgeRead || forgeWrite || !event.isError) && (!matchingInvocation || owner?.requester !== callerKey(callerOf(event.toolCallId, event.toolName, ctx)) || owner?.sessionId !== sessionId(ctx) || owner.generation !== authenticatedGeneration(sessionId(ctx)) || !available(ctx, event.toolName))) {
+		if ((forgeRead || forgeWrite || !event.isError) && (!matchingInvocation || owner?.requester !== callerKey(completedCaller(event.toolCallId, ctx)) || owner?.sessionId !== sessionId(ctx) || owner.generation !== authenticatedGeneration(sessionId(ctx)) || !available(ctx, event.toolName))) {
 			if (forgeRead) return { content: [{ type: "text", text: "Forge resource result lost its authenticated owning session; discard this stale read and request a fresh authorized read if needed." }], details: {}, isError: true };
 			return { content: [{ type: "text", text: "Noli control acknowledgement lost its authenticated session; outcome unknown. The operation may already be persisted. Do not retry automatically; inspect the owning conversation before retrying." }], details: {}, isError: true };
 		}

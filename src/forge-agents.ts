@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { FORGE_READ_TOOL } from "./forge-read-tools";
@@ -20,8 +21,16 @@ export type Requester = { kind: "child"; agent_id: string } | { kind: "advisor" 
  * call ID, records the requester here and executes the root's genuine (wrapped) host
  * tool with that ID; the root guard reads the requester from here, never from input.
  */
-export interface RelayCall { toolName: string; sessionId: string; generation: number; requester: Requester }
+export interface RelayCall {
+	toolName: string; sessionId: string; generation: number; requester: Requester;
+	/** SHA-256 of the exact arguments the relay forwarded; other arguments are rejected. */
+	arguments: string;
+	/** Set by the root guard's first admission. A claimed entry only attributes completion. */
+	claimed: boolean;
+}
+export const RELAY_PREFIX = "noli-relay:";
 export const relayCalls = new Map<string, RelayCall>();
+export const argumentsDigest = (input: unknown): string => createHash("sha256").update(JSON.stringify(input)).digest("hex");
 
 /**
  * The calling agent, from OMP's runtime identity rather than tool input. OMP names

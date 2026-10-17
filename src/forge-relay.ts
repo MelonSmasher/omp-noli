@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { FORGE_READ_TOOL, forgeReadArguments } from "./forge-read-tools";
 import { FORGE_WRITE_TOOLS, forgeWriteAdmission, forgeWriteArguments, forgeWriteStatusArguments } from "./forge-write-tools";
-import { FORGE_STATUS_TOOL, RELAYED_TOOLS, REQUESTER_KEY, forgeContextBlock, relayCalls, requesterOf, requesterPermits, taskReminder } from "./forge-agents";
+import { FORGE_STATUS_TOOL, RELAYED_TOOLS, RELAY_PREFIX, REQUESTER_KEY, argumentsDigest, forgeContextBlock, relayCalls, requesterOf, requesterPermits, taskReminder } from "./forge-agents";
 import { FORGE_CLI_INSTRUCTION, forgeArguments } from "./thread-control";
 
 /** What a subagent needs from its root session's Noli host tools. */
@@ -65,8 +65,8 @@ export function installForgeRelay(pi: ExtensionAPI, dir: string | undefined): vo
 				const host = bound.tool(name);
 				if (generation === undefined || !host) throw new Error("Authenticated Noli forge access is unavailable for the parent session.");
 				// The root guard attributes this call from the out-of-band entry, not from input.
-				const relayId = `noli-relay:${crypto.randomUUID()}`;
-				relayCalls.set(relayId, { toolName: name, sessionId: bound.sessionId, generation, requester });
+				const relayId = `${RELAY_PREFIX}${crypto.randomUUID()}`;
+				relayCalls.set(relayId, { toolName: name, sessionId: bound.sessionId, generation, requester, arguments: argumentsDigest(input), claimed: false });
 				let result: Awaited<ReturnType<HostTool["execute"]>>;
 				try { result = await host.execute(relayId, input, signal, onUpdate); }
 				finally { relayCalls.delete(relayId); }

@@ -121,15 +121,19 @@ describe("#240 subagent relay through the SDK's real host-tool wrapper", () => {
 			emitToolResult: async (event: ToolResultEvent) => result(event, main),
 		};
 		const frames: RpcHostToolCallRequest[] = [];
+		// While held, Noli's replies wait so a call stays in flight.
+		const pending: (() => void)[] = [];
+		let hold = false;
 		const bridge = new RpcHostToolBridge(frame => {
 			if (frame.type !== "host_tool_call") return;
 			frames.push(frame);
 			const details = frame.toolName === "noli_forge_write_v1" ? { status: "pending_approval", operation_id: "op" } : undefined;
-			queueMicrotask(() => bridge.handleResult({ type: "host_tool_result", id: frame.id, result: { content: [{ type: "text", text: "{}" }], details } }));
+			const reply = () => bridge.handleResult({ type: "host_tool_result", id: frame.id, result: { content: [{ type: "text", text: "{}" }], details } });
+			if (hold) pending.push(reply); else queueMicrotask(reply);
 		});
 		const wrapped = new Map(bridge.setTools(FORGE_TOOLS.map(name => ({ name, label: name, description: name, parameters: { type: "object" } })))
 			.map(tool => [tool.name, new ExtensionToolWrapper(tool, runner as never)]));
-		return { frames, tool: (name: string) => wrapped.get(name) as unknown as { description: string; parameters: unknown; execute(id: string, params: Record<string, unknown>, signal?: AbortSignal, onUpdate?: unknown): Promise<{ content: unknown[]; details?: unknown }> } | undefined, sessionId };
+		return { frames, hold: (value: boolean) => { hold = value; }, release: () => { for (const reply of pending.splice(0)) reply(); }, tool: (name: string) => wrapped.get(name) as unknown as { description: string; parameters: unknown; execute(id: string, params: Record<string, unknown>, signal?: AbortSignal, onUpdate?: unknown): Promise<{ content: unknown[]; details?: unknown }> } | undefined, sessionId };
 	}
 	function child(dir: string) {
 		const tools = new Map<string, { execute(id: string, params: unknown, signal: undefined, update: undefined, ctx: ExtensionContext): Promise<unknown> }>();
@@ -162,6 +166,33 @@ describe("#240 subagent relay through the SDK's real host-tool wrapper", () => {
 		await expect(c.run("noli_forge_write_v1", { payload: { kind: "merge", number: "1" } }, "advisor")).rejects.toThrow("read-only");
 		await expect(parent.tool("noli_forge_status")!.execute("model-call", { noli_requester: child0 })).rejects.toThrow();
 		expect(parent.frames.length).toBe(3);
+		releaseForgeRoot(dir);
+	});
+
+	test("a relay ID is single-use: replaying it while the call is in flight is rejected and the original completes", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "noli-forge-"));
+		const generation = { value: 1 as number | undefined };
+		const parent = rootSession("root-session", generation);
+		bind(dir, parent, generation);
+		const c = child(dir);
+		parent.hold(true);
+		const original = c.run("noli_forge_read_v1", read);
+		for (let i = 0; i < 10 && parent.frames.length === 0; i++) await Bun.sleep(1);
+		expect(parent.frames.length).toBe(1);
+		const relayId = parent.frames[0]!.toolCallId;
+		expect(relayId.startsWith("noli-relay:")).toBe(true);
+		const changed = { action: "read", read: { resource: "issues", request: {} } };
+		for (const args of [changed, read]) {
+			await expect(parent.tool("noli_forge_read_v1")!.execute(relayId, args)).rejects.toThrow("restricted to the owning session's main agent");
+		}
+		// An unknown relay-shaped ID is not attributed to the main agent either.
+		await expect(parent.tool("noli_forge_status")!.execute("noli-relay:forged", {})).rejects.toThrow();
+		expect(parent.frames.length).toBe(1);
+		parent.release();
+		parent.hold(false);
+		const result = await original as { content: { text: string }[] };
+		expect(result.content[0]!.text).toBe("{}");
+		expect(parent.frames[0]!.arguments).toEqual({ ...read, noli_requester: { kind: "child", agent_id: "0-Explore" } });
 		releaseForgeRoot(dir);
 	});
 
