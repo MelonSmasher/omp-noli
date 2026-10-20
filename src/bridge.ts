@@ -1,7 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import type { Socket, SocketListener } from "bun";
+import { ensurePrivateDirectory, listenPipe } from "./windows-native";
+import { windowsJoin } from "./windows-security";
 import type { GatewayCredential, GatewayProviders } from "./gateway";
 import {
 	type AgentOutputParams,
@@ -26,7 +27,10 @@ import {
 	type WorkResult,
 } from "./protocol";
 
-/** Transport: newline-delimited JSON over a private Unix socket. Wire types live in ./protocol. */
+/**
+ * Transport: newline-delimited JSON over a private Unix socket, or on Windows over the named
+ * pipe `noli_platform::ipc` derives from the same path (./windows-native). Wire types live in ./protocol.
+ */
 const MAX_FRAME_BYTES = 1024 * 1024;
 const MAX_PREAUTH_BYTES = 4096;
 const MAX_TEXT_BYTES = 256 * 1024;
@@ -92,6 +96,14 @@ interface ConnectionState {
 	installingCredential?: boolean;
 }
 
+/** The part of Bun's Socket the bridge uses; Windows pipe connections provide the same. */
+interface BridgeSocket {
+	data: ConnectionState;
+	write(bytes: Buffer): number;
+	end(): void;
+	terminate(): void;
+}
+
 /** Optional host policies require an explicit bootstrap request, not an existing SDK registration. */
 function clientCapabilities(capabilities: Capabilities, hostTools = false): Omit<Capabilities, "host.attach_file" | "host.forge_resource" | "host.forge_read" | "host.forge_write"> | Capabilities {
 	if (hostTools) return capabilities;
@@ -128,6 +140,8 @@ function tokenMatches(expected: string, supplied: unknown): boolean {
 }
 
 function ensurePrivateDir(dir: string): void {
+	// Windows reports mode 0666 for everything; privacy there is the owner and DACL, as Noli sets them.
+	if (process.platform === "win32") { ensurePrivateDirectory(dir); return; }
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const stat = lstatSync(dir);
 	if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`bridge dir ${dir} is not a real directory`);
@@ -154,21 +168,23 @@ function optionalString(params: Params, key: string): string | undefined {
 export function startBridge(options: BridgeOptions): Bridge {
 	const { host, token } = options;
 	ensurePrivateDir(options.dir);
-	const socketPath = join(options.dir, `omp-${process.pid}.sock`);
+	const windows = process.platform === "win32";
+	// Noli names the endpoint with Rust's Path::join, and on Windows the pipe name hashes that exact string.
+	const socketPath = windows ? windowsJoin(options.dir, `omp-${process.pid}.sock`) : join(options.dir, `omp-${process.pid}.sock`);
 	// Refuse collisions rather than unlinking an existing endpoint we do not own.
 
-	const sockets = new Set<Socket<ConnectionState>>();
+	const sockets = new Set<BridgeSocket>();
 	const turnsInFlight = new Set<string>();
     let bootstrapAvailable = true;
     let bindingSequence = 0;
 	let authenticationSequence = 0;
 
-	const flush = (socket: Socket<ConnectionState>): void => {
+	const flush = (socket: BridgeSocket): void => {
 		if (socket.data.closed || !socket.data.outbound.length) return;
 		const written = socket.write(socket.data.outbound);
 		socket.data.outbound = socket.data.outbound.subarray(written);
 	};
-	const send = (socket: Socket<ConnectionState>, frame: ServerFrame | Buffer): void => {
+	const send = (socket: BridgeSocket, frame: ServerFrame | Buffer): void => {
 		if (socket.data.closed) return;
 		const bytes = Buffer.isBuffer(frame) ? frame : Buffer.from(`${JSON.stringify(frame)}\n`);
 		if (socket.data.outbound.length + bytes.length > 8 * MAX_FRAME_BYTES) {
@@ -179,7 +195,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 		flush(socket);
 	};
 	// Node timers cannot represent delays beyond 2^31-1; re-arm against the absolute deadline.
-	const scheduleCredentialTimer = (socket: Socket<ConnectionState>, field: "renewal" | "expiry", deadline: number, action: () => void): void => {
+	const scheduleCredentialTimer = (socket: BridgeSocket, field: "renewal" | "expiry", deadline: number, action: () => void): void => {
 		const tick = (): void => {
 			const remaining = deadline - Date.now();
 			if (remaining <= 0) { action(); return; }
@@ -188,7 +204,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 		};
 		tick();
 	};
-	const revoke = (socket: Socket<ConnectionState>): void => {
+	const revoke = (socket: BridgeSocket): void => {
 		socket.data.authenticationGeneration = ++authenticationSequence;
 		clearTimeout(socket.data.renewal);
 		clearTimeout(socket.data.expiry);
@@ -203,7 +219,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 		socket.data.installingCredential = false;
 		options.gateway?.revoke();
 	};
-	const bind = (socket: Socket<ConnectionState>): Promise<void> => {
+	const bind = (socket: BridgeSocket): Promise<void> => {
 		if (!options.gateway) return Promise.resolve();
 		if (socket.data.gatewayReply || socket.data.installingCredential) return socket.data.gatewayReady!;
 		clearTimeout(socket.data.renewal);
@@ -359,7 +375,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 		}
 	};
 
-	const handleFrame = async (socket: Socket<ConnectionState>, line: string): Promise<void> => {
+	const handleFrame = async (socket: BridgeSocket, line: string): Promise<void> => {
 		if (socket.data.closed) return;
 		/** Before authentication, any malformed frame ends the connection, same as a failed hello. */
 		const closeIfUnauthed = (): void => {
@@ -472,50 +488,54 @@ export function startBridge(options: BridgeOptions): Bridge {
 		}
 	});
 
-	const listener: SocketListener<ConnectionState> = Bun.listen<ConnectionState>({
-		unix: socketPath,
-		socket: {
-			open(socket) {
-				socket.data = { buffer: Buffer.alloc(0), outbound: Buffer.alloc(0), authed: false, closed: false };
-				sockets.add(socket);
-			},
-			drain: flush,
-			data(socket, chunk) {
-				const state = socket.data;
-				state.buffer = Buffer.concat([state.buffer, chunk]);
-				for (;;) {
-					const newline = state.buffer.indexOf(0x0a);
-					if (newline === -1) break;
-					const limit = state.authed ? MAX_FRAME_BYTES : MAX_PREAUTH_BYTES;
-					if (newline > limit) {
-						send(socket, { type: "response", id: null, ok: false, error: { code: "frame_too_large", message: `frame exceeds ${limit} bytes` } });
-						socket.end();
-						return;
-					}
-					const line = state.buffer.subarray(0, newline).toString("utf8");
-					state.buffer = state.buffer.subarray(newline + 1);
-					if (line.trim().length > 0) void handleFrame(socket, line);
-					if (state.closed) return;
-				}
+	const handlers = {
+		open(socket: BridgeSocket) {
+			socket.data = { buffer: Buffer.alloc(0), outbound: Buffer.alloc(0), authed: false, closed: false };
+			sockets.add(socket);
+		},
+		drain: flush,
+		data(socket: BridgeSocket, chunk: Buffer) {
+			const state = socket.data;
+			state.buffer = Buffer.concat([state.buffer, chunk]);
+			for (;;) {
+				const newline = state.buffer.indexOf(0x0a);
+				if (newline === -1) break;
 				const limit = state.authed ? MAX_FRAME_BYTES : MAX_PREAUTH_BYTES;
-				if (state.buffer.length > limit) {
+				if (newline > limit) {
 					send(socket, { type: "response", id: null, ok: false, error: { code: "frame_too_large", message: `frame exceeds ${limit} bytes` } });
 					socket.end();
+					return;
 				}
-			},
-			close(socket) {
-				socket.data.closed = true;
-                if (socket.data.authed) revoke(socket);
-				sockets.delete(socket);
-			},
-			error(socket) {
-				socket.data.closed = true;
-                if (socket.data.authed) revoke(socket);
-				sockets.delete(socket);
-			},
+				const line = state.buffer.subarray(0, newline).toString("utf8");
+				state.buffer = state.buffer.subarray(newline + 1);
+				if (line.trim().length > 0) void handleFrame(socket, line);
+				if (state.closed) return;
+			}
+			const limit = state.authed ? MAX_FRAME_BYTES : MAX_PREAUTH_BYTES;
+			if (state.buffer.length > limit) {
+				send(socket, { type: "response", id: null, ok: false, error: { code: "frame_too_large", message: `frame exceeds ${limit} bytes` } });
+				socket.end();
+			}
 		},
-	});
-	chmodSync(socketPath, 0o600);
+		close(socket: BridgeSocket) {
+			socket.data.closed = true;
+			if (socket.data.authed) revoke(socket);
+			sockets.delete(socket);
+		},
+		error(socket: BridgeSocket) {
+			socket.data.closed = true;
+			if (socket.data.authed) revoke(socket);
+			sockets.delete(socket);
+		},
+	};
+	const listener = windows
+		? listenPipe<ConnectionState>(socketPath, handlers, {
+			// The pipe's DACL already admits only this user; a client that still runs as someone else is told why.
+			refusal: message => Buffer.from(`${JSON.stringify({ type: "response", id: null, ok: false, error: { code: "unauthorized", message } } satisfies ServerFrame)}\n`),
+			failed: error => console.error(`omp-noli: the Noli bridge pipe stopped accepting connections: ${error.message}`),
+		})
+		: Bun.listen<ConnectionState>({ unix: socketPath, socket: handlers });
+	if (!windows) chmodSync(socketPath, 0o600);
 
 	return {
 		socketPath,
@@ -542,6 +562,8 @@ export function startBridge(options: BridgeOptions): Bridge {
             for (const socket of sockets) { revoke(socket); socket.end(); }
 			sockets.clear();
 			listener.stop(true);
+			// The pipe listener removes its key file itself, and only while it still holds its own key.
+			if (windows) return;
 			try {
 				unlinkSync(socketPath);
 			} catch {

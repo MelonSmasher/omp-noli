@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Socket } from "bun";
+import { connectPipe, currentUser, handleSecurity, pathSecurity } from "../src/windows-native";
+import { privacyFault } from "../src/windows-security";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult, ToolResultEvent, ToolResultEventResult } from "@oh-my-pi/pi-coding-agent";
 import { RpcHostToolBridge } from "@oh-my-pi/pi-coding-agent/modes/rpc/host-tools";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, RpcFrameEncoder } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-frame";
@@ -157,7 +158,9 @@ class Client {
 	#queue: Frame[] = [];
 	readonly closedPromise: Promise<void>;
 	#markClosed!: () => void;
-	#socket: Socket<undefined> | undefined;
+	#socket: { write(bytes: Buffer): number; end(): void } | undefined;
+	/** The pipe handle on Windows, for security checks. */
+	pipe?: number;
 
 	private constructor() {
 		const { promise, resolve } = Promise.withResolvers<void>();
@@ -167,14 +170,19 @@ class Client {
 
 	static async connect(path: string): Promise<Client> {
 		const client = new Client();
-		client.#socket = await Bun.connect<undefined>({
-			unix: path,
-			socket: {
-				data: (_s, chunk) => client.#feed(chunk.toString()),
-				drain: () => client.#flush(),
-				close: () => client.#markClosed(),
-			},
-		});
+		const socket = {
+			data: (_s: unknown, chunk: Buffer) => client.#feed(chunk.toString()),
+			drain: () => client.#flush(),
+			close: () => client.#markClosed(),
+		};
+		if (process.platform === "win32") {
+			// noli_platform's client contract: the key file names the pipe, whose owner must be this user.
+			const pipe = await connectPipe<undefined>(path, { ...socket, open() {} });
+			client.#socket = pipe;
+			client.pipe = pipe.handle;
+		} else {
+			client.#socket = await Bun.connect<undefined>({ unix: path, socket });
+		}
 		return client;
 	}
 
@@ -521,19 +529,48 @@ describe("authentication", () => {
 		},
 	);
 
-	test("socket and directory are private to the owner", () => {
-		expect(statSync(bridge.socketPath).mode & 0o077).toBe(0);
-		expect(statSync(dir).mode & 0o077).toBe(0);
+	test("socket and directory are private to the owner", async () => {
+		if (process.platform !== "win32") {
+			expect(statSync(bridge.socketPath).mode & 0o077).toBe(0);
+			expect(statSync(dir).mode & 0o077).toBe(0);
+			return;
+		}
+		// The key file and directory pass Noli's own rule; the pipe is owned by and grants only this user.
+		expect(privacyFault(pathSecurity(bridge.socketPath), currentUser())).toBeUndefined();
+		expect(privacyFault(pathSecurity(dir), currentUser())).toBeUndefined();
+		const client = await Client.connect(bridge.socketPath);
+		const pipe = handleSecurity(client.pipe!, true);
+		expect(pipe.owner).toBe(currentUser().user);
+		expect(privacyFault(pipe, { user: currentUser().user, defaultOwner: currentUser().user })).toBeUndefined();
+		await client.disconnect();
 	});
 
 	test("refuses a group/other-accessible directory", () => {
 		const loose = mkdtempSync(join(tmpdir(), "noli-loose-"));
 		try {
-			chmodSync(loose, 0o755);
+			if (process.platform === "win32") {
+				const grant = Bun.spawnSync(["icacls", loose, "/grant", "*S-1-1-0:(R)"]);
+				expect(grant.exitCode).toBe(0);
+			} else chmodSync(loose, 0o755);
 			expect(() => startBridge({ dir: loose, token: TOKEN, host: h.host })).toThrow(/must not be accessible/);
 		} finally {
 			rmSync(loose, { recursive: true, force: true });
 		}
+	});
+
+	test("large frames cross the transport intact in both directions", async () => {
+		h.agents = [view({})];
+		const client = await authed();
+		const inbound = "s".repeat(200 * 1024);
+		expect((await call(client, "agents.steer", { agentId: "0-Child", text: inbound })).ok).toBe(true);
+		expect(h.calls).toContain(`steer:0-Child:${inbound}`);
+		const original = h.host.output;
+		const outbound = "o".repeat(900 * 1024);
+		h.host.output = async ({ agentId }) => ({ agentId, text: outbound, spans: [], nextOffset: null, revision: "sha256:big" });
+		try {
+			const reply = await call(client, "agents.output", { agentId: "0-Child" });
+			expect(reply.result).toMatchObject({ text: outbound, revision: "sha256:big" });
+		} finally { h.host.output = original; }
 	});
 });
 
