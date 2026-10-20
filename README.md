@@ -18,6 +18,15 @@ For managed Gateway sessions, Noli writes secret-free `gateway-providers.json` a
 
 `test/gateway.test.ts` exercises the pinned real SDK registry, availability and auth storage before bind, after two keys and after revoke, and checks all temporary profile files for credential bytes. `test/review-gateway.test.ts` permanently covers legacy re-hello, uninterrupted renewal, real streaming auth retries, native lifecycle rebinding and process-launched bootstrap isolation with implicit Bun child environment inheritance. Bridge fixtures cover one-use hello, bind acknowledgement, stale-session rejection and rebind/revoke. The Noli repository owns the mock-upstream managed-process security smoke and actual Gateway 429 classifier fixture.
 
+## v0.9.6 Windows
+
+- The bridge runs on Windows. It speaks the same protocol 1 frames over a named pipe that follows Noli's `noli_platform::ipc` contract, and it checks Windows owner and DACL security where Unix checks mode bits. macOS and Linux behaviour is unchanged.
+- Endpoint. At `<dir>\omp-<pid>.sock` the bridge creates a new private key file (it refuses if one exists), holding 32 random lowercase hex digits. It then creates `\\.\pipe\noli-<sha256(path)>-<key>`, where the hash covers the path's UTF-8 bytes exactly as Noli spelled them. The pipe is owned by the user's SID and its protected DACL grants only that SID. It is created with `FILE_FLAG_FIRST_PIPE_INSTANCE`, so a squatted name fails, and with `PIPE_REJECT_REMOTE_CLIENTS`. The key is written only after the pipe exists. On shutdown the bridge deletes the key file only if it still holds its own key.
+- Peers. Each connected client must run as the bridge's user, which the bridge checks through `GetNamedPipeClientProcessId` and the client's token. A client that runs as anyone else gets an `unauthorized` response frame and is disconnected. Noli's client opens the pipe with identification-only SQOS and requires the pipe's owner to be its own SID before it sends anything.
+- Bootstrap file and bridge directory. Both pass when they pass Noli's own rule (`fs::is_private` and `is_owned_by_current_user`). The owner must be the user, or Administrators for an elevated process. No NULL DACL is allowed, and no allow ACE that can't be attributed to a SID. Every allow ACE that applies to the object must name the user, SYSTEM or Administrators. The bootstrap file must also be a regular file with one name and 1 to 4096 bytes, and not a link. The bridge reads every check from the handle it opens without following links, then deletes the file through that same handle. A missing bridge directory is created with Noli's inheritable owner-only DACL.
+- Implementation. Bun can't put a DACL on a pipe or set the pipe flags above, so `src/windows-native.ts` calls kernel32, advapi32 and ntdll through `bun:ffi`. Pipe handles are overlapped. Reads, writes and listens use `NtReadFile`, `NtWriteFile` and `NtFsControlFile`, which return their NTSTATUS directly, so no result depends on `GetLastError` surviving the JS engine. One worker (`src/windows-waiter.ts`) blocks in `WaitForMultipleObjects` on the pending operations' events and posts each completion to the main thread. Nothing polls. The worker is unreferenced, so it never keeps OMP alive.
+- Protocol version stays 1, and the schema is unchanged. Official OMP 18.8.2+ and Bun 1.4.2+ are unchanged.
+
 ## v0.9.5 forge tools for subagents and forge context
 
 - `host.forge_resource`, `host.forge_read` and `host.forge_write` advertise `api: "session-v2"`. The matching Noli server registers `noli_forge_status` with `noli_forge_read_v1` and requires `session-v2`; a plugin without the subagent relay keeps its forge tools off.
@@ -143,7 +152,7 @@ Verification commands (from this checkout after `bun install`, with Bun 1.4.2+ a
 The smoke's Hindsight session intentionally does not use `restrictToolNames`: official OMP disables memory lifecycle startup under that policy. It enables autolearn only in isolated settings to use OMP's awaited startup path; no prompt or agent-stop event occurs, so no model capture runs.
 
 
-The directory is created with mode 0700. It is rejected if it is a symlink, isn't owned by the current user, or is accessible to group/other. The socket is `<dir>/omp-<pid>.sock`, mode 0600. The bridge never removes an existing endpoint at that path. On shutdown it closes clients, removes the socket and unsubscribes its listeners.
+The directory is created with mode 0700. It is rejected if it is a symlink, isn't owned by the current user, or is accessible to group/other. The socket is `<dir>/omp-<pid>.sock`, mode 0600. The bridge never removes an existing endpoint at that path. On shutdown it closes clients, removes the socket and unsubscribes its listeners. Windows applies the same rules through owners and DACLs, and serves a named pipe published by a key file at that path (see v0.9.6).
 
 Only the top-level session starts the server; child sessions never open listeners. All runtime objects come from OMP itself: the host-injected `pi.pi` exports, the shared extension event bus, and the host's own built-in tool instances for the internal paths described below. Importing a second copy of OMP's runtime would control a different agent registry, so package dependencies are used for types only.
 
@@ -301,7 +310,7 @@ Each disabled non-memory capability is listed with its reason code and detail.
 
 ## Protocol 1
 
-UTF-8 newline-delimited JSON over a Unix domain socket. `protocol/noli-bridge.schema.json` is the authoritative definition of every frame the bridge sends; this section summarizes it.
+UTF-8 newline-delimited JSON over a Unix domain socket, or on Windows over the named pipe described in v0.9.6. `protocol/noli-bridge.schema.json` is the authoritative definition of every frame the bridge sends; this section summarizes it.
 
 Requests have `id`, `method`, and optional `params`. The first request must be `hello`, with the shared token in `params.token`. A successful `hello` returns `{ protocol: 1, sessionId, pid, capabilities }`. A failed `hello` closes the connection, and so does any malformed frame (invalid JSON, or JSON that isn't an object) sent before a successful `hello`.
 
@@ -431,7 +440,7 @@ None of these fail the request. The bridge uses OMP's own per-root scan latch on
 - **Definitions of live children.** OMP records a child's definition on the registry only when it reloads the child from disk. For children spawned while the plugin is loaded, the bridge takes the name from OMP's `task:subagent:lifecycle` event on the extension event bus. OMP registers the child just before that event, so the first `agent.changed` for a new child has `definition: null`, and a second one follows with the name filled in. The name is tied to that specific registry entry, so it's kept across session switches (a branch or tree navigation doesn't stop running children), and a child that reuses an ID gets a new entry and never inherits the old name. A child spawned before the plugin loaded has `definition: null` until OMP reloads it from disk; pass `params.agent` for it.
 - **Same-process rescan.** OMP scans each root's persisted children once per process. A transcript that becomes complete later in the same process (without its spawn registering it live) stays `pending` until the next process resumes that root.
 - **Out of scope for this channel.** Steer and follow-up only queue messages; use native RPC events and subagent subscriptions to watch activity and completion. `agents.output` provides bounded child display history, not root transcript replay, extension UI rendering, advisor configuration or MCP OAuth.
-- **Platform.** The bridge listens on a Unix domain socket and secures it with Unix file permissions, so it runs on macOS and Linux only. Windows needs a different transport, and it isn't yet known which API works there under Bun: Bun documents `Bun.listen` for TCP and Unix sockets only, and its named-pipe support has been demonstrated through `node:net`. `scripts/probe-transport.ts`, run by the manual `windows-probe` workflow, tests both APIs on Windows runners to settle this before any port.
+- **Windows test coverage.** On Windows, CI runs the transport and privacy suites (`windows-security`, `windows-pipe`, `bridge` and `review-gateway`), not all of `bun test`. Two other suites fail on Windows only while removing their temporary directory, because the pinned OMP SDK keeps session files open after `dispose()`. The forge-read smoke fixture compares a POSIX link spelling. The bridge-peer refusal path (a client running as another user) has no automated test, since the pipe's DACL already keeps such a client from opening it.
 
 ## Verification
 
@@ -451,7 +460,7 @@ None of these fail the request. The bridge uses OMP's own per-root scan latch on
 
 `bun run typecheck` checks against the pinned OMP types.
 
-CI (`.github/workflows/ci.yml`) runs `bun install --frozen-lockfile`, `bun run typecheck`, `bun run schema:check`, `bun run extension:check` and `bun test` on Ubuntu and macOS for pushes to `main` and pull requests. Generate evolving agent schema definitions from TypeScript with `bun run schema`; `schema:check` rejects drift. CI does not run the installed-binary smoke below. The separate manual Windows transport probe remains experimental; the bridge is Unix-only.
+CI (`.github/workflows/ci.yml`) runs `bun install --frozen-lockfile`, `bun run typecheck`, `bun run schema:check`, `bun run extension:check` and `bun test` on Ubuntu and macOS for pushes to `main` and pull requests. A Windows job runs the same checks with the transport and privacy suites listed under "Known boundaries". Generate evolving agent schema definitions from TypeScript with `bun run schema`; `schema:check` rejects drift. CI does not run the installed-binary smoke below.
 
 Historical v0.3.0 real-process verification ran the official OMP 18.4.5 binary with an isolated temporary home and a scripted local OpenAI-compatible endpoint (not a real model provider), validating every received frame against the schema:
 
