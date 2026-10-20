@@ -7,6 +7,7 @@ import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-in
 import * as zod from "@oh-my-pi/omptype/zod";
 import noli from "../src/index";
 import { connect, type Socket } from "node:net";
+import { endpointAddress } from "./endpoint";
 import type { HelloResult, ServerFrame } from "../src/protocol";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { installForgeRelay, releaseForgeRoot } from "../src/forge-relay";
@@ -34,7 +35,7 @@ test("review: non-gateway Noli launcher still starts the bridge using its existi
     await initializeExtensions(session, { reportSendError: (_action, error) => { throw error; }, reportRuntimeError: error => { throw new Error(error.error); } });
     expect(existsSync(join(dir, `omp-${process.pid}.sock`))).toBe(true);
     const hello = await new Promise<ServerFrame>((resolve, reject) => {
-      socket = connect(join(dir, `omp-${process.pid}.sock`));
+      socket = connect(endpointAddress(join(dir, `omp-${process.pid}.sock`)));
       socket.once("error", reject);
       socket.setTimeout(5_000, () => reject(new Error("legacy hello timed out")));
       let buffer = "";
@@ -133,7 +134,7 @@ test("review: stale root shutdown preserves the replacement bridge, host and for
     installForgeRelay({ on() {}, registerTool(definition: { name: string }) { names.push(definition.name); } } as unknown as ExtensionAPI, dir);
     expect(names).toEqual(["noli_forge_status"]);
     const hello = await new Promise<ServerFrame>((resolve, reject) => {
-      socket = connect(join(dir, `omp-${process.pid}.sock`));
+      socket = connect(endpointAddress(join(dir, `omp-${process.pid}.sock`)));
       socket.once("error", reject);
       socket.setTimeout(5_000, () => reject(new Error("replacement hello timed out")));
       let buffer = "";

@@ -8,6 +8,7 @@ import type { Socket } from "bun";
 
 import { z } from "@oh-my-pi/pi-coding-agent";
 import { assertValidFrame } from "./schema";
+import { endpointAddress } from "./endpoint";
 
 const responseSchema = z.object({ type: z.literal("response"), ok: z.boolean(), result: z.object({ cancelled: z.boolean().optional(), backend: z.string().optional(), count: z.number().optional(), stored: z.number().optional() }).passthrough().optional(), error: z.object({ code: z.string() }).passthrough().optional() }).passthrough();
 interface NativeResponse { type: "response"; ok: boolean; result?: { cancelled?: boolean; backend?: string; count?: number; stored?: number }; error?: { code: string } }
@@ -33,7 +34,7 @@ test("official extension tree event preserves authenticated same-session navigat
 		manager.appendMessage({ role: "user", content: "second", timestamp: Date.now() });
 		let buffer = "";
 		const pending: Array<(frame: NativeResponse) => void> = [];
-		socket = await Bun.connect({ unix: join(dir, `omp-${process.pid}.sock`), socket: { data(_socket, bytes) { buffer += bytes.toString(); for (;;) { const end = buffer.indexOf("\n"); if (end < 0) break; const parsed: unknown = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1); assertValidFrame(parsed); const response = responseSchema.safeParse(parsed); if (response.success) pending.shift()?.(response.data); } } } });
+		socket = await Bun.connect({ unix: endpointAddress(join(dir, `omp-${process.pid}.sock`)), socket: { data(_socket, bytes) { buffer += bytes.toString(); for (;;) { const end = buffer.indexOf("\n"); if (end < 0) break; const parsed: unknown = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1); assertValidFrame(parsed); const response = responseSchema.safeParse(parsed); if (response.success) pending.shift()?.(response.data); } } } });
 		const call = (method: string, params: Record<string, unknown>) => new Promise<NativeResponse>(resolve => { pending.push(resolve); socket!.write(`${JSON.stringify({ id: pending.length, method, params, sessionId: manager.getSessionId() })}\n`); });
 		expect(process.env.NOLI_BRIDGE_TOKEN_FILE).toBeUndefined();
 		expect(existsSync(tokenFile)).toBe(false);

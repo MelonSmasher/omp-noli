@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   check:
-    # -- Unix-only: the bridge listens on a Unix domain socket (README "Known boundaries").
+    # -- Unix: the bridge listens on a Unix domain socket secured by file modes.
     strategy:
       fail-fast: false
       matrix:
@@ -46,3 +46,30 @@ jobs:
       - run: bun run extension:check
 
       - run: bun test
+
+  windows:
+    # -- Windows: the bridge serves noli_platform's named-pipe contract through Bun FFI and checks
+    # -- owner-only DACLs instead of mode bits (README "Windows"). Runs the transport and privacy
+    # -- suites. The rest of `bun test` is not yet Windows-clean for reasons outside the bridge: the
+    # -- pinned OMP SDK keeps session files open after dispose (EBUSY when tests remove their temp
+    # -- dir), and the forge-read smoke fixture compares a POSIX link spelling.
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run typecheck
+
+      - run: bun run schema:check
+
+      - run: bun run extension:check
+
+      - run: bun test test/windows-security.test.ts test/windows-pipe.test.ts test/bridge.test.ts test/review-gateway.test.ts

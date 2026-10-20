@@ -6,6 +6,7 @@ import { installImagePublisher } from "./images";
 import { createOmpHost } from "./omp-host";
 import { installThreadControl } from "./thread-control";
 import { bindForgeRoot, installForgeRelay, releaseForgeRoot } from "./forge-relay";
+import { consumePrivateFile } from "./windows-native";
 import { registerGateway, rejoinGateway } from "./gateway";
 
 /** Set by the launcher; a directory and bootstrap input enable Bridge and Gateway setup. */
@@ -14,6 +15,8 @@ export const ENV_TOKEN_FILE = "NOLI_BRIDGE_TOKEN_FILE";
 
 /** The launch environment contains only a path; Bun children cannot inherit secret bytes. */
 function consumeBootstrap(path: string): string {
+	// Windows reports mode 0666 for every file; there the owner and DACL decide, checked through the opened handle.
+	if (process.platform === "win32") return consumePrivateFile(path);
 	const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
 	try {
 		const stat = fstatSync(fd);

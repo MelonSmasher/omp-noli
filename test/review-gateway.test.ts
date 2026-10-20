@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type Socket } from "node:net";
+import { endpointAddress } from "./endpoint";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -26,7 +27,7 @@ class Client {
   private queue: Frame[] = [];
   private waiters: Array<(frame: Frame) => void> = [];
   constructor(path: string) {
-    this.socket = connect(path);
+    this.socket = connect(endpointAddress(path));
     this.socket.on("data", bytes => {
       this.buffer += bytes.toString();
       for (;;) {
@@ -420,11 +421,19 @@ test("review: bootstrap files reject symlinks and non-private permissions", () =
   try {
     process.env.NOLI_BRIDGE_DIR = dir;
     writeFileSync(target, bootstrap, { mode: 0o600 });
-    symlinkSync(target, link);
-    process.env.NOLI_BRIDGE_TOKEN_FILE = link;
-    expect(() => noli(pi)).toThrow();
-    expect(existsSync(target)).toBe(true);
-    chmodSync(target, 0o644);
+    // Windows grants file symlinks only to elevated or developer-mode users; the link case needs one.
+    const linked = (() => {
+      try { symlinkSync(target, link); return true; }
+      catch (error) { if (process.platform === "win32" && error instanceof Error && "code" in error && error.code === "EPERM") return false; throw error; }
+    })();
+    if (linked) {
+      process.env.NOLI_BRIDGE_TOKEN_FILE = link;
+      expect(() => noli(pi)).toThrow();
+      expect(existsSync(target)).toBe(true);
+    }
+    // Shared with others: group/other mode bits on Unix, a grant to Everyone on Windows.
+    if (process.platform === "win32") expect(Bun.spawnSync(["icacls", target, "/grant", "*S-1-1-0:(R)"]).exitCode).toBe(0);
+    else chmodSync(target, 0o644);
     process.env.NOLI_BRIDGE_TOKEN_FILE = target;
     expect(() => noli(pi)).toThrow("Invalid Noli bootstrap file");
     expect(existsSync(target)).toBe(true);
