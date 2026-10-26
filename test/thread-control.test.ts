@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolCallEventResult, ToolResultEvent, ToolResultEventResult, BeforeAgentStartEvent, BeforeAgentStartEventResult } from "@oh-my-pi/pi-coding-agent";
-import { installThreadControl } from "../src/thread-control";
+import { forgeWatchArguments, installThreadControl } from "../src/thread-control";
 
 /** Capture guard hooks with independently mutable authentication, session and SDK tool state. */
 function harness() {
@@ -376,4 +376,57 @@ describe("reused SDK invocation ownership", () => {
 		expect(h.rawCall(h.event, h.ctx("sub"))?.block).toBe(true);
 		expect(h.rawResult({ ...h.reply, input: admitted.input! }, h.ctx())).toBeUndefined();
 	});
+});
+
+
+describe("native watch and model roles", () => {
+ test("SDK registration gates both tools and watch remains owning-main only", () => {
+  const h = harness();
+  for (const toolName of ["noli_forge_watch", "noli_model_roles"]) {
+   const input = toolName === "noli_forge_watch" ? { action: "list" } : {};
+   expect(h.call({ ...h.event, toolName, input }, h.ctx())?.block).toBe(true);
+  }
+  h.setTools(["noli_forge_watch", "noli_model_roles"]);
+  for (const input of [{ action: "list" }, { action: "stop", watch_id: "w" }, { action: "start", number: "12", until: "ready" }, { action: "start", git_ref: "topic", until: "green" }]) {
+   const event = { ...h.event, toolName: "noli_forge_watch", input };
+   expect(h.call(event, h.ctx())).toBeUndefined();
+   for (const kind of ["sub", "advisor"]) expect(h.call(event, h.ctx(kind))?.block).toBe(true);
+  }
+  for (const input of [{ action: "start", git_ref: "topic", until: "ready" }, { action: "start", number: "12", git_ref: "topic", until: "green" }, { action: "list", thread_id: "foreign" }]) expect(h.call({ ...h.event, toolName: "noli_forge_watch", input }, h.ctx())?.block).toBe(true);
+  expect(h.call({ ...h.event, toolName: "noli_model_roles", input: {} }, h.ctx())).toBeUndefined();
+  expect(h.call({ ...h.event, toolName: "noli_model_roles", input: { role: "main" } }, h.ctx())?.block).toBe(true);
+ });
+});
+
+test("forge read hook reports unsupported resources and unexpected fields precisely", () => {
+ const h = harness(); h.setTools(["noli_forge_read_v1"]);
+ const event = { ...h.event, toolName: "noli_forge_read_v1", input: { action: "read", read: { resource: "unknown_resource", request: {} } } };
+ expect(h.call(event, h.ctx())?.reason).toBe('Unsupported forge read resource: "unknown_resource"');
+ expect(h.call({ ...event, input: { ...event.input, caller: "main" } }, h.ctx())?.reason).toBe('Unexpected forge read field: "caller"');
+ for (const resource of ["metadata", "work_items", "ci_actions"]) expect(h.call({ ...event, input: { action: "read", read: { resource, request: {} } } }, h.ctx())).toBeUndefined();
+});
+
+
+test("watch selectors enforce bounded UTF-8 transport shapes", () => {
+ for (const watch_id of ["w", "é".repeat(128)]) expect(forgeWatchArguments({ action: "stop", watch_id })).toBe(true);
+ for (const watch_id of ["", "é".repeat(129), "w\n", "w\u0000"]) expect(forgeWatchArguments({ action: "stop", watch_id })).toBe(false);
+ for (const number of ["1", "9".repeat(40)]) expect(forgeWatchArguments({ action: "start", number, until: "ready" })).toBe(true);
+ for (const number of ["", "0", "01", "1.2", "-1", "1\n", "9".repeat(41), "１"]) expect(forgeWatchArguments({ action: "start", number, until: "ready" })).toBe(false);
+ for (const git_ref of ["refs/heads/topic", "é".repeat(512)]) expect(forgeWatchArguments({ action: "start", git_ref, until: "green" })).toBe(true);
+ for (const git_ref of ["", "é".repeat(513), "topic\r", "topic\u007f"]) expect(forgeWatchArguments({ action: "start", git_ref, until: "green" })).toBe(false);
+ const h = harness(); h.setTools(["noli_forge_watch"]);
+ expect(h.call({ ...h.event, toolName: "noli_forge_watch", input: { action: "start", git_ref: "x".repeat(1025), until: "green" } }, h.ctx())?.block).toBe(true);
+});
+
+test("stale model-role results name their tool and discard success and error details", () => {
+ for (const isError of [false, true]) {
+  const h = harness(); h.setTools(["noli_model_roles"]);
+  const event = { ...h.event, toolName: "noli_model_roles", input: {} };
+  expect(h.call(event, h.ctx())).toBeUndefined();
+  h.setAuth(false);
+  const result = h.result({ ...h.reply, ...event, type: "tool_result", isError, details: { private: "routes" } }, h.ctx());
+  expect(result?.isError).toBe(true);
+  expect(result?.details).toEqual({});
+  expect(result?.content).toEqual([{ type: "text", text: "noli_model_roles result lost its authenticated owning session; discard this stale read and request a fresh authorized read if needed." }]);
+ }
 });

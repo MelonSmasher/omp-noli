@@ -35,6 +35,8 @@ export const CAPABILITY_NAMES = [
 	"host.forge_resource",
 	"host.forge_read",
 	"host.forge_write",
+	"host.forge_watch",
+	"host.model_roles",
 	"tree.navigate",
 	"goal.budget",
 	"memory.status",
@@ -59,8 +61,8 @@ export const CAPABILITY_REASONS = [
 export type CapabilityReason = (typeof CAPABILITY_REASONS)[number];
 
 export type CapabilityState =
-	| { available: true; api: "public" | "internal" | "main-only-v1" | "main-only-v2" | "session-v2"; detail: string }
-	| { available: false; api: "public" | "internal" | "main-only-v1" | "main-only-v2" | "session-v2"; reason: CapabilityReason; detail: string };
+	| { available: true; api: "public" | "internal" | "main-only-v1" | "main-only-v2" | "session-v1" | "session-v2"; detail: string }
+	| { available: false; api: "public" | "internal" | "main-only-v1" | "main-only-v2" | "session-v1" | "session-v2"; reason: CapabilityReason; detail: string };
 
 export type Capabilities = Record<CapabilityName, CapabilityState>;
 

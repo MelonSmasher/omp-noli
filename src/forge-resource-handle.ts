@@ -1,3 +1,4 @@
+import { FORGE_RESOURCE_KINDS } from "./forge-schema-selectors";
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const only = (value: Record<string, unknown>, keys: readonly string[]): boolean => Object.keys(value).every(key => keys.includes(key));
 const decimal = (value: unknown): boolean => typeof value === "string" && /^[1-9][0-9]{0,39}$/.test(value);
@@ -8,7 +9,7 @@ const text = (value: unknown): boolean => typeof value === "string" && value.len
 export function forgeResourceHandle(handle: unknown): boolean {
 	if (!record(handle) || !only(handle, ["origin", "account", "repository", "kind", "resource", "web_url"])
 		|| !text(handle.origin) || !text(handle.account) || !text(handle.web_url)
-		|| typeof handle.kind !== "string" || !["repository", "issue", "comment", "review", "review_thread", "pipeline", "job", "release", "tag", "milestone", "label", "project_item"].includes(handle.kind)) return false;
+		|| typeof handle.kind !== "string" || !FORGE_RESOURCE_KINDS.includes(handle.kind)) return false;
 	const repository = handle.repository;
 	if (!record(repository)) return false;
 	if (repository.provider === "github") {
