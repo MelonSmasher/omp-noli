@@ -15,7 +15,7 @@ import { forgeWriteArguments } from "../src/forge-write-tools";
 import { taskReminder } from "../src/forge-agents";
 import { forgeReadArguments } from "../src/forge-read-tools";
 
-const FORGE_TOOLS = ["noli_forge_resource", "noli_forge_read_v1", "noli_forge_status", "noli_forge_write_v1", "noli_forge_write_status_v1"];
+const FORGE_TOOLS = ["noli_model_roles", "noli_forge_resource", "noli_forge_read_v1", "noli_forge_status", "noli_forge_write_v1", "noli_forge_write_status_v1"];
 const read = { action: "read", read: { resource: "release_files", request: {} } };
 
 function root(dir: string) {
@@ -185,12 +185,13 @@ describe("#240 subagent relay through the SDK's real host-tool wrapper", () => {
 			registerTool: (tool: { name: string }) => tools.set(tool.name, tool as never),
 			on(name: string, handler: unknown) { if (name === "before_agent_start") prompt = handler as typeof prompt; },
 		} as unknown as ExtensionAPI, dir);
-		const as = (id: string) => ({ agent: { kind: "sub", id }, sessionManager: { getSessionId: () => `child-${id}` } }) as unknown as ExtensionContext;
+		const as = (id: string, name: string) => ({ agent: { kind: "sub", id, name }, sessionManager: { getSessionId: () => `child-${id}` } }) as unknown as ExtensionContext;
 		return { tools,
-			run: (name: string, params: unknown, id = "0-Explore", callId = `model-${name}`) => tools.get(name)!.execute(callId, params, undefined, undefined, as(id)),
-			prompt: (systemPrompt = ["base"], id = "0-Explore") => {
+			run: (name: string, params: unknown, id = "0-Explore", callId = `model-${name}`, agent = "task") => tools.get(name)!.execute(callId, params, undefined, undefined, as(id, agent)),
+			/** OMP's before_agent_start: the first context that names the child's definition. */
+			prompt: (systemPrompt = ["base"], id = "0-Explore", agent = "task") => {
 				const event: BeforeAgentStartEvent = { type: "before_agent_start", prompt: "work", systemPrompt };
-				return prompt?.(event, as(id)) ?? { systemPrompt };
+				return prompt?.(event, as(id, agent)) ?? { systemPrompt };
 			},
 		};
 	}
@@ -203,22 +204,30 @@ describe("#240 subagent relay through the SDK's real host-tool wrapper", () => {
 		const parent = rootSession("root-session", generation);
 		bind(dir, parent, generation);
 		const c = child(dir);
+		expect(c.tools.has("noli_forge_watch")).toBe(false);
+		// Proposals wait for the child's definition name.
+		expect([...c.tools.keys()].sort()).toEqual(FORGE_TOOLS.filter(name => !name.startsWith("noli_forge_write")).sort());
+		c.prompt();
 		expect([...c.tools.keys()].sort()).toEqual([...FORGE_TOOLS].sort());
+		await c.run("noli_model_roles", {});
+		await c.run("noli_model_roles", {}, "advisor");
 		await c.run("noli_forge_status", {});
 		await c.run("noli_forge_read_v1", read);
 		await c.run("noli_forge_write_v1", { payload: { kind: "merge", number: "12" } });
 		const child0 = { kind: "child", agent_id: "0-Explore" };
 		expect(parent.frames.map(frame => [frame.toolName, frame.arguments])).toEqual([
+			["noli_model_roles", { noli_requester: child0 }],
+			["noli_model_roles", { noli_requester: { kind: "advisor" } }],
 			["noli_forge_status", { noli_requester: child0 }],
 			["noli_forge_read_v1", { ...read, noli_requester: child0 }],
 			["noli_forge_write_v1", { payload: { kind: "merge", number: "12" }, noli_requester: child0 }],
 		]);
 		// The relay ID is consumed; a model cannot reuse it or set the requester itself.
-		await expect(c.run("noli_forge_read_v1", { ...read, noli_requester: { kind: "child", agent_id: "1-Other" } })).rejects.toThrow("Invalid");
+		await expect(c.run("noli_forge_read_v1", { ...read, noli_requester: { kind: "child", agent_id: "1-Other" } })).rejects.toThrow("Unexpected forge read field: \"noli_requester\"");
 		await expect(c.run("noli_forge_status", { session: "other" })).rejects.toThrow("Invalid");
 		await expect(c.run("noli_forge_write_v1", { payload: { kind: "merge", number: "1" } }, "advisor")).rejects.toThrow("read-only");
 		await expect(parent.tool("noli_forge_status")!.execute("model-call", { noli_requester: child0 })).rejects.toThrow();
-		expect(parent.frames.length).toBe(3);
+		expect(parent.frames.length).toBe(5);
 		releaseForgeRoot(dir);
 	});
 
@@ -255,6 +264,7 @@ describe("#240 subagent relay through the SDK's real host-tool wrapper", () => {
 		const old = rootSession("old-parent", generation);
 		bind(dir, old, generation);
 		const c = child(dir);
+		c.prompt();
 		await c.run("noli_forge_status", {});
 		const replacement = rootSession("replacement-parent", generation);
 		bind(dir, replacement, generation);
@@ -290,6 +300,26 @@ describe("#240 subagent relay through the SDK's real host-tool wrapper", () => {
 		const generation = { value: 1 };
 		bind(dir, rootSession("root-session", generation), generation);
 		expect(child(join(dir, "other")).tools.size).toBe(0);
+		releaseForgeRoot(dir);
+	});
+
+	test("Noli's read-only reviewers are never offered forge proposals and cannot run them", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "noli-forge-"));
+		const generation = { value: 1 as number | undefined };
+		const parent = rootSession("root-session", generation);
+		bind(dir, parent, generation);
+		for (const agent of ["noli-reviewer", "noli-council-1", "noli-council-2", "noli-council-3"]) {
+			const c = child(dir);
+			c.prompt(["base"], "1-Review", agent);
+			expect([...c.tools.keys()].sort()).toEqual(FORGE_TOOLS.filter(name => !name.startsWith("noli_forge_write")).sort());
+			await c.run("noli_forge_status", {}, "1-Review", undefined, agent);
+		}
+		// A general child gets proposals once named; a reviewer identity still cannot run one.
+		const c = child(dir);
+		c.prompt();
+		expect(c.tools.has("noli_forge_write_v1")).toBe(true);
+		await expect(c.run("noli_forge_write_v1", { payload: { kind: "merge", number: "12" } }, "1-Review", undefined, "noli-reviewer")).rejects.toThrow("read-only review agents");
+		expect(parent.frames.map(frame => frame.toolName)).toEqual(Array(4).fill("noli_forge_status"));
 		releaseForgeRoot(dir);
 	});
 
@@ -381,6 +411,7 @@ describe("#240 subagent relay through the SDK's real host-tool wrapper", () => {
 		const parent = rootSession("root-session", generation);
 		bind(dir, parent, generation);
 		const c = child(dir);
+		c.prompt();
 		const proposal = { payload: { kind: "merge", number: "12" } };
 		await c.run("noli_forge_write_v1", proposal, "0-Explore", "m".repeat(MAX_RPC_REASSEMBLED_BYTES));
 		expect(parent.frames.length).toBe(1);
@@ -398,7 +429,7 @@ describe("#240 subagent relay through the SDK's real host-tool wrapper", () => {
 		const overhead = Buffer.byteLength(JSON.stringify({ ...input, noli_requester: { kind: "child", agent_id: "0-Explore" } }), "utf8");
 		input.read.request.search = "x".repeat(65536 - overhead + 1);
 		expect(forgeReadArguments(input)).toBe(true);
-		await expect(c.run("noli_forge_read_v1", input)).rejects.toThrow("Invalid Noli forge arguments");
+		await expect(c.run("noli_forge_read_v1", input)).rejects.toThrow("Invalid forge read transport shape");
 		expect(parent.frames).toEqual([]);
 		input.read.request.search = input.read.request.search.slice(1);
 		await c.run("noli_forge_read_v1", input);

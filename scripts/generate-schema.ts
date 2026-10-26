@@ -1,6 +1,8 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { writeSchemaFiles } from "./schema-files";
 import { join } from "node:path";
 import ts from "typescript";
+import { sameSchemaText } from "./schema-text";
 import { AGENT_KINDS, AGENT_STATES, CAPABILITY_NAMES, CAPABILITY_REASONS, DEFINITION_SOURCES, DISCOVERY_REASONS, DISCOVERY_STATUSES, ERROR_CODES, JOB_KINDS } from "../src/protocol";
 
 // The existing frame schema remains the wire envelope. Generate the evolving
@@ -47,14 +49,16 @@ for (const name of ["GatewayBindParams", "GatewayBindResult", "GatewayReadyResul
 	schema.$defs[name] = generate(checker.getTypeAtLocation(declaration));
 }
 for (const [name, values] of Object.entries({ CapabilityName: CAPABILITY_NAMES, CapabilityReason: CAPABILITY_REASONS, AgentKind: AGENT_KINDS, AgentState: AGENT_STATES, DefinitionSource: DEFINITION_SOURCES, DiscoveryReason: DISCOVERY_REASONS, DiscoveryStatus: DISCOVERY_STATUSES, ErrorCode: ERROR_CODES, JobKind: JOB_KINDS })) schema.$defs[name] = { enum: values };
-schema.$defs.Capabilities.required = CAPABILITY_NAMES.filter(name => name !== "host.attach_file" && name !== "host.forge_resource" && name !== "host.forge_read" && name !== "host.forge_write");
+schema.$defs.Capabilities.required = CAPABILITY_NAMES.filter(name => !["host.attach_file", "host.forge_resource", "host.forge_read", "host.forge_write", "host.forge_watch", "host.model_roles"].includes(name));
 schema.$defs.Capabilities.properties = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { $ref: "#/$defs/CapabilityState" }]));
 schema.$defs.Capabilities.properties["host.thread_read"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", properties: { api: { const: "main-only-v2" } } }] };
 schema.$defs.Capabilities.properties["host.thread_open"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", required: ["api"], properties: { api: { const: "main-only-v1" } } }] };
 schema.$defs.Capabilities.properties["host.forge_resource"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", required: ["api"], properties: { api: { const: "session-v2" } } }] };
 schema.$defs.Capabilities.properties["host.forge_read"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", required: ["api"], properties: { api: { const: "session-v2" } } }] };
 schema.$defs.Capabilities.properties["host.forge_write"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", required: ["api"], properties: { api: { const: "session-v2" } } }] };
-schema.$defs.CapabilityApi = { enum: ["public", "internal", "main-only-v1", "main-only-v2", "session-v2"] };
+schema.$defs.Capabilities.properties["host.forge_watch"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", required: ["api"], properties: { api: { const: "main-only-v1" } } }] };
+schema.$defs.Capabilities.properties["host.model_roles"] = { allOf: [{ $ref: "#/$defs/CapabilityState" }, { type: "object", required: ["api"], properties: { api: { const: "session-v1" } } }] };
+schema.$defs.CapabilityApi = { enum: ["public", "internal", "main-only-v1", "main-only-v2", "session-v1", "session-v2"] };
 const output = schema.$defs.AgentOutputResult;
 output.properties.nextOffset = { type: ["integer", "null"], minimum: 0 };
 for (const key of ["start", "end"]) output.properties.spans.items.properties[key] = { type: "integer", minimum: 0 };
@@ -77,10 +81,41 @@ schema.$defs.NativeControlResult.anyOf = ["cancelled", "backend", "goal"].map(ke
 schema.$defs.ErrorBody.description = "Unavailable advertised capabilities carry capability/reason; unsupported native controllers carry code/message only.";
 const unsupportedError = { type: "object", additionalProperties: false, required: ["code", "message"], properties: { code: { const: "capability_unavailable" }, message: { type: "string" } } };
 if (schema.$defs.ErrorBody.oneOf.length === 2) schema.$defs.ErrorBody.oneOf.push(unsupportedError);
+
+// Noli owns these schemas. Refresh their snapshots explicitly from a Noli
+// protocol directory; normal generation/checks remain offline and reproducible.
+const nativeSources = ["read", "write"].map(kind => {
+ const name = `noli-forge-${kind}-tool.schema.json`;
+ const destination = join(root, "protocol", name);
+ const source = process.env.NOLI_FORGE_PROTOCOL_DIR ? join(process.env.NOLI_FORGE_PROTOCOL_DIR, name) : destination;
+ const text = readFileSync(source, "utf8");
+ return { kind, destination, source, text, schema: JSON.parse(text) };
+});
+const nativeSchemas = Object.fromEntries(nativeSources.map(item => [item.kind, item.schema]));
+for (const name of ["ForgeResourceHandle", "ForgeResourceKind", "ForgeResourceId", "StableRepositoryId"]) {
+ if (JSON.stringify(nativeSchemas.read.$defs[name]) !== JSON.stringify(nativeSchemas.write.$defs[name])) throw new Error(`Native read/write handle schemas disagree: ${name}`);
+}
+const resources: string[] = nativeSchemas.read.$defs.ForgeReadToolIntent.oneOf.map((variant: { properties: { resource: { const: string } } }) => variant.properties.resource.const);
+const kinds: string[] = nativeSchemas.read.$defs.ForgeResourceKind.enum;
+if (![resources, kinds].every(values => values.length > 0 && values.every(value => typeof value === "string") && new Set(values).size === values.length)) throw new Error("Invalid native forge selector schema");
+const selectorsPath = join(root, "src/forge-schema-selectors.ts");
+const selectors = "// Generated by scripts/generate-schema.ts from Noli's protocol snapshots. Do not edit.\n"
+ + `export const FORGE_READ_RESOURCES: readonly string[] = ${JSON.stringify(resources)};\n`
+ + `export const FORGE_RESOURCE_KINDS: readonly string[] = ${JSON.stringify(kinds)};\n`;
+// Finish preparing every output before any destination can change.
+const outputs = [
+ ...nativeSources.filter(item => item.source !== item.destination).map(item => ({ path: item.destination, text: item.text })),
+ { path: selectorsPath, text: selectors },
+ { path, text: `${JSON.stringify(schema, null, 2)}\n` },
+];
 if (process.argv.includes("--check")) {
-	if (previous !== JSON.stringify(schema)) throw new Error("Protocol schema is stale; run bun run schema");
-	console.log("SCHEMA CURRENT");
+ for (const item of nativeSources) {
+  if (!sameSchemaText(readFileSync(item.destination, "utf8"), item.text)) throw new Error(`Native forge schema snapshot is stale: ${item.destination}`);
+ }
+ if (!sameSchemaText(readFileSync(selectorsPath, "utf8"), selectors)) throw new Error("Forge selectors are stale; run bun run schema");
+ if (previous !== JSON.stringify(schema)) throw new Error("Protocol schema is stale; run bun run schema");
+ console.log("SCHEMA CURRENT");
 } else {
-	writeFileSync(path, `${JSON.stringify(schema, null, 2)}\n`);
-	console.log("SCHEMA GENERATED");
+ writeSchemaFiles(outputs);
+ console.log("SCHEMA GENERATED");
 }

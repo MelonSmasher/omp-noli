@@ -1,3 +1,4 @@
+import { FORGE_READ_RESOURCES } from "./forge-schema-selectors";
 import type { Requester } from "./forge-agents";
 
 export const FORGE_READ_TOOL = "noli_forge_read_v1";
@@ -15,7 +16,7 @@ export function forgeReadArguments(input: Record<string, unknown>, requester?: R
 	if (input.action !== "read" || !only(input, ["action", "read", "byte_budget"])) return false;
 	const read = input.read;
 	if (!record(read) || !only(read, ["resource", "request"]) || !record(read.request)) return false;
-	if (typeof read.resource !== "string" || !["issues", "review", "reviews", "ci", "boards", "releases", "release_files", "task_snapshot", "watch", "log", "report", "artifacts"].includes(read.resource)) return false;
+	if (typeof read.resource !== "string" || !FORGE_READ_RESOURCES.includes(read.resource)) return false;
 	if (read.resource === "task_snapshot" && (!only(read.request, ["attempt_id", "sequence"])
 		|| typeof read.request.attempt_id !== "string" || !read.request.attempt_id.length
 		|| Buffer.byteLength(read.request.attempt_id, "utf8") > 256 || /\p{Cc}/u.test(read.request.attempt_id)
@@ -27,4 +28,13 @@ export function forgeReadArguments(input: Record<string, unknown>, requester?: R
 	// Provider handles contain account/origin IDs as comparison inputs, not credentials.
 	// Native serde deny_unknown_fields and selected-account validation remain mandatory.
 	return Buffer.byteLength(JSON.stringify(requester ? { ...input, noli_requester: requester } : input), "utf8") <= 65536;
+}
+
+/** Explain a rejected transport shape without misreporting native authorization. */
+export function forgeReadRejection(input: Record<string, unknown>): string {
+ const allowed = input.action === "continue" ? ["action", "cursor", "byte_budget"] : ["action", "read", "byte_budget"];
+ const unexpected = Object.keys(input).find(key => !allowed.includes(key));
+ if (unexpected) return `Unexpected forge read field: ${JSON.stringify(unexpected)}`;
+ if (record(input.read) && typeof input.read.resource === "string" && !FORGE_READ_RESOURCES.includes(input.read.resource)) return `Unsupported forge read resource: ${JSON.stringify(input.read.resource)}`;
+ return "Invalid forge read transport shape: check the action, request fields, cursor and byte limits against the tool schema";
 }

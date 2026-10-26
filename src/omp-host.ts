@@ -278,6 +278,8 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 			"host.forge_resource": current && mainSession() ? available("session-v2", "Authenticated owning-main noli_forge_resource guard; Noli owns native repository/account authorization and read-only backend") : unavailable("session-v2", "not_ready", "Main session not established"),
 			"host.forge_read": current && mainSession() ? available("session-v2", "Authenticated owning-main noli_forge_read_v1 guard; Noli owns typed readers, session cursors and explicit CI content grants") : unavailable("session-v2", "not_ready", "Main session not established"),
 			"host.forge_write": current && mainSession() ? available("session-v2", "Authenticated owning-main proposal/status guards; Noli owns exact approval admission and native journal authority") : unavailable("session-v2", "not_ready", "Main session not established"),
+			"host.forge_watch": current && mainSession() ? available("main-only-v1", "Authenticated owning-main watch guard; Noli owns watch authority") : unavailable("main-only-v1", "not_ready", "Main session not established"),
+			"host.model_roles": current && mainSession() ? available("session-v1", "Authenticated session model role roster; Noli owns gateway routing") : unavailable("session-v1", "not_ready", "Main session not established"),
 			"agents.list": publicCap([], "pi.pi.AgentRegistry"),
 			"agents.list.persisted": internalCap("agents.list.persisted", probeRosterReader),
 			"agents.output": (() => {

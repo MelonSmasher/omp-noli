@@ -1,6 +1,6 @@
 {
   "name": "omp-noli",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "private": true,
   "type": "module",
   "description": "Session-scoped Noli control and guarded native forge tools for Oh My Pi",

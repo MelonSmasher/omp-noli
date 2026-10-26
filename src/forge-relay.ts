@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { FORGE_READ_TOOL, forgeReadArguments } from "./forge-read-tools";
+import { FORGE_READ_TOOL, forgeReadArguments, forgeReadRejection } from "./forge-read-tools";
 import { FORGE_WRITE_TOOLS, forgeWriteAdmission, forgeWriteArguments, forgeWriteStatusArguments } from "./forge-write-tools";
-import { FORGE_CONTEXT_PREFIX, FORGE_STATUS_TOOL, RELAYED_TOOLS, RELAY_PREFIX, REQUESTER_KEY, type Requester, argumentsDigest, forgeContextBlock, relayCalls, requesterOf, requesterPermits, taskReminder } from "./forge-agents";
+import { FORGE_CONTEXT_PREFIX, FORGE_STATUS_TOOL, READ_ONLY_AGENTS, READ_ONLY_AGENT_WRITE, RELAYED_TOOLS, RELAY_PREFIX, REQUESTER_KEY, type Requester, argumentsDigest, forgeContextBlock, relayCalls, requesterOf, requesterPermits, taskReminder, writesOffered } from "./forge-agents";
 import { FORGE_CLI_INSTRUCTION, forgeArguments } from "./thread-control";
 
 interface HostToolResult { content: unknown[]; details?: unknown }
@@ -33,7 +33,7 @@ export function releaseForgeRoot(dir: string): void { if (root?.dir === dir) roo
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 
 function validArguments(name: string, input: Record<string, unknown>, toolCallId: string, requester: Requester): boolean {
-	if (name === FORGE_STATUS_TOOL) return Object.keys(input).length === 0;
+	if (name === FORGE_STATUS_TOOL || name === "noli_model_roles") return Object.keys(input).length === 0;
 	if (name === FORGE_READ_TOOL) return forgeReadArguments(input, requester);
 	if (name === FORGE_WRITE_TOOLS[0]) return forgeWriteArguments(input, toolCallId, requester);
 	if (name === FORGE_WRITE_TOOLS[1]) return forgeWriteStatusArguments(input);
@@ -49,11 +49,14 @@ export function installForgeRelay(pi: ExtensionAPI, dir: string | undefined): vo
 	if (!dir || root?.dir !== dir) return;
 	const bound = root;
 	const registered = new Set<string>();
-	const registerMissing = () => {
+	/** `agent` is the child's definition name, known only from a lifecycle context. */
+	const registerMissing = (agent?: string) => {
 		if (root !== bound) return false;
 		let added = false;
 		for (const name of RELAYED_TOOLS) {
 			if (registered.has(name)) continue;
+			// Proposals wait for the definition: Noli's read-only reviewers are never offered them.
+			if ((FORGE_WRITE_TOOLS as readonly string[]).includes(name) && !writesOffered(agent)) continue;
 			const tool = bound.tool(name);
 			if (!tool) continue;
 			pi.registerTool({
@@ -65,10 +68,11 @@ export function installForgeRelay(pi: ExtensionAPI, dir: string | undefined): vo
 					if (root !== bound) throw new Error("Noli forge tools ended with the parent session.");
 					const requester = requesterOf(ctx);
 					if (!requester || !requesterPermits(name, requester)) throw new Error(requester?.kind === "advisor" ? "The advisor is read-only." : "Noli forge tools need an identified subagent.");
+					if ((FORGE_WRITE_TOOLS as readonly string[]).includes(name) && READ_ONLY_AGENTS.includes(ctx.agent.name)) throw new Error(READ_ONLY_AGENT_WRITE);
 					const input: unknown = params;
 					const relayId = `${RELAY_PREFIX}${crypto.randomUUID()}`;
 					if (!record(input) || REQUESTER_KEY in input || !validArguments(name, input, relayId, requester)) {
-						throw new Error("Invalid Noli forge arguments; caller identity, credentials and raw endpoints are not accepted.");
+						throw new Error(name === FORGE_READ_TOOL && record(input) ? forgeReadRejection(input) : "Invalid Noli forge transport shape; check the documented fields and size limits.");
 					}
 					const generation = bound.generation(bound.sessionId);
 					const host = bound.tool(name);
@@ -99,7 +103,7 @@ export function installForgeRelay(pi: ExtensionAPI, dir: string | undefined): vo
 		if (ctx.agent.kind === "main") return;
 		// Lifecycle registrations join the SDK's tool snapshot before the model starts.
 		// Retry only this pinned parent's missing tools, never a replacement's grants.
-		const added = registerMissing();
+		const added = registerMissing(ctx.agent.name);
 		const available = root === bound && bound.generation(bound.sessionId) !== undefined
 			&& RELAYED_TOOLS.some(name => registered.has(name) && bound.tool(name));
 		const block = available ? forgeContextBlock(dir) : undefined;

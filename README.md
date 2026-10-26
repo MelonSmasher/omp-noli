@@ -18,6 +18,17 @@ For managed Gateway sessions, Noli writes secret-free `gateway-providers.json` a
 
 `test/gateway.test.ts` exercises the pinned real SDK registry, availability and auth storage before bind, after two keys and after revoke, and checks all temporary profile files for credential bytes. `test/review-gateway.test.ts` permanently covers legacy re-hello, uninterrupted renewal, real streaming auth retries, native lifecycle rebinding and process-launched bootstrap isolation with implicit Bun child environment inheritance. Bridge fixtures cover one-use hello, bind acknowledgement, stale-session rejection and rebind/revoke. The Noli repository owns the mock-upstream managed-process security smoke and actual Gateway 429 classifier fixture.
 
+## v0.9.7 native watch and model roles
+
+- Negotiates `host.forge_watch` (`main-only-v1`) for Noli's owning-main `noli_forge_watch`. Children and advisors cannot call or relay this tool.
+- Negotiates `host.model_roles` (`session-v1`) for the read-only `noli_model_roles` roster. Main agents, attributed children through the existing authenticated relay, and advisors may read it. It takes no arguments; Noli resolves routes and validates the caller lifecycle.
+- Noli's bundled read-only reviewers (`noli-reviewer`, `noli-council-1..3`) are never offered `noli_forge_write_v1` or `noli_forge_write_status_v1`, and a reviewer identity cannot run them. OMP offers every extension tool to a child whatever its definition's `tools:` list says and exposes only the definition name (`ctx.agent.name`), so the relay registers proposal tools from the first lifecycle context that names a different definition. Noli refuses reviewer writes independently.
+- Native Noli owns registration metadata, schemas and authority. Older hosts gracefully omit these optional capabilities; protocol remains 1.
+- Generated selector checks accept Git’s Windows CRLF checkout while still rejecting stale content. Schema refresh validates both native inputs and every generated output before staging replacements; validation failures leave existing snapshots untouched.
+- Watch selectors are bounded before forwarding: watch IDs are at most 256 UTF-8 bytes, review numbers are positive decimal strings of at most 40 digits, and git refs are at most 1024 UTF-8 bytes without control characters. Stale read diagnostics identify the actual tool, including `noli_model_roles`.
+- Forge read resource and handle-kind selectors now come from Noli’s generated read/write schemas, fixing schema-valid metadata, work-item, CI-action and other reads rejected by the former hand-maintained list. Shape errors identify unsupported resources or unexpected fields rather than falsely reporting an authority change. Native Rust still validates each request and authorizes the caller.
+- The native schema snapshots live in `protocol/noli-forge-{read,write}-tool.schema.json`. Refresh them and their small runtime selector module with `NOLI_FORGE_PROTOCOL_DIR=/path/to/noli/protocol bun run schema`; `bun run schema:check` checks the checked-in snapshots offline, and the same environment variable with `schema:check` also checks them against the Noli source. Official OMP 18.8.2+ and Bun 1.4.2+ are unchanged.
+
 ## v0.9.6 Windows
 
 - The bridge runs on Windows. It speaks the same protocol 1 frames over a named pipe that follows Noli's `noli_platform::ipc` contract, and it checks Windows owner and DACL security where Unix checks mode bits. macOS and Linux behaviour is unchanged.
@@ -88,7 +99,6 @@ The model and UI share Noli's `ForgeResourcesRequest`. The two requests are `{ac
 The existing host-tool guard independently checks the trusted current main role, authenticated owning session, actual SDK tool provenance, request shape and unknown fields at every identity level. Noli alone checks the selected account/repository, canonical deployment and native provider/kind agreement. URLs are destinations, never credentials or proof of authority. The plugin registers no duplicate tool, performs no provider request, discovers no CLI credentials and adds no raw-URL proxy. Noli returns bounded content marked `untrusted_provider_content`; the guard preserves it and current authorized backend errors unchanged. Both success and error results must match the admitted session/tool/authentication epoch. The oldest current authentication owns that epoch, independent of socket accept order; secondary hellos or disconnects do not change it. Owner revocation or replacement, tree/switch/branch/shutdown and reauthentication cannot restore stale content or details. Cancellation consumes admission.
 
 Run `bun test`, `bun run typecheck`, `bun run schema:check`, `bun run extension:check`, `bun run smoke:native`, `bun run smoke:forge` and `bun run smoke:install` after implementation. Forge smoke uses pinned official OMP 18.8.2, its actual RPC host adapter and extension wrappers in a disposable HOME/profile. It exercises main admission, backend denial, native cancellation, child/advisor/foreign/non-SDK denial, unrelated secondary connections and stale success/error results without model requests or user-data changes. Local installation is not published-release proof. Releases require independent exact-head review, required Ubuntu/macOS CI, a stable tag and `bun scripts/smoke-install.ts v0.8.0` against that published tag. Forge qualification must print `NOLI_INSTALLED_FORGE_GUARD_OK`; older tags can pass their old contract without that token.
-
 Native SDK control fixtures publish command JSON by atomic rename. The driver opens a fresh `Bun.file` when reading the published command because a handle created before publication can retain a zero-byte size in Bun 1.4.3. This filesystem check does not certify the full native scenario.
 
 ## v0.7.1 Gateway models for subagents
@@ -189,7 +199,6 @@ Referenced-thread access is a separate **read-only** host tool: `noli_thread_rea
 Agent and capability broadcasts also require a matching authenticated session. A revoked or previous-session socket receives no new events; a freshly authenticated connection restores both subscriptions. Already queued replies remain subject to the existing request/session checks.
 
 ### Backend contract (requires companion Noli implementation)
-
 Noli registers the lifecycle schemas below; attachment support additionally registers `noli_attach_file` after explicitly negotiating the host-tool policy. All schemas use `additionalProperties: false`:
 
 ```json
@@ -289,7 +298,6 @@ A capability is either `{ available: true, api, detail }` or `{ available: false
 | `not_ready` | No top-level session yet. |
 
 **Startup checks.** When the top-level session starts, and after every session switch, branch or tree navigation, the plugin checks each capability. Public capabilities need their `pi.pi` exports. Internal capabilities need the host objects to have the expected shape (tool registered, property present, method callable).
-
 **Warnings.** Whenever the set of disabled non-memory capabilities changes, the plugin warns three ways. Unavailable memory capabilities remain negotiated for honest operation gating, but never appear in these notices: unsupported memory controls are silently omitted from the UI.
 
 - A `Noli bridge: N capability(ies) DISABLED …` notice in the OMP UI (an `extension_ui_request` notify of type `warning` under RPC).

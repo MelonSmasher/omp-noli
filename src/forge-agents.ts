@@ -8,9 +8,19 @@ import { FORGE_WRITE_TOOLS } from "./forge-write-tools";
 /** No arguments: Noli derives the binding from the calling session. */
 export const FORGE_STATUS_TOOL = "noli_forge_status";
 /** Forge tools a subagent may reach through the main session's host tool. */
-export const RELAYED_TOOLS = ["noli_forge_resource", FORGE_READ_TOOL, FORGE_STATUS_TOOL, ...FORGE_WRITE_TOOLS] as const;
+export const RELAYED_TOOLS = ["noli_forge_resource", FORGE_READ_TOOL, "noli_model_roles", FORGE_STATUS_TOOL, ...FORGE_WRITE_TOOLS] as const;
 /** The advisor's subset: reads and status, never proposals or operation status. */
-export const READ_ONLY_TOOLS: readonly string[] = ["noli_forge_resource", FORGE_READ_TOOL, FORGE_STATUS_TOOL];
+export const READ_ONLY_TOOLS: readonly string[] = ["noli_forge_resource", FORGE_READ_TOOL, "noli_model_roles", FORGE_STATUS_TOOL];
+/**
+ * Noli's bundled read-only reviewer definitions. OMP offers every extension tool to a
+ * child whatever its definition's `tools:` list allows and exposes only the definition
+ * name (`ctx.agent.name`) to extensions, so forge writes are withheld from these by name.
+ * Noli refuses their write calls independently.
+ */
+export const READ_ONLY_AGENTS: readonly string[] = ["noli-reviewer", "noli-council-1", "noli-council-2", "noli-council-3"];
+export const READ_ONLY_AGENT_WRITE = "Noli read-only review agents cannot propose forge writes or read write status; return your findings to the main agent.";
+/** Whether a child running this definition is offered forge proposals; unknown definitions are not. */
+export const writesOffered = (agent: string | undefined): boolean => typeof agent === "string" && agent.length > 0 && !READ_ONLY_AGENTS.includes(agent);
 /** Added by this plugin, never by a model; Noli verifies it against the native subagent lifecycle. */
 export const REQUESTER_KEY = "noli_requester";
 

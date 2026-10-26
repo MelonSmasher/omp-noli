@@ -81,6 +81,8 @@ export async function verifyInstalledForgeRuntime(session: AgentSession, install
 		for (const item of cases) assert.equal((await runtime.emitToolCall({ type: "tool_call", toolName: item.name, toolCallId: `installed-absent-${item.name}`, input: item.input }))?.block, true, "Authenticated but unregistered tools are denied");
 		await session.refreshRpcHostTools(adapters);
 		for (const [index, item] of cases.entries()) {
+			// This fixture also qualifies published pre-v0.9.7 releases with legacy shape errors.
+			const shapeError = item.name === "noli_forge_read_v1" ? /Invalid|Unexpected forge read field:|Unsupported forge read resource:/ : /Invalid/;
 			const tool = session.getToolByName(item.name); assert(tool && session.hasRpcHostTool(item.name));
 			const admitted = tool.execute(`installed-main-${item.name}`, item.input);
 			const frame = await nextFrame();
@@ -105,14 +107,14 @@ export async function verifyInstalledForgeRuntime(session: AgentSession, install
 				assert.deepEqual(callerFrame.arguments, { ...item.input, noli_requester: requester });
 				answer(callerFrame, item.name);
 				assert.deepEqual(await pending, { content, details: detailsFor(item.name) }, "Installed guard admits runtime-attributed session callers");
-				await assert.rejects(caller.execute(`installed-forged-${id}-${item.name}`, { ...item.input, noli_requester: requester }), /Invalid/);
+				await assert.rejects(caller.execute(`installed-forged-${id}-${item.name}`, { ...item.input, noli_requester: requester }), shapeError);
 				assert.equal(frames.length, 0, "Callers cannot supply their own attribution");
 			}
 			const unattributed = new ExtensionToolWrapper(adapters[index]!, runtime, { kind: "sub", id: "", name: "unknown", depth: 1, parentId: "Main" } as ExtensionAgentIdentity);
 			await assert.rejects(unattributed.execute(`installed-unattributed-${item.name}`, item.input), /restricted to the owning session/);
 			assert.equal(frames.length, 0);
 			for (const key of ["caller", "noli_requester", "token", "endpoint", "session_id", "grant", "approved", "unknown"]) {
-				await assert.rejects(tool.execute(`installed-invalid-${item.name}-${key}`, { ...item.input, [key]: "forged" }), /Invalid/);
+				await assert.rejects(tool.execute(`installed-invalid-${item.name}-${key}`, { ...item.input, [key]: "forged" }), shapeError);
 				assert.equal(frames.length, 0, "Unknown envelope fields cannot reach fixture backend");
 			}
 			const malformed = item.name === "noli_forge_read_v1"
@@ -121,7 +123,7 @@ export async function verifyInstalledForgeRuntime(session: AgentSession, install
 					? [{ ...cases[1].input, target: { ...target, token: "forged" } }, { ...cases[1].input, payload: null }, { ...cases[1].input, precondition: {} }]
 					: [{ operation_id: "" }, { operation_id: "bad\nidentifier" }, { operation_id: 7 }];
 			for (const input of malformed) {
-				await assert.rejects(tool.execute(`installed-malformed-${item.name}`, input), /Invalid/);
+				await assert.rejects(tool.execute(`installed-malformed-${item.name}`, input), shapeError);
 				assert.equal(frames.length, 0, "Closed producer envelopes deny malformed data before dispatch");
 			}
 			const denied = assert.rejects(tool.execute(`installed-denied-${item.name}`, item.input), new RegExp(errorText));
