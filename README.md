@@ -39,6 +39,10 @@ Facts (`src/claude-facts.ts`) are a pure port of the 8.1 delivery-time stamping,
 
 Known limits on stock OMP: speculative compaction precompute, manual `/compact` and manual `/handoff` emit no event before their summarization request, so those requests are untagged and fall to Noli's helper row. Any `context` handler makes the stock runner structuredClone the request messages and defeats the identity-keyed conversion memo for that call (`runner.ts:2117-2184`, `session/messages.ts:1023-1049`); the produced bytes are unchanged. `assistant_message` cannot change non-text blocks, so thinking blocks cannot be marked as narration.
 
+## v0.10.1 CI content guidance
+
+- Guidance only: the injected `noli_forge_read_v1` instruction and `skill://noli` describe Noli's mode-dependent CI log/report grants (noli#359). In Yolo (`noli_forge_status` reports `write_approval: "automatic"`), Noli grants each exact read itself without a dock question; in other modes a human permits it in the message dock. A human's denial stands in every mode, and leaving Yolo ends automatic grants. Scope and limits (256 KiB, 16 pages, five minutes) are unchanged. Protocol, admission and runtime behavior are unchanged; older Noli servers still ask in every mode and say so in their `forge_content_consent_required` error.
+
 ## v0.9.7 native watch and model roles
 
 - Negotiates `host.forge_watch` (`main-only-v1`) for Noli's owning-main `noli_forge_watch`. Children and advisors cannot call or relay this tool.
