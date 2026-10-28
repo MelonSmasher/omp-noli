@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { ensurePrivateDirectory, listenPipe } from "./windows-native";
 import { windowsJoin } from "./windows-security";
 import type { GatewayCredential, GatewayProviders } from "./gateway";
+import { assertProducerBranch, assertProducerSession, assertRequestFacts, requestReference } from "./gateway-request";
 import {
 	type AgentOutputParams,
 	type AgentOutputResult,
@@ -22,6 +23,10 @@ import {
 	NATIVE_METHODS,
 	UNAVAILABLE_NATIVE_METHODS,
 	PROTOCOL_VERSION,
+	type ProducerBranchParams,
+	type ProducerCompactionParams,
+	type ProducerSessionParams,
+	type RequestFacts,
 	type ServerFrame,
 	type TurnResult,
 	type WorkResult,
@@ -86,6 +91,7 @@ interface ConnectionState {
 	authenticationGeneration?: number;
 	gatewayReady?: Promise<void>;
 	gatewayReply?: { id: string; resolve(value: GatewayCredential): void; reject(error: Error): void };
+	requestReplies?: Map<string, { resolve(value: unknown): void; reject(error: Error): void }>;
 	renewal?: NodeJS.Timeout;
 	expiry?: NodeJS.Timeout;
 	bindingTimeout?: NodeJS.Timeout;
@@ -120,6 +126,19 @@ export interface BridgeOptions {
     gateway?: GatewayProviders;
 }
 
+/** Out-of-band Claude Code producer facts for the root and every rejoined child session. */
+export interface ProducerChannel {
+	/** Record a producer identity and send it; recorded identities are re-sent after every authentication. */
+	announce(params: ProducerSessionParams): void;
+	/** Record and send a branch's reset boundaries; resolves once Noli acknowledged it. */
+	branch(params: ProducerBranchParams): Promise<void>;
+	forget(ompSessionId: string): void;
+	/** Register one main/subagent call's facts; resolves to the reference its body tag carries. */
+	register(ompSessionId: string, facts: RequestFacts, signal?: AbortSignal): Promise<string>;
+	/** Open (`begin`) or close (`end`) a compaction bracket; resolves once Noli acknowledged it. */
+	compaction(params: ProducerCompactionParams, signal?: AbortSignal): Promise<void>;
+}
+
 export interface Bridge {
 	socketPath: string;
 	close(): void;
@@ -128,6 +147,7 @@ export interface Bridge {
 	/** Revocable call/result fence; reauthentication never restores an old admission. */
 	authenticatedGeneration(sessionId: string): number | undefined;
 	invalidateAuthentication(): void;
+	producer: ProducerChannel;
 }
 
 function digest(value: string): Buffer {
@@ -178,6 +198,9 @@ export function startBridge(options: BridgeOptions): Bridge {
     let bootstrapAvailable = true;
     let bindingSequence = 0;
 	let authenticationSequence = 0;
+	const rejectRequests = (socket: BridgeSocket, message: string): void => {
+		for (const pending of socket.data.requestReplies?.values() ?? []) pending.reject(new Error(message));
+	};
 
 	const flush = (socket: BridgeSocket): void => {
 		if (socket.data.closed || !socket.data.outbound.length) return;
@@ -188,11 +211,122 @@ export function startBridge(options: BridgeOptions): Bridge {
 		if (socket.data.closed) return;
 		const bytes = Buffer.isBuffer(frame) ? frame : Buffer.from(`${JSON.stringify(frame)}\n`);
 		if (socket.data.outbound.length + bytes.length > 8 * MAX_FRAME_BYTES) {
+			socket.data.closed = true;
+			revoke(socket);
 			socket.terminate();
 			return;
 		}
 		socket.data.outbound = Buffer.concat([socket.data.outbound, bytes]);
 		flush(socket);
+	};
+	const authenticatedGeneration = (sessionId: string): number | undefined => {
+		// The oldest current authentication owns admission, not socket accept order.
+		// A preconnected secondary may complete hello later without stealing ownership.
+		let generation: number | undefined;
+		for (const socket of sockets) {
+			if (socket.data.closed || !socket.data.authed || socket.data.authenticatedSession !== sessionId) continue;
+			const candidate = socket.data.authenticationGeneration;
+			if (candidate !== undefined && (generation === undefined || candidate < generation)) generation = candidate;
+		}
+		return generation;
+	};
+
+	/** Producer identities, re-sent after each authentication so Noli can admit their requests. */
+	const announcements = new Map<string, ProducerSessionParams>();
+	const branches = new Map<string, ProducerBranchParams>();
+	/** The open, authenticated connection of `sessionId` at `generation`, if any. */
+	const ownerSocket = (sessionId: string | undefined, generation: number | undefined): BridgeSocket | undefined => {
+		if (generation === undefined) return undefined;
+		for (const candidate of sockets) {
+			if (!candidate.data.closed && candidate.data.authed && candidate.data.authenticatedSession === sessionId
+				&& candidate.data.authenticationGeneration === generation) return candidate;
+		}
+		return undefined;
+	};
+	const credentialInstalled = (socket: BridgeSocket): boolean => (socket.data.installedExpiry ?? 0) > Date.now();
+	/** One request on the owning authenticated connection; `credential` also requires an installed gateway key. */
+	const producerRequest = (frame: (id: string) => ServerFrame, timeoutMs: number, credential: boolean, signal?: AbortSignal): Promise<unknown> => {
+		signal?.throwIfAborted();
+		const sessionId = host.sessionId();
+		const generation = authenticatedGeneration(sessionId);
+		const socket = ownerSocket(sessionId, generation);
+		if (!socket || (credential && (!options.gateway || !credentialInstalled(socket)))) {
+			return Promise.reject(new Error("Noli producer facts require a current authenticated bridge"));
+		}
+		const owner = socket;
+		const replies = owner.data.requestReplies ??= new Map();
+		if (replies.size >= 64) return Promise.reject(new Error("Too many pending Noli producer requests"));
+		const { promise, resolve, reject } = Promise.withResolvers<unknown>();
+		const id = `producer:${++bindingSequence}`;
+		const cleanup = (): void => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", abort);
+			replies.delete(id);
+		};
+		const abort = (): void => { cleanup(); reject(signal?.reason ?? new Error("Noli producer request aborted")); };
+		const timer = setTimeout(() => { cleanup(); reject(new Error("Noli producer request timed out")); }, timeoutMs);
+		timer.unref();
+		replies.set(id, {
+			resolve(value: unknown) { cleanup(); resolve(value); },
+			reject(error: Error) { cleanup(); reject(error); },
+		});
+		signal?.addEventListener("abort", abort, { once: true });
+		send(owner, frame(id));
+		return promise.then(result => {
+			if (owner.data.closed || host.sessionId() !== sessionId || authenticatedGeneration(sessionId) !== generation
+				|| (credential && !credentialInstalled(owner))) {
+				throw new Error("Noli bridge authentication changed during a producer request");
+			}
+			return result;
+		});
+	};
+	const announceSession = (params: ProducerSessionParams): void => {
+		void producerRequest(id => ({ type: "request", id, method: "producer.session", params }), 10_000, false).catch(() => {});
+	};
+	const sendBranch = (params: ProducerBranchParams): Promise<unknown> =>
+		producerRequest(id => ({ type: "request", id, method: "producer.branch", params }), 10_000, false);
+	/** The root first, then each child after its parent, so Noli can attach every producer it receives. */
+	const reannounce = (): void => {
+		const rootSession = announcements.get(host.sessionId());
+		if (!rootSession) return;
+		const ordered = new Set([rootSession]);
+		for (const parent of ordered) {
+			for (const child of announcements.values()) if (child.parentOmpSessionId === parent.ompSessionId) ordered.add(child);
+		}
+		for (const params of ordered) {
+			announceSession(params);
+			const branch = branches.get(params.ompSessionId);
+			if (branch) void sendBranch(branch).catch(() => {});
+		}
+	};
+	const producer: ProducerChannel = {
+		announce(params) {
+			assertProducerSession(params);
+			announcements.set(params.ompSessionId, params);
+			announceSession(params);
+		},
+		async branch(params) {
+			assertProducerBranch(params);
+			branches.set(params.ompSessionId, params);
+			await sendBranch(params);
+		},
+		forget(ompSessionId) {
+			announcements.delete(ompSessionId);
+			branches.delete(ompSessionId);
+		},
+		async register(ompSessionId, facts, signal) {
+			requireCapability("gateway.request.register");
+			assertRequestFacts(facts, ["main", "subagent"]);
+			if (facts.producerSessionId !== ompSessionId || !announcements.has(ompSessionId)) throw new Error("Noli request facts name an unannounced producer");
+			const params = { ompSessionId, facts };
+			const result = await producerRequest(id => ({ type: "request", id, method: "gateway.request.register", params }), 10_000, true, signal);
+			return requestReference(result).requestReference;
+		},
+		async compaction(params, signal) {
+			if (params.phase === "begin") assertRequestFacts(params.facts, ["compaction"]);
+			else if (params.phase !== "end" || params.facts !== null) throw new Error("Invalid Noli compaction bracket");
+			await producerRequest(id => ({ type: "request", id, method: "producer.compaction", params }), 5_000, false, signal);
+		},
 	};
 	// Node timers cannot represent delays beyond 2^31-1; re-arm against the absolute deadline.
 	const scheduleCredentialTimer = (socket: BridgeSocket, field: "renewal" | "expiry", deadline: number, action: () => void): void => {
@@ -206,6 +340,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 	};
 	const revoke = (socket: BridgeSocket): void => {
 		socket.data.authenticationGeneration = ++authenticationSequence;
+		rejectRequests(socket, "Noli gateway authentication changed");
 		clearTimeout(socket.data.renewal);
 		clearTimeout(socket.data.expiry);
 		clearTimeout(socket.data.bindingTimeout);
@@ -251,6 +386,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 			scheduleCredentialTimer(socket, "renewal", credential.expires_ms - Math.min(60_000, lifetime / 2), () => { void bind(socket); });
 			scheduleCredentialTimer(socket, "expiry", credential.expires_ms, () => {
 				if (!current()) return;
+				rejectRequests(socket, "Noli gateway credential expired");
 				options.gateway!.revoke();
 			});
 		}).catch(error => {
@@ -400,6 +536,12 @@ export function startBridge(options: BridgeOptions): Bridge {
 			closeIfUnauthed();
 			return;
 		}
+		const requestPending = typeof record.id === "string" ? socket.data.requestReplies?.get(record.id) : undefined;
+		if (socket.data.authed && record.type === "response" && requestPending) {
+			if (record.ok === true) requestPending.resolve(record.result);
+			else requestPending.reject(new Error("Noli rejected the producer request"));
+			return;
+		}
 		const pending = socket.data.gatewayReply;
 		if (socket.data.authed && record.type === "response" && pending && record.id === pending.id) {
             socket.data.gatewayReply = undefined;
@@ -427,6 +569,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 			const hello = { protocol: PROTOCOL_VERSION, sessionId: host.sessionId(), pid: process.pid, capabilities: clientCapabilities(host.refreshCapabilities()) };
 			send(socket, Buffer.from(`${JSON.stringify({ type: "response", id, ok: true, result: hello })}\n`));
             void bind(socket);
+			reannounce();
 			return;
 		}
 
@@ -436,6 +579,7 @@ export function startBridge(options: BridgeOptions): Bridge {
             if (params?.sessionId !== host.sessionId()) return fail({ code: "stale_session", message: "Cannot adopt a foreign session" });
 			if (socket.data.authenticatedSession !== host.sessionId()) revoke(socket);
             socket.data.authenticatedSession = host.sessionId();
+			reannounce();
             try {
                 await bind(socket);
                 send(socket, { type: "response", id, ok: true, result: { bound: true } });
@@ -539,20 +683,11 @@ export function startBridge(options: BridgeOptions): Bridge {
 
 	return {
 		socketPath,
+		producer,
 		hasAuthenticatedSession(sessionId) {
-			return this.authenticatedGeneration(sessionId) !== undefined;
+			return authenticatedGeneration(sessionId) !== undefined;
 		},
-		authenticatedGeneration(sessionId) {
-			// The oldest current authentication owns admission, not socket accept order.
-			// A preconnected secondary may complete hello later without stealing ownership.
-			let generation: number | undefined;
-			for (const socket of sockets) {
-				if (socket.data.closed || !socket.data.authed || socket.data.authenticatedSession !== sessionId) continue;
-				const candidate = socket.data.authenticationGeneration;
-				if (candidate !== undefined && (generation === undefined || candidate < generation)) generation = candidate;
-			}
-			return generation;
-		},
+		authenticatedGeneration,
 		invalidateAuthentication() {
             for (const socket of sockets) { socket.data.authenticatedSession = undefined; revoke(socket); }
 		},

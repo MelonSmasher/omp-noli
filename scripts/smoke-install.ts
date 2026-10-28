@@ -37,6 +37,7 @@ if (selection === "--verify") {
 	const threadOpening = major! > 0 || minor! >= 6;
 	const forgeResources = major! > 0 || minor! >= 8;
 	const versionedForge = major! > 0 || minor! >= 9;
+	const producerBinding = major! > 0 || minor! >= 10;
 	const installed = (await getEnabledPlugins(dir, { home: dir })).filter(plugin => plugin.name === "omp-noli");
 	assert.equal(installed.length, 1, "Official discovery finds one enabled installed plugin");
 	const plugin = installed[0]!;
@@ -65,9 +66,10 @@ if (selection === "--verify") {
 	assert(loaded.extensions[0]!.handlers.has("tool_call"), "Installed extension initializes host-tool policy with authenticated bootstrap environment");
 	// Runtime-selected installed package path must not resolve to this checkout's protocol module.
 	const protocol = await import(join(plugin.path, "src/protocol.ts"));
-	assert.equal(protocol.PROTOCOL_VERSION, 1);
+	assert.equal(protocol.PROTOCOL_VERSION, producerBinding ? 2 : 1);
 	assert.deepEqual(protocol.NATIVE_METHODS, ["tree.navigate", "goal.budget", "memory.status", "memory.search", "memory.save"]);
 	const schema = await Bun.file(join(plugin.path, "protocol/noli-bridge.schema.json")).json();
+	if (producerBinding) assert(schema.$defs.Capabilities.required.includes("gateway.request.register"), "Protocol 2 requires producer request registration");
 	if (forgeResources) assert(protocol.CAPABILITY_NAMES.includes("host.forge_resource"), "v0.8+ requires the legacy forge contract");
 	if (forgeResources) {
 		assert(!schema.$defs.Capabilities.required.includes("host.forge_resource"), "Forge bootstrap marker is optional in protocol 1");

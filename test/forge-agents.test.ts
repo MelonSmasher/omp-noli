@@ -42,7 +42,7 @@ describe("#236 forge context in the prompt", () => {
 		const block = "Noli forge binding for this thread (rewritten only when its repository, account or sign-in state changes):\n- Repository: GitLab `group/project` at https://git.example.test.\n- Acting account: `builder`, signed in.";
 		writeFileSync(join(dir, "forge-context.json"), JSON.stringify({ block }));
 		const h = root(dir);
-		const event: BeforeAgentStartEvent = { type: "before_agent_start", prompt: "work", systemPrompt: ["base"] };
+		const event: BeforeAgentStartEvent = { type: "before_agent_start", reason: "prompt", prompt: "work", systemPrompt: ["base"] };
 		const turn = () => h.prompt(event, h.ctx("main"))!;
 		writeFileSync(join(dir, "forge-task.json"), JSON.stringify({ task: "Noli task state: attempt a is seeding." }));
 		const first = turn();
@@ -70,7 +70,7 @@ describe("#236 forge context in the prompt", () => {
 			const dir = mkdtempSync(join(tmpdir(), "noli-forge-task-clear-"));
 			try {
 				const h = root(dir);
-				const event: BeforeAgentStartEvent = { type: "before_agent_start", prompt: "work", systemPrompt: ["base"] };
+				const event: BeforeAgentStartEvent = { type: "before_agent_start", reason: "prompt", prompt: "work", systemPrompt: ["base"] };
 				const turn = () => h.prompt(event, h.ctx("main"))!;
 				const initial = turn();
 				expect(initial.message).toBeUndefined();
@@ -190,7 +190,7 @@ describe("#240 subagent relay through the SDK's real host-tool wrapper", () => {
 			run: (name: string, params: unknown, id = "0-Explore", callId = `model-${name}`, agent = "task") => tools.get(name)!.execute(callId, params, undefined, undefined, as(id, agent)),
 			/** OMP's before_agent_start: the first context that names the child's definition. */
 			prompt: (systemPrompt = ["base"], id = "0-Explore", agent = "task") => {
-				const event: BeforeAgentStartEvent = { type: "before_agent_start", prompt: "work", systemPrompt };
+				const event: BeforeAgentStartEvent = { type: "before_agent_start", reason: "prompt", prompt: "work", systemPrompt };
 				return prompt?.(event, as(id, agent)) ?? { systemPrompt };
 			},
 		};

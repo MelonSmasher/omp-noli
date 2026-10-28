@@ -8,6 +8,7 @@ import { installThreadControl } from "./thread-control";
 import { bindForgeRoot, installForgeRelay, releaseForgeRoot } from "./forge-relay";
 import { consumePrivateFile } from "./windows-native";
 import { registerGateway, rejoinGateway } from "./gateway";
+import { bindProducerChannel, installClaudeHooks, releaseProducerChannel } from "./claude-hooks";
 
 /** Set by the launcher; a directory and bootstrap input enable Bridge and Gateway setup. */
 export const ENV_DIR = "NOLI_BRIDGE_DIR";
@@ -36,9 +37,14 @@ export default function noli(pi: ExtensionAPI): void {
 	const legacyToken = process.env.NOLI_BRIDGE_TOKEN;
 	delete process.env[ENV_TOKEN_FILE];
 	delete process.env.NOLI_BRIDGE_TOKEN;
-	// A subagent of the bound root re-runs this factory after the bootstrap was consumed; it only needs the Gateway models.
+	// A subagent of the bound root re-runs this factory after the bootstrap was consumed; it needs the
+	// Gateway models and its own request correlation, reported through the root's bridge.
 	// It also reaches its root's Noli forge tools through the relay, under the root's authority.
-	if (!dir || (!tokenFile && !legacyToken)) { rejoinGateway(pi, dir); installForgeRelay(pi, dir); return; }
+	if (!dir || (!tokenFile && !legacyToken)) {
+		if (rejoinGateway(pi, dir)) installClaudeHooks(pi, dir!, { toolResults: false });
+		installForgeRelay(pi, dir);
+		return;
+	}
 	if (!tokenFile && existsSync(join(dir, "gateway-providers.json"))) {
 		throw new Error("Noli gateway binding requires NOLI_BRIDGE_TOKEN_FILE");
 	}
@@ -59,6 +65,7 @@ export default function noli(pi: ExtensionAPI): void {
 		bridge?.invalidateAuthentication();
 		omp.adopt(ctx);
         bridge ??= startBridge({ dir, token, host: omp.host, gateway });
+		if (gateway) bindProducerChannel(dir, bridge.producer, () => boundSession);
 		// Subagents reach only this session's genuine RPC host tools; a new session replaces the root.
 		const registry = (pi as unknown as { pi?: { AgentRegistry?: { global(): { get(id: string): { session?: unknown } | undefined } } } }).pi?.AgentRegistry;
 		const agentId = ctx.agent.id;
@@ -74,10 +81,14 @@ export default function noli(pi: ExtensionAPI): void {
 	pi.on("session_tree", (_event, ctx) => adopt(ctx));
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (ctx.agent.kind !== "main" || ctx.sessionManager.getSessionId() !== boundSession) return;
+		releaseProducerChannel(dir);
 		bridge?.close();
 		bridge = undefined;
 		releaseForgeRoot(dir);
 		boundSession = undefined;
 		omp.release();
 	});
+	// After adoption above, so the root announces itself on a started bridge.
+	// The root's thread control already observes `tool_result`, so timing it here changes no stock behavior.
+	if (gateway) installClaudeHooks(pi, dir, { toolResults: true });
 }

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type Socket } from "node:net";
 import { endpointAddress } from "./endpoint";
+import { assertValidFrame } from "./schema";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -14,13 +15,14 @@ import { streamSimple } from "@oh-my-pi/pi-ai";
 import { registerGateway } from "../src/gateway";
 import { startBridge, type BridgeHost } from "../src/bridge";
 import { available } from "../src/capabilities";
-import { CAPABILITY_NAMES, type Capabilities } from "../src/protocol";
+import { CAPABILITY_NAMES, type Capabilities, type ProducerSessionParams, type RequestFacts } from "../src/protocol";
 import noli from "../src/index";
 
 const bootstrap = "review-bootstrap-not-a-live-secret";
 const first = "a".repeat(43), second = "b".repeat(43);
 const model = { id: "gateway-review", name: "Review", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 512 };
-type Frame = { id: string | number; method?: string; ok?: boolean; error?: { code: string }; result?: { bound?: boolean; renewalError?: string; capabilities?: Capabilities } };
+type Frame = { id: string | number; method?: string; params?: Record<string, unknown> & { ompSessionId?: string; facts?: RequestFacts | null }; ok?: boolean; error?: { code: string }; result?: { bound?: boolean; renewalError?: string; capabilities?: Capabilities } };
+
 class Client {
   readonly socket: Socket;
   private buffer = "";
@@ -96,9 +98,9 @@ function host(session: () => string): BridgeHost {
   return { sessionId: session, capabilities: () => capabilities, refreshCapabilities: () => capabilities,
     subscribe: () => () => {}, onCapabilitiesChanged: () => () => {} } as unknown as BridgeHost;
 }
-async function fixture(port = 12345) {
+async function fixture(port = 12345, api = "openai-completions") {
   const dir = mkdtempSync(join(tmpdir(), "noli-review-"));
-  writeFileSync(join(dir, "gateway-providers.json"), JSON.stringify({ providers: { "noli-openai": { baseUrl: `http://127.0.0.1:${port}`, api: "openai-completions", models: [model] } } }));
+  writeFileSync(join(dir, "gateway-providers.json"), JSON.stringify({ providers: { "noli-openai": { baseUrl: `http://127.0.0.1:${port}`, api, models: [model] } } }));
   const auth = await AuthStorage.create(join(dir, "agent.db"));
   const registry = new ModelRegistry(auth, join(dir, "models.yml"), { settings: Settings.isolated({ enabledModels: ["noli-*/*"] }) });
   const pi = { registerProvider: (name: string, config: Parameters<ModelRegistry["registerProvider"]>[1]) => registry.registerProvider(name, config, "review") } as ExtensionAPI;
@@ -334,16 +336,21 @@ test("review: real SDK factory, switch and branch rebind without environment or 
     await client.call({ id: 1, method: "hello", params: { token: bootstrap } });
     const bind = await client.next();
     client.send({ type: "response", id: bind.id, ok: true, result: { token: first, expires_ms: Date.now() + 3_600_000 } });
-    expect((await client.call({ id: 2, method: "gateway.ready", sessionId: manager.getSessionId(), params: {} })).ok).toBe(true);
+    const replayed: string[] = [];
+    client.send({ id: 2, method: "gateway.ready", sessionId: manager.getSessionId(), params: {} });
+    expect((await acknowledged(client, replayed)).ok).toBe(true);
+    // The root announced itself at session_start, before Noli connected; hello replays it.
+    expect(replayed).toContain(`producer.session:${manager.getSessionId()}`);
     const initial = manager.getSessionId();
     expect(await session.newSession()).toBe(true);
     expect(manager.getSessionId()).not.toBe(initial);
     expect(await f.registry.getApiKey(session.model!) === "noli-pending").toBe(true);
     client.send({ id: 3, method: "session.adopt", sessionId: initial, params: { sessionId: manager.getSessionId() } });
-    const switched = await client.next();
+    const switched = await acknowledged(client, replayed);
+    expect(replayed).toContain(`producer.session:${manager.getSessionId()}`);
     expect(switched.method).toBe("gateway.bind");
     client.send({ type: "response", id: switched.id, ok: true, result: { token: second, expires_ms: Date.now() + 3_600_000 } });
-    const switchAck = await client.next();
+    const switchAck = await acknowledged(client);
     expect(switchAck.ok).toBe(true);
     manager.appendMessage({ role: "user", content: "branch target", timestamp: Date.now() });
     const target = manager.getLeafId()!;
@@ -353,10 +360,11 @@ test("review: real SDK factory, switch and branch rebind without environment or 
     expect(manager.getSessionId()).not.toBe(previous);
     expect(await f.registry.getApiKey(session.model!) === "noli-pending").toBe(true);
     client.send({ id: 4, method: "session.adopt", sessionId: previous, params: { sessionId: manager.getSessionId() } });
-    const branched = await client.next();
+    const branched = await acknowledged(client, replayed);
+    expect(replayed).toContain(`producer.session:${manager.getSessionId()}`);
     expect(branched.method).toBe("gateway.bind");
     client.send({ type: "response", id: branched.id, ok: true, result: { token: first, expires_ms: Date.now() + 3_600_000 } });
-    const branchAck = await client.next();
+    const branchAck = await acknowledged(client);
     expect(branchAck.ok).toBe(true);
     expect(await f.registry.getApiKey(session.model!) === first).toBe(true);
     function scan(path: string) {
@@ -442,4 +450,207 @@ test("review: bootstrap files reject symlinks and non-private permissions", () =
     if (oldTokenFile === undefined) delete process.env.NOLI_BRIDGE_TOKEN_FILE; else process.env.NOLI_BRIDGE_TOKEN_FILE = oldTokenFile;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// Synthetic producer facts; no Claude Code process, profile or provider is used.
+function requestFacts(overrides: Partial<RequestFacts> = {}): RequestFacts {
+  return { version: 1, producerSessionId: "private-root", producerAgentId: "Main", parentProducerSessionId: null,
+    branchAnchor: null, historyRevision: 1, requestClass: "main", querySource: "agent",
+    firstEligible: { messageId: "message-1", textBlockIndex: null, sample: "abc" },
+    prompt: { id: "prompt-1", origin: "human", position: { promptIndex: 1, turnIndex: 1 } }, ...overrides };
+}
+const rootSession: ProducerSessionParams = { ompSessionId: "private-root", parentOmpSessionId: null, agentKind: "main", agentId: "Main", epochEntryId: "epoch-root", ompVersion: "18.13.2", systemPrefix: { sha256: "2e52cff0ad7fa9912ebbeb49bb277f061719ac664f95a3a741b74e180e29a5ba", len: 752 } };
+const childSession: ProducerSessionParams = { ...rootSession, ompSessionId: "private-child", parentOmpSessionId: "private-root", agentKind: "sub", agentId: "0-Task", epochEntryId: null };
+const childFacts = () => requestFacts({ producerSessionId: "private-child", producerAgentId: "0-Task", parentProducerSessionId: "private-root", requestClass: "subagent", querySource: "task" });
+
+/** Acknowledge every schema-valid producer notification until the next frame that is not one. */
+async function acknowledged(client: Client, methods: string[] = []): Promise<Frame> {
+  for (;;) {
+    const frame = await client.next();
+    if (frame.method !== "producer.session" && frame.method !== "producer.branch") return frame;
+    assertValidFrame(frame);
+    methods.push(`${frame.method}:${frame.params?.ompSessionId}`);
+    client.send({ type: "response", id: frame.id, ok: true, result: {} });
+  }
+}
+
+async function authenticatedGateway() {
+  const f = await fixture();
+  let session = "private-root";
+  const bridge = startBridge({ dir: f.dir, token: bootstrap, host: host(() => session), gateway: f.gateway });
+  // Recorded before Noli connects; replayed after hello.
+  bridge.producer.announce(rootSession);
+  bridge.producer.announce(childSession);
+  const client = new Client(bridge.socketPath);
+  await client.call({ id: 1, method: "hello", params: { token: bootstrap } });
+  const bind = await client.next();
+  expect(bind.method).toBe("gateway.bind");
+  const replayed: string[] = [];
+  client.send({ type: "response", id: bind.id, ok: true, result: { token: first, expires_ms: Date.now() + 3_600_000 } });
+  client.send({ id: 2, method: "gateway.ready", sessionId: session });
+  expect((await acknowledged(client, replayed)).ok).toBe(true);
+  return { ...f, bridge, client, replayed, adopt() { session = "replacement-root"; bridge.invalidateAuthentication(); },
+    close() { client.socket.destroy(); bridge.close(); f.dispose(); } };
+}
+
+test("review: producer identities replay root-first after hello and registrations correlate independently", async () => {
+  const f = await authenticatedGateway();
+  try {
+    expect(f.replayed).toEqual(["producer.session:private-root", "producer.session:private-child"]);
+    const main = f.bridge.producer.register("private-root", requestFacts());
+    const sub = f.bridge.producer.register("private-child", childFacts());
+    const one = await f.client.next(), two = await f.client.next();
+    expect(one.method).toBe("gateway.request.register");
+    expect(one.params).toEqual({ ompSessionId: "private-root", facts: requestFacts() });
+    expect(two.params).toEqual({ ompSessionId: "private-child", facts: childFacts() });
+    expect(two.id).not.toBe(one.id);
+    f.client.send({ type: "response", id: two.id, ok: true, result: { requestReference: "y".repeat(43) } });
+    f.client.send({ type: "response", id: one.id, ok: true, result: { requestReference: "x".repeat(43) } });
+    expect(await main).toBe("x".repeat(43));
+    expect(await sub).toBe("y".repeat(43));
+  } finally { f.close(); }
+});
+
+test.each(["abort", "adoption", "disconnect", "malformed reply", "rejected reply"])("review: pending registration fails closed on %s", async action => {
+  const f = await authenticatedGateway();
+  const controller = new AbortController();
+  try {
+    const pending = f.bridge.producer.register("private-root", requestFacts(), controller.signal).catch(error => error);
+    const frame = await f.client.next();
+    if (action === "abort") controller.abort(new Error("synthetic cancellation"));
+    else if (action === "adoption") f.adopt();
+    else if (action === "disconnect") f.client.socket.destroy();
+    else f.client.send({ type: "response", id: frame.id, ok: action !== "rejected reply", result: { requestReference: "bad" }, error: { code: "not_ready" } });
+    expect(await pending).toBeInstanceOf(Error);
+    if (action === "abort") {
+      // A late reply cannot satisfy a new registration or leak the old waiter's slot.
+      const replacement = f.bridge.producer.register("private-root", requestFacts());
+      const next = await f.client.next();
+      f.client.send({ type: "response", id: frame.id, ok: true, result: { requestReference: "z".repeat(43) } });
+      f.client.send({ type: "response", id: next.id, ok: true, result: { requestReference: "r".repeat(43) } });
+      expect(await replacement).toBe("r".repeat(43));
+    }
+  } finally { f.close(); }
+});
+
+test("review: producer waiters are bounded and abort releases every slot", async () => {
+  const f = await authenticatedGateway();
+  const controller = new AbortController();
+  try {
+    const pending = Array.from({ length: 64 }, () => f.bridge.producer.register("private-root", requestFacts(), controller.signal).catch(error => error));
+    for (let i = 0; i < 64; i++) await f.client.next();
+    await expect(f.bridge.producer.register("private-root", requestFacts())).rejects.toThrow("Too many");
+    controller.abort(new Error("synthetic cancellation"));
+    expect((await Promise.all(pending)).every(error => error instanceof Error)).toBe(true);
+    const next = f.bridge.producer.register("private-root", requestFacts());
+    const frame = await f.client.next();
+    f.client.send({ type: "response", id: frame.id, ok: true, result: { requestReference: "r".repeat(43) } });
+    expect(await next).toBe("r".repeat(43));
+  } finally { f.close(); }
+});
+
+test("review: same-session renewal keeps an admitted registration; replacement adoption revokes it and replays only its own lineage", async () => {
+  const f = await authenticatedGateway();
+  try {
+    const pending = f.bridge.producer.register("private-root", requestFacts());
+    const request = await f.client.next();
+    f.client.send({ id: 10, method: "session.adopt", params: { sessionId: "private-root" } });
+    const renewal = await acknowledged(f.client);
+    expect(renewal.method).toBe("gateway.bind");
+    f.client.send({ type: "response", id: renewal.id, ok: true, result: { token: second, expires_ms: Date.now() + 3_600_000 } });
+    expect((await f.client.next()).ok).toBe(true);
+    f.client.send({ type: "response", id: request.id, ok: true, result: { requestReference: "r".repeat(43) } });
+    expect(await pending).toBe("r".repeat(43));
+    const stale = f.bridge.producer.register("private-root", requestFacts()).catch(error => error);
+    await f.client.next();
+    f.adopt();
+    expect(await stale).toBeInstanceOf(Error);
+    const replacement = { ...rootSession, ompSessionId: "replacement-root" };
+    f.bridge.producer.forget("private-root");
+    f.bridge.producer.announce(replacement);
+    f.client.send({ id: 11, method: "session.adopt", params: { sessionId: "replacement-root" } });
+    const replayed: string[] = [];
+    const rebound = await acknowledged(f.client, replayed);
+    // The old root's child names a parent Noli no longer binds; it is not replayed.
+    expect(replayed).toEqual(["producer.session:replacement-root"]);
+    f.client.send({ type: "response", id: rebound.id, ok: true, result: { token: first, expires_ms: Date.now() + 3_600_000 } });
+    expect((await f.client.next()).ok).toBe(true);
+    const fresh = f.bridge.producer.register("replacement-root", requestFacts({ producerSessionId: "replacement-root" }));
+    const current = await f.client.next();
+    expect(current.params?.ompSessionId).toBe("replacement-root");
+    f.client.send({ type: "response", id: current.id, ok: true, result: { requestReference: "n".repeat(43) } });
+    expect(await fresh).toBe("n".repeat(43));
+  } finally { f.close(); }
+});
+
+test("review: registration timeout releases its waiter without accepting a late reply", async () => {
+  const f = await authenticatedGateway();
+  const realSetTimeout = globalThis.setTimeout;
+  try {
+    globalThis.setTimeout = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => realSetTimeout(handler, delay === 10_000 ? 1 : delay, ...args)) as typeof setTimeout;
+    await expect(f.bridge.producer.register("private-root", requestFacts())).rejects.toThrow("timed out");
+    globalThis.setTimeout = realSetTimeout;
+    const old = await f.client.next();
+    const pending = f.bridge.producer.register("private-root", requestFacts());
+    const current = await f.client.next();
+    f.client.send({ type: "response", id: old.id, ok: true, result: { requestReference: "o".repeat(43) } });
+    f.client.send({ type: "response", id: current.id, ok: true, result: { requestReference: "n".repeat(43) } });
+    expect(await pending).toBe("n".repeat(43));
+  } finally { globalThis.setTimeout = realSetTimeout; f.close(); }
+});
+
+test("review: the private boundary rejects unsupported producer frames before sending them", async () => {
+  const f = await authenticatedGateway();
+  try {
+    const legacy = { ...requestFacts(), firstEligible: { messageId: null, textBlockIndex: null, fingerprint: "abc" } };
+    for (const facts of [undefined, { ...requestFacts(), version: 2 }, { ...requestFacts(), producerSessionId: "x".repeat(513) },
+      { ...requestFacts(), historyRevision: -1 }, { ...requestFacts(), unrecognized: true }, legacy,
+      { ...requestFacts(), ownership: { conversationId: "minted-by-noli" } }, { ...requestFacts(), requestClass: "compaction" },
+      { ...requestFacts(), firstEligible: { messageId: null, textBlockIndex: null, sample: "ab" } },
+      { ...requestFacts(), prompt: { id: null, origin: null, position: { promptIndex: 2, turnIndex: 1 } } },
+      { ...requestFacts(), previousMessageId: "resp_not_anthropic" }, { ...requestFacts(), producerSessionId: "private-child" }]) {
+      await expect(f.bridge.producer.register("private-root", facts as RequestFacts)).rejects.toThrow();
+    }
+    await expect(f.bridge.producer.register("unannounced", requestFacts({ producerSessionId: "unannounced" }))).rejects.toThrow("unannounced");
+    expect(() => f.bridge.producer.announce({ ...childSession, parentOmpSessionId: null })).toThrow();
+    expect(() => f.bridge.producer.announce({ ...rootSession, systemPrefix: { sha256: "A".repeat(64), len: 1 } })).toThrow();
+    await expect(f.bridge.producer.compaction({ ompSessionId: "private-root", phase: "end", facts: requestFacts({ requestClass: "compaction" }) })).rejects.toThrow();
+    await expect(f.bridge.producer.compaction({ ompSessionId: "private-root", phase: "begin", facts: requestFacts() })).rejects.toThrow();
+    await expect(f.bridge.producer.branch({ ompSessionId: "private-root", leafId: null, resetEntryIds: ["\n"] })).rejects.toThrow();
+    const pending = f.bridge.producer.register("private-root", requestFacts({ firstEligible: null, prompt: { id: null, origin: null, position: null } }));
+    const frame = await f.client.next();
+    expect(frame.params?.facts?.firstEligible).toBeNull();
+    expect(frame.params?.facts?.prompt.position).toBeNull();
+    f.client.send({ type: "response", id: frame.id, ok: true, result: { requestReference: "r".repeat(43) } });
+    expect(await pending).toBe("r".repeat(43));
+  } finally { f.close(); }
+});
+
+test("review: compaction brackets and branch resets wait for Noli's acknowledgement", async () => {
+  const f = await authenticatedGateway();
+  try {
+    const facts = requestFacts({ requestClass: "compaction", querySource: "compaction" });
+    const begin = f.bridge.producer.compaction({ ompSessionId: "private-root", phase: "begin", facts });
+    const opened = await f.client.next();
+    expect(opened).toMatchObject({ method: "producer.compaction", params: { ompSessionId: "private-root", phase: "begin", facts } });
+    f.client.send({ type: "response", id: opened.id, ok: true, result: {} });
+    await begin;
+    const end = f.bridge.producer.compaction({ ompSessionId: "private-root", phase: "end", facts: null });
+    const closed = await f.client.next();
+    expect(closed.params).toEqual({ ompSessionId: "private-root", phase: "end", facts: null });
+    f.client.send({ type: "response", id: closed.id, ok: false, error: { code: "bad_request", message: "synthetic" } });
+    await expect(end).rejects.toThrow("rejected");
+    const branch = f.bridge.producer.branch({ ompSessionId: "private-child", leafId: "leaf", resetEntryIds: ["reset-1"] });
+    const reset = await f.client.next();
+    expect(reset).toMatchObject({ method: "producer.branch", params: { ompSessionId: "private-child", leafId: "leaf", resetEntryIds: ["reset-1"] } });
+    f.client.send({ type: "response", id: reset.id, ok: true, result: {} });
+    await branch;
+    // A re-authenticated Noli receives the recorded branch with its producer.
+    f.client.send({ id: 12, method: "session.adopt", params: { sessionId: "private-root" } });
+    const replayed: string[] = [];
+    const renewal = await acknowledged(f.client, replayed);
+    expect(replayed).toEqual(["producer.session:private-root", "producer.session:private-child", "producer.branch:private-child"]);
+    f.client.send({ type: "response", id: renewal.id, ok: true, result: { token: second, expires_ms: Date.now() + 3_600_000 } });
+    expect((await f.client.next()).ok).toBe(true);
+  } finally { f.close(); }
 });

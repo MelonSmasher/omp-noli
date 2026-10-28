@@ -270,6 +270,9 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 			"gateway.bind": gatewayConfigured
 				? available("public", "Private in-memory gateway capability binding with one-time bootstrap")
 				: unavailable("public", "not_ready", "No Noli gateway catalog configured"),
+			"gateway.request.register": gatewayConfigured
+				? available("public", "Protocol-2 out-of-band producer facts from public extension events; request references travel in the body tag")
+				: unavailable("public", "not_ready", "No Noli gateway catalog configured"),
 			...nativeCapabilities(current, mainSession() as AgentSession | undefined),
 			// Bootstrap support: Noli must negotiate v2 before registering its SDK host tool.
 			// installThreadControl separately requires authenticated SDK provenance at call time.
@@ -307,7 +310,7 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 
 	/** Warn for broken visible features; unconfigured Gateway and unsupported memory controls are silently omitted. */
 	const warnUnavailable = (): void => {
-		const down = CAPABILITY_NAMES.filter(n => !n.startsWith("memory.") && !(n === "gateway.bind" && !gatewayConfigured) && !capabilities[n].available);
+		const down = CAPABILITY_NAMES.filter(n => !n.startsWith("memory.") && !(n.startsWith("gateway.") && !gatewayConfigured) && !capabilities[n].available);
 		const signature = down.map(n => `${n}:${capabilities[n].detail}`).join("|");
 		if (signature === warned) return;
 		warned = signature;

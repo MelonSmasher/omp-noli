@@ -318,7 +318,7 @@ try {
 	const bridgePath = await until("plugin Unix socket", async () => readdirSync(bridgeDir).find(file => file.endsWith(".sock")));
 	bridge = await socketClient(join(bridgeDir, bridgePath));
 	const hello = await bridge.call({ method: "hello", params: { token: bridgeToken } }, validateHello);
-	assert.equal(hello.protocol, 1);
+	assert.equal(hello.protocol, 2);
 	assert(hello.capabilities["agents.output"]?.available, "installed extension does not advertise agents.output");
 	function bridgeCall(method: "agents.list", params?: Json): Promise<AgentList>;
 	function bridgeCall(method: "agents.output", params: Json): Promise<AgentOutputResult>;

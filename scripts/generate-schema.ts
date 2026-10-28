@@ -3,7 +3,7 @@ import { writeSchemaFiles } from "./schema-files";
 import { join } from "node:path";
 import ts from "typescript";
 import { sameSchemaText } from "./schema-text";
-import { AGENT_KINDS, AGENT_STATES, CAPABILITY_NAMES, CAPABILITY_REASONS, DEFINITION_SOURCES, DISCOVERY_REASONS, DISCOVERY_STATUSES, ERROR_CODES, JOB_KINDS } from "../src/protocol";
+import { AGENT_KINDS, AGENT_STATES, CAPABILITY_NAMES, CAPABILITY_REASONS, DEFINITION_SOURCES, DISCOVERY_REASONS, DISCOVERY_STATUSES, ERROR_CODES, JOB_KINDS, PROTOCOL_VERSION } from "../src/protocol";
 
 // The existing frame schema remains the wire envelope. Generate the evolving
 // agent contracts from their TypeScript declarations, not a second field list.
@@ -11,7 +11,12 @@ const root = join(import.meta.dir, "..");
 const path = join(root, "protocol/noli-bridge.schema.json");
 const schema = JSON.parse(readFileSync(path, "utf8"));
 const previous = JSON.stringify(schema);
-const program = ts.createProgram([join(root, "src/protocol.ts")], { strictNullChecks: true, target: ts.ScriptTarget.ESNext });
+const program = ts.createProgram([join(root, "src/protocol.ts")], {
+	strictNullChecks: true, target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext,
+	moduleResolution: ts.ModuleResolutionKind.Bundler,
+	// Disposable schema fixtures resolve the same public SDK as the invoking tree.
+	baseUrl: process.env.NODE_PATH ?? join(root, "node_modules"),
+});
 const checker = program.getTypeChecker();
 const source = program.getSourceFile(join(root, "src/protocol.ts"))!;
 const declarations = new Map(source.statements.filter(ts.isInterfaceDeclaration).map(declaration => [declaration.name.text, declaration]));
@@ -25,6 +30,7 @@ function generate(type: ts.Type): Schema {
 		return { anyOf: parts.map(generate) };
 	}
 	if (type.flags & ts.TypeFlags.StringLiteral) return { const: (type as ts.StringLiteralType).value };
+	if (type.flags & ts.TypeFlags.NumberLiteral) return { const: (type as ts.NumberLiteralType).value };
 	if (type.flags & ts.TypeFlags.String) return { type: "string" };
 	if (type.flags & ts.TypeFlags.Number) return { type: "number" };
 	if (type.flags & ts.TypeFlags.BooleanLike) return { type: "boolean" };
@@ -43,10 +49,41 @@ function generate(type: ts.Type): Schema {
 	}
 	throw new Error(`Unsupported protocol type: ${checker.typeToString(type)}`);
 }
-for (const name of ["GatewayBindParams", "GatewayBindResult", "GatewayReadyResult", "GatewayBindRequest", "AgentView", "AgentOutputParams", "AgentOutputResult", "NavigateTreeParams", "GoalBudgetParams", "MemorySearchParams", "MemorySaveParams", "NativeControlResult"]) {
+const PRODUCER_DEFS = ["PromptPosition", "FirstEligibleInput", "RequestPrompt", "PrevToolDuration", "RequestFacts", "SystemPrefix", "ProducerSessionParams", "ProducerBranchParams", "GatewayRequestParams", "GatewayRequestResult", "ProducerCompactionParams", "ProducerResult", "GatewayRequest", "ProducerSessionRequest", "ProducerBranchRequest", "ProducerCompactionRequest", "NoliRequestTag"];
+for (const name of ["GatewayBindParams", "GatewayBindResult", "GatewayReadyResult", "GatewayBindRequest", ...PRODUCER_DEFS, "AgentView", "AgentOutputParams", "AgentOutputResult", "NavigateTreeParams", "GoalBudgetParams", "MemorySearchParams", "MemorySaveParams", "NativeControlResult"]) {
 	const declaration = declarations.get(name);
 	if (!declaration) throw new Error(`Missing ${name}`);
 	schema.$defs[name] = generate(checker.getTypeAtLocation(declaration));
+}
+schema.title = `Noli bridge protocol, version ${PROTOCOL_VERSION}`;
+schema.$defs.HelloResult.properties.protocol.const = PROTOCOL_VERSION;
+// Producer facts: name nested shapes once and add the bounds TypeScript cannot express.
+const ref = (name: string) => ({ $ref: `#/$defs/${name}` });
+const nullable = (name: string) => ({ anyOf: [ref(name), { type: "null" }] });
+const defs = schema.$defs;
+const boundedInteger = (minimum: number, maximum = Number.MAX_SAFE_INTEGER) => ({ type: "integer", minimum, maximum });
+defs.PromptPosition.properties = { promptIndex: boundedInteger(0, 10_000_000), turnIndex: boundedInteger(1, 10_000_000) };
+defs.FirstEligibleInput.properties.textBlockIndex = { anyOf: [boundedInteger(0), { type: "null" }] };
+defs.FirstEligibleInput.properties.sample = { type: "string", minLength: 3, maxLength: 3 };
+defs.RequestPrompt.properties.position = nullable("PromptPosition");
+defs.RequestFacts.properties.historyRevision = boundedInteger(0);
+defs.RequestFacts.properties.previousMessageId = { type: "string", pattern: "^msg_[A-Za-z0-9_-]{1,508}$" };
+defs.PrevToolDuration.properties = { toolName: { type: "string", minLength: 1 }, durationMs: boundedInteger(0) };
+defs.RequestFacts.properties.prevToolDurations = { type: "array", minItems: 1, maxItems: 32, items: ref("PrevToolDuration") };
+// Compaction facts never carry the previous batch.
+defs.RequestFacts.if = { required: ["requestClass"], properties: { requestClass: { const: "compaction" } } };
+defs.RequestFacts.then = { properties: { prevToolDurations: false } };
+defs.RequestFacts.properties.firstEligible = nullable("FirstEligibleInput");
+defs.RequestFacts.properties.prompt = ref("RequestPrompt");
+defs.SystemPrefix.properties = { sha256: { type: "string", pattern: "^[0-9a-f]{64}$" }, len: boundedInteger(1) };
+defs.ProducerSessionParams.properties.systemPrefix = nullable("SystemPrefix");
+defs.GatewayRequestParams.properties.facts = ref("RequestFacts");
+defs.GatewayRequestResult.properties.requestReference = { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" };
+defs.ProducerCompactionParams.properties.facts = nullable("RequestFacts");
+defs.NoliRequestTag.properties.ref = { anyOf: [{ type: "string", pattern: "^[A-Za-z0-9_-]{43}$" }, { type: "null" }] };
+defs.NoliRequestTag.description = "Private top-level body member on Gateway-bound Anthropic Messages requests; Noli strips it before shaping.";
+for (const [frame, params] of [["GatewayRequest", "GatewayRequestParams"], ["ProducerSessionRequest", "ProducerSessionParams"], ["ProducerBranchRequest", "ProducerBranchParams"], ["ProducerCompactionRequest", "ProducerCompactionParams"]]) {
+	defs[frame!].properties.params = ref(params!);
 }
 for (const [name, values] of Object.entries({ CapabilityName: CAPABILITY_NAMES, CapabilityReason: CAPABILITY_REASONS, AgentKind: AGENT_KINDS, AgentState: AGENT_STATES, DefinitionSource: DEFINITION_SOURCES, DiscoveryReason: DISCOVERY_REASONS, DiscoveryStatus: DISCOVERY_STATUSES, ErrorCode: ERROR_CODES, JobKind: JOB_KINDS })) schema.$defs[name] = { enum: values };
 schema.$defs.Capabilities.required = CAPABILITY_NAMES.filter(name => !["host.attach_file", "host.forge_resource", "host.forge_read", "host.forge_write", "host.forge_watch", "host.model_roles"].includes(name));
@@ -68,10 +105,12 @@ schema.$defs.AgentOutputParams.properties.revision = { type: "string", minLength
 const results = schema.$defs.Result.anyOf;
 if (!results.some((result: Schema) => result.$ref === "#/$defs/AgentOutputResult")) results.push({ $ref: "#/$defs/AgentOutputResult" });
 if (!results.some((result: Schema) => result.$ref === "#/$defs/NativeControlResult")) results.push({ $ref: "#/$defs/NativeControlResult" });
-for (const name of ["GatewayBindResult", "GatewayReadyResult"]) {
+for (const name of ["GatewayBindResult", "GatewayReadyResult", "GatewayRequestResult"]) {
     if (!results.some((result: Schema) => result.$ref === `#/$defs/${name}`)) results.push({ $ref: `#/$defs/${name}` });
 }
-if (!schema.$defs.ServerFrame.oneOf.some((frame: Schema) => frame.$ref === "#/$defs/GatewayBindRequest")) schema.$defs.ServerFrame.oneOf.push({ $ref: "#/$defs/GatewayBindRequest" });
+for (const name of ["GatewayBindRequest", "GatewayRequest", "ProducerSessionRequest", "ProducerBranchRequest", "ProducerCompactionRequest"]) {
+	if (!schema.$defs.ServerFrame.oneOf.some((frame: Schema) => frame.$ref === `#/$defs/${name}`)) schema.$defs.ServerFrame.oneOf.push({ $ref: `#/$defs/${name}` });
+}
 schema.$defs.GoalBudgetParams.properties.tokenBudget = { anyOf: [{ type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, { type: "null" }] };
 schema.$defs.MemorySearchParams.properties.limit = { type: "integer", minimum: 1, maximum: 1000 };
 schema.$defs.NativeControlResult.additionalProperties = true;
