@@ -4,7 +4,7 @@ An OMP extension that gives Noli a private local control channel. It runs next t
 
 ## Runtime and loading
 
-Requires official OMP **18.8.2 or newer** and **Bun 1.4.2 or newer in the OMP runtime**; verified against official OMP 18.8.2. No custom build is needed. Missing host APIs disable the affected capability with an explicit reason. Install development dependencies with `bun install`. Load the package root with `omp -e /path/to/omp-noli --mode rpc-ui`, or through the package's `omp.extensions` declaration.
+This tree requires published, unmodified **OMP 18.13.3 or newer** (peer dependency `>=18.13.3`), plus **Bun 1.4.2 or newer in the OMP runtime**. It imports no OMP symbol that is absent from the published 18.13.3 package. Noli pins the exact OMP release it was qualified with; on any other OMP version the system-prefix fact below is omitted and Noli keeps a single organization system block. The historical releases below were qualified against official OMP 18.8.2. Missing optional host APIs disable their affected capability with an explicit reason. Install development dependencies with `bun install`. Load the package root with `omp -e /path/to/omp-noli --mode rpc-ui`, or through the package's `omp.extensions` declaration.
 
 Plugin v0.9.4 adds frozen reads: `agents.output` with the `revision` of an earlier page serves that retained transcript, so a client can page through one consistent transcript while the child keeps streaming.
 
@@ -17,6 +17,27 @@ For managed Gateway sessions, Noli writes secret-free `gateway-providers.json` a
 `gateway.ready` reflects the installed credential, not the latest renewal attempt: an unexpired key remains ready during pending/failed renewal, with a safe optional `renewalError` diagnostic while retries fail. An expired key returns `not_ready` even before its expiry timer runs; successful replacement clears the diagnostic. Long-lived credentials use absolute renewal/expiry deadlines split across the runtime timer limit. Sessions without a Gateway catalog advertise `gateway.bind` as unavailable. The exported `ServerFrame` type includes reverse `gateway.bind` requests.
 
 `test/gateway.test.ts` exercises the pinned real SDK registry, availability and auth storage before bind, after two keys and after revoke, and checks all temporary profile files for credential bytes. `test/review-gateway.test.ts` permanently covers legacy re-hello, uninterrupted renewal, real streaming auth retries, native lifecycle rebinding and process-launched bootstrap isolation with implicit Bun child environment inheritance. Bridge fixtures cover one-use hello, bind acknowledgement, stale-session rejection and rebind/revoke. The Noli repository owns the mock-upstream managed-process security smoke and actual Gateway 429 classifier fixture.
+
+## Claude Code request correlation (bridge protocol 2, redefined)
+
+Protocol 2 was never published and now means the out-of-band shapes in `src/protocol.ts`; the earlier digest-binding draft (`gateway.request.register {sessionId,facts,request}`, a custom `streamSimple` wrapper, `x-noli-claude-request-ref`) is gone. Gateway providers are registered as plain catalog configs. Everything below uses the stock extension API only and is installed for the root and for every child that rejoins the launch's Gateway (`src/claude-hooks.ts`).
+
+Reverse requests on the authenticated bridge, each answered by Noli with a response frame:
+
+- `producer.session {ompSessionId, parentOmpSessionId, agentKind, agentId, epochEntryId, ompVersion, systemPrefix}` on `session_start`/`switch`/`branch`/`tree`. Children name their spawning agent's session (`ctx.agent.parentId`), or the root. Announcements are kept and re-sent root-first, parent before child, after every `hello` and `session.adopt`.
+- `producer.branch {ompSessionId, leafId, resetEntryIds}` on session events, and before a registration whenever the branch's `/clear` boundaries changed.
+- `gateway.request.register {ompSessionId, facts}` → `{requestReference}` from an async `context` handler. Side turns, which stock OMP marks with its exact side-channel reminder, are skipped.
+- `producer.compaction {ompSessionId, phase, facts}`: `begin` is sent on `auto_compaction_start` for the request-making actions (`context-full`, `remote`, `handoff`), carries facts over the branch since the latest compaction or `/clear`, and waits for the acknowledgement. `end` (`facts: null`) is sent on `session_compact`, `auto_compaction_end`, `agent_start` and shutdown. `session_before_compact` is deliberately not observed: any handler for it makes stock OMP skip speculative compaction (`session-maintenance.ts:2162,2255,2490`).
+
+A synchronous `before_provider_request` handler adds a top-level `noli_request: {session, ref, warm}` member to every Gateway-bound Anthropic Messages body; Noli strips it by raw span before shaping. `ref` is the pending main-loop registration (null when it failed: fail closed). `warm` is set for 30 s after a `cache_warming_decision` of `warm` and forces `ref: null`. Because the handler never awaits, the runner's timeout and fail-open paths cannot drop its value.
+
+Facts (`src/claude-facts.ts`) are a pure port of the 8.1 delivery-time stamping, recomputed from `ctx.sessionManager.getBranch()` plus the not-yet-persisted tail of the `context` event: T0 sample (UTF-16 units 4/7/20, `"0"` when missing, lone surrogates as U+FFFD), prompt origin/position, summary inheritance and `/clear` restarts. One `noli-facts-epoch` custom entry per session marks where facts start; earlier history stays unknown. Message and prompt ids are UUIDv4-format values derived from the message itself, so restarts and forks recompute them without a per-message journal write. Noli mints ownership, the fingerprint (with its own Claude Code version) and human prompt ids are not delivered over the bridge.
+
+`facts.prevToolDurations` (optional, 1-32 `{toolName, durationMs}`) carries Claude Code's `x-claude-code-prev-tool-durations` input for main and subagent requests that directly follow a tool batch. Each session instance keeps in-memory timings: the start is the persisted `tool_execution_start` entry's `startedAt` (or the event's delivery time), and the end is the `tool_result` event. At the root, `tool_result` is also the inclusion test: thrown errors count, while unknown, invalid, denied, blocked or pre-start-aborted tools do not. Children observe `tool_execution_end` instead and leave out every error result, because a first `tool_result` handler would make stock OMP skip speculative execution. Timings reset on `before_agent_start` (reason `prompt`) and overflow auto-compaction. They are emitted, in completion order, for the last non-error assistant message's tool calls, so an auto-retry repeats the same value. Restarted sessions start without them. Approval waits are not subtracted: observing `tool_approval_resolved` would change stock behavior.
+
+`src/system-prefix.generated.ts` (`bun run system-prefix`) holds the UTF-8 SHA-256 and length of OMP's bundled system-prompt static prefix and of the stock side-turn reminder for the pinned SDK. For 18.13.3 the prefix digest is `2e52cff0…a5ba`, 752 bytes (751 UTF-16 units), unchanged from 18.13.2.
+
+Known limits on stock OMP: speculative compaction precompute, manual `/compact` and manual `/handoff` emit no event before their summarization request, so those requests are untagged and fall to Noli's helper row. Any `context` handler makes the stock runner structuredClone the request messages and defeats the identity-keyed conversion memo for that call (`runner.ts:2117-2184`, `session/messages.ts:1023-1049`); the produced bytes are unchanged. `assistant_message` cannot change non-text blocks, so thinking blocks cannot be marked as narration.
 
 ## v0.9.7 native watch and model roles
 
@@ -316,11 +337,11 @@ Each disabled non-memory capability is listed with its reason code and detail.
 
 **Noli contract.** Read the capabilities before using a feature. `hello` returns the full capability map, and `capabilities.get` re-checks and returns it. A `capabilities.changed` event is pushed whenever the map changes. Hide or disable UI for any capability with `available: false`. Even so, handle `capability_unavailable` on every call, because internal capabilities can be switched off between the check and the call.
 
-## Protocol 1
+## Protocol 2
 
 UTF-8 newline-delimited JSON over a Unix domain socket, or on Windows over the named pipe described in v0.9.6. `protocol/noli-bridge.schema.json` is the authoritative definition of every frame the bridge sends; this section summarizes it.
 
-Requests have `id`, `method`, and optional `params`. The first request must be `hello`, with the shared token in `params.token`. A successful `hello` returns `{ protocol: 1, sessionId, pid, capabilities }`. A failed `hello` closes the connection, and so does any malformed frame (invalid JSON, or JSON that isn't an object) sent before a successful `hello`.
+Requests have `id`, `method`, and optional `params`. The first request must be `hello`, with the shared token in `params.token`. A successful `hello` returns `{ protocol: 2, sessionId, pid, capabilities }`. Clients must reject any other protocol version. A failed `hello` closes the connection, and so does any malformed frame (invalid JSON, or JSON that isn't an object) sent before a successful `hello`.
 
 Every later request must carry the current `sessionId`. Replies look like:
 

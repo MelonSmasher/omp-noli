@@ -1,7 +1,7 @@
 /**
- * Noli bridge wire protocol, version 1.
+ * Noli bridge wire protocol, version 2.
  *
- * This module is the contract Noli consumes. It has no transport code and no
+ * This module is the contract Noli consumes. It has no transport code or runtime
  * OMP imports: every value here is Noli-facing vocabulary, and the OMP adapter
  * maps host data onto it. `protocol/noli-bridge.schema.json` is the
  * language-neutral form of the same contract; tests validate every frame the
@@ -12,12 +12,13 @@
  * Noli as an unexpected string.
  */
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 // ---------------------------------------------------------------- capabilities
 
 export const CAPABILITY_NAMES = [
     "gateway.bind",
+	"gateway.request.register",
 	"agents.list",
 	"host.thread_read",
 	"host.thread_open",
@@ -283,6 +284,74 @@ export interface GatewayBindResult { token: string; expires_ms: number }
 export interface GatewayReadyResult { bound: boolean; /** Safe diagnostic while a working key is retained and renewal retries. */ renewalError?: string }
 export interface GatewayBindRequest { type: "request"; id: string; method: "gateway.bind"; params: GatewayBindParams }
 
+// ------------------------------------------------- out-of-band producer facts
+
+/** Absolute Claude Code prompt/turn counters, recomputed from the OMP session branch. */
+export interface PromptPosition { promptIndex: number; turnIndex: number }
+/**
+ * The first non-meta source input of the request (T0). `sample` holds the UTF-16
+ * code units at indices 4, 7 and 20 of its first text, "0" for each missing index,
+ * with any lone surrogate replaced by U+FFFD. Noli derives the fingerprint with its
+ * own Claude Code version.
+ */
+export interface FirstEligibleInput { messageId: string | null; textBlockIndex: number | null; sample: string }
+export interface RequestPrompt { id: string | null; origin: string | null; position: PromptPosition | null }
+/** One tool the previous batch executed: resolved wire tool name and max(0, round(end - start)) in ms. */
+export interface PrevToolDuration { toolName: string; durationMs: number }
+/** Producer facts for one main, subagent or compaction request. Noli mints ownership. */
+export interface RequestFacts {
+	version: 1;
+	/** Always the registering `ompSessionId`. */
+	producerSessionId: string;
+	/** Active leaf entry id when the facts were computed. */
+	branchAnchor: string | null;
+	/** Length of the active branch path. */
+	historyRevision: number;
+	producerAgentId: string;
+	parentProducerSessionId: string | null;
+	requestClass: "main" | "subagent" | "compaction";
+	querySource: string;
+	/** The last non-error assistant response id (`msg_…`) in the request's source view. */
+	previousMessageId?: string;
+	/** null when T0 lies in history recorded before the session's facts epoch. */
+	firstEligible: FirstEligibleInput | null;
+	prompt: RequestPrompt;
+	/**
+	 * Claude Code `prevToolDurations`: the tools executed in the batch this main or subagent
+	 * request directly follows, in completion order, first 32. Absent when there is none;
+	 * never null or empty, and never on compaction.
+	 */
+	prevToolDurations?: PrevToolDuration[];
+}
+/** UTF-8 SHA-256 and byte length of OMP's bundled system-prompt static prefix. */
+export interface SystemPrefix { sha256: string; len: number }
+export interface ProducerSessionParams {
+	ompSessionId: string;
+	parentOmpSessionId: string | null;
+	agentKind: "main" | "sub";
+	agentId: string;
+	/** The session's facts-epoch entry; null while it is not on the active branch. */
+	epochEntryId: string | null;
+	ompVersion: string;
+	systemPrefix: SystemPrefix | null;
+}
+export interface ProducerBranchParams { ompSessionId: string; leafId: string | null; resetEntryIds: string[] }
+export interface GatewayRequestParams { ompSessionId: string; facts: RequestFacts }
+export interface GatewayRequestResult { requestReference: string }
+/** `facts` is required on `begin` and null on `end`. */
+export interface ProducerCompactionParams { ompSessionId: string; phase: "begin" | "end"; facts: RequestFacts | null }
+export interface ProducerResult {}
+export interface GatewayRequest { type: "request"; id: string; method: "gateway.request.register"; params: GatewayRequestParams }
+export interface ProducerSessionRequest { type: "request"; id: string; method: "producer.session"; params: ProducerSessionParams }
+export interface ProducerBranchRequest { type: "request"; id: string; method: "producer.branch"; params: ProducerBranchParams }
+export interface ProducerCompactionRequest { type: "request"; id: string; method: "producer.compaction"; params: ProducerCompactionParams }
+/**
+ * Private top-level member of an Anthropic Messages body bound for the Noli
+ * gateway. Noli removes it by raw span before shaping. `ref` is the reference
+ * registered for the pending main-loop call, `warm` marks a cache-warm replay.
+ */
+export interface NoliRequestTag { session: string; ref: string | null; warm: boolean }
+
 // ---------------------------------------------------------------------- errors
 
 export const ERROR_CODES = [
@@ -327,4 +396,4 @@ export type EventFrame =
 	| { type: "event"; event: "agent.changed"; sessionId: string; agent: AgentView }
 	| { type: "event"; event: "capabilities.changed"; sessionId: string; capabilities: Capabilities };
 
-export type ServerFrame = ResponseFrame | EventFrame | GatewayBindRequest;
+export type ServerFrame = ResponseFrame | EventFrame | GatewayBindRequest | GatewayRequest | ProducerSessionRequest | ProducerBranchRequest | ProducerCompactionRequest;

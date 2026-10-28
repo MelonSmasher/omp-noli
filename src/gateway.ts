@@ -36,15 +36,21 @@ function install(pi: ExtensionAPI, dir: string): void {
 	}
 }
 
-/** Re-register the bound launch's Gateway providers for another session in this process. */
-export function rejoinGateway(pi: ExtensionAPI, dir: string | undefined): void {
-	if (!dir || current?.dir !== dir) return;
+/** Whether a provider request goes to this launch's Gateway as Anthropic Messages, where producer facts apply. */
+export function isGatewayClaudeModel(model: { provider: string; api: string } | undefined): boolean {
+	return !!model && model.api === "anthropic-messages" && !!current?.providers.some(([name]) => name === model.provider);
+}
+
+/** Re-register the bound launch's Gateway providers for another session in this process; false when it is not that launch's. */
+export function rejoinGateway(pi: ExtensionAPI, dir: string | undefined): boolean {
+	if (!dir || current?.dir !== dir) return false;
 	install(pi, dir);
 	// The queued registration's live key covers everything until the session starts. Only a
 	// started session joins, so a cancelled startup (which never starts or shuts down) is not
 	// retained. Once started, OMP's runner applies registerProvider to the live registry.
 	pi.on("session_start", () => { joined.add(pi); });
 	pi.on("session_shutdown", () => { joined.delete(pi); });
+	return true;
 }
 
 /** Factory-time catalog registration precedes OMP's initial model selection. */
@@ -81,7 +87,7 @@ export function registerGateway(pi: ExtensionAPI, dir: string): GatewayProviders
 			if (typeof credential.token !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(credential.token) || !Number.isSafeInteger(credential.expires_ms) || credential.expires_ms <= Date.now()) {
 				throw new Error("Invalid Noli gateway binding");
 			}
-			// SDK 18.8.2 ModelRegistry.registerProvider replaces authStorage.keys'
+			// SDK 18.13.2 ModelRegistry.registerProvider replaces authStorage.keys'
 			// in-memory config; no OAuth login/credential persistence is involved.
 			register(credential.token);
 		},

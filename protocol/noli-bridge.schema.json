@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/MelonSmasher/omp-noli/protocol/noli-bridge.schema.json",
-  "title": "Noli bridge protocol, version 1",
+  "title": "Noli bridge protocol, version 2",
   "description": "Every frame the bridge sends. Enumerations are closed: a client may treat an unlisted value as a protocol violation. Keep in sync with src/protocol.ts; tests check that the enumerations match and that every emitted frame validates.",
   "$ref": "#/$defs/ServerFrame",
   "$defs": {
@@ -15,6 +15,18 @@
         },
         {
           "$ref": "#/$defs/GatewayBindRequest"
+        },
+        {
+          "$ref": "#/$defs/GatewayRequest"
+        },
+        {
+          "$ref": "#/$defs/ProducerSessionRequest"
+        },
+        {
+          "$ref": "#/$defs/ProducerBranchRequest"
+        },
+        {
+          "$ref": "#/$defs/ProducerCompactionRequest"
         }
       ]
     },
@@ -118,6 +130,9 @@
         },
         {
           "$ref": "#/$defs/GatewayReadyResult"
+        },
+        {
+          "$ref": "#/$defs/GatewayRequestResult"
         }
       ]
     },
@@ -132,7 +147,7 @@
       ],
       "properties": {
         "protocol": {
-          "const": 1
+          "const": 2
         },
         "sessionId": {
           "type": "string",
@@ -349,6 +364,7 @@
     "CapabilityName": {
       "enum": [
         "gateway.bind",
+        "gateway.request.register",
         "agents.list",
         "host.thread_read",
         "host.thread_open",
@@ -447,6 +463,7 @@
       "additionalProperties": false,
       "required": [
         "gateway.bind",
+        "gateway.request.register",
         "agents.list",
         "host.thread_read",
         "host.thread_open",
@@ -468,6 +485,9 @@
       ],
       "properties": {
         "gateway.bind": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "gateway.request.register": {
           "$ref": "#/$defs/CapabilityState"
         },
         "agents.list": {
@@ -1418,6 +1438,539 @@
               "type": "string"
             }
           }
+        }
+      }
+    },
+    "GatewayRequestParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ompSessionId",
+        "facts"
+      ],
+      "properties": {
+        "ompSessionId": {
+          "type": "string"
+        },
+        "facts": {
+          "$ref": "#/$defs/RequestFacts"
+        }
+      }
+    },
+    "GatewayRequestResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestReference"
+      ],
+      "properties": {
+        "requestReference": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        }
+      }
+    },
+    "GatewayRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "type": {
+          "const": "request"
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "const": "gateway.request.register"
+        },
+        "params": {
+          "$ref": "#/$defs/GatewayRequestParams"
+        }
+      }
+    },
+    "PromptPosition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "promptIndex",
+        "turnIndex"
+      ],
+      "properties": {
+        "promptIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000000
+        },
+        "turnIndex": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        }
+      }
+    },
+    "FirstEligibleInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "messageId",
+        "textBlockIndex",
+        "sample"
+      ],
+      "properties": {
+        "messageId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "textBlockIndex": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sample": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 3
+        }
+      }
+    },
+    "RequestPrompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "origin",
+        "position"
+      ],
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromptPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "RequestFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "producerSessionId",
+        "branchAnchor",
+        "historyRevision",
+        "producerAgentId",
+        "parentProducerSessionId",
+        "requestClass",
+        "querySource",
+        "firstEligible",
+        "prompt"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "producerSessionId": {
+          "type": "string"
+        },
+        "branchAnchor": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "historyRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "producerAgentId": {
+          "type": "string"
+        },
+        "parentProducerSessionId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "requestClass": {
+          "anyOf": [
+            {
+              "const": "main"
+            },
+            {
+              "const": "subagent"
+            },
+            {
+              "const": "compaction"
+            }
+          ]
+        },
+        "querySource": {
+          "type": "string"
+        },
+        "previousMessageId": {
+          "type": "string",
+          "pattern": "^msg_[A-Za-z0-9_-]{1,508}$"
+        },
+        "firstEligible": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FirstEligibleInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prompt": {
+          "$ref": "#/$defs/RequestPrompt"
+        },
+        "prevToolDurations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/PrevToolDuration"
+          }
+        }
+      },
+      "if": {
+        "required": [
+          "requestClass"
+        ],
+        "properties": {
+          "requestClass": {
+            "const": "compaction"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "prevToolDurations": false
+        }
+      }
+    },
+    "SystemPrefix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "len"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "len": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "ProducerSessionParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ompSessionId",
+        "parentOmpSessionId",
+        "agentKind",
+        "agentId",
+        "epochEntryId",
+        "ompVersion",
+        "systemPrefix"
+      ],
+      "properties": {
+        "ompSessionId": {
+          "type": "string"
+        },
+        "parentOmpSessionId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "agentKind": {
+          "anyOf": [
+            {
+              "const": "main"
+            },
+            {
+              "const": "sub"
+            }
+          ]
+        },
+        "agentId": {
+          "type": "string"
+        },
+        "epochEntryId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "ompVersion": {
+          "type": "string"
+        },
+        "systemPrefix": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SystemPrefix"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ProducerBranchParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ompSessionId",
+        "leafId",
+        "resetEntryIds"
+      ],
+      "properties": {
+        "ompSessionId": {
+          "type": "string"
+        },
+        "leafId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "resetEntryIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ProducerCompactionParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ompSessionId",
+        "phase",
+        "facts"
+      ],
+      "properties": {
+        "ompSessionId": {
+          "type": "string"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "const": "begin"
+            },
+            {
+              "const": "end"
+            }
+          ]
+        },
+        "facts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestFacts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ProducerResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {}
+    },
+    "ProducerSessionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "type": {
+          "const": "request"
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "const": "producer.session"
+        },
+        "params": {
+          "$ref": "#/$defs/ProducerSessionParams"
+        }
+      }
+    },
+    "ProducerBranchRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "type": {
+          "const": "request"
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "const": "producer.branch"
+        },
+        "params": {
+          "$ref": "#/$defs/ProducerBranchParams"
+        }
+      }
+    },
+    "ProducerCompactionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "type": {
+          "const": "request"
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "const": "producer.compaction"
+        },
+        "params": {
+          "$ref": "#/$defs/ProducerCompactionParams"
+        }
+      }
+    },
+    "NoliRequestTag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session",
+        "ref",
+        "warm"
+      ],
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "warm": {
+          "type": "boolean"
+        }
+      },
+      "description": "Private top-level body member on Gateway-bound Anthropic Messages requests; Noli strips it before shaping."
+    },
+    "PrevToolDuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "toolName",
+        "durationMs"
+      ],
+      "properties": {
+        "toolName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       }
     }

@@ -28,15 +28,19 @@ async function failedRefresh(writeSchema: string, error: RegExp): Promise<void> 
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
+// Each case spawns a fresh Bun process that cold-loads the TypeScript
+// compiler (~4 s unloaded); the 5 s default flakes under parallel CI load.
+const SUBPROCESS_TIMEOUT_MS = 30_000;
+
 test("schema refresh parses every source before changing any output", async () => {
 	await failedRefresh("{ invalid JSON", /JSON|Parse/);
-});
+}, SUBPROCESS_TIMEOUT_MS);
 
 test("schema refresh rejects inconsistent shared definitions without changing any output", async () => {
 	const schema = JSON.parse(readFileSync(join(root, generated[1]!), "utf8"));
 	schema.$defs.ForgeResourceKind.enum.push("mismatched_kind");
 	await failedRefresh(JSON.stringify(schema), /Native read\/write handle schemas disagree: ForgeResourceKind/);
-});
+}, SUBPROCESS_TIMEOUT_MS);
 
 test("schema replacement stages all outputs before the first rename and removes staging files on failure", () => {
 	const dir = mkdtempSync(join(tmpdir(), "noli-schema-stage-"));

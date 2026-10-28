@@ -129,7 +129,7 @@ describe("current-thread host tool guard", () => {
 		expect(h.result(h.reply, h.ctx())?.isError).toBe(true);
 	});
 	test("guidance is request-local deduplicated and authenticated main only", () => {
-		const h = harness(); const event: BeforeAgentStartEvent = { type: "before_agent_start", prompt: "done", systemPrompt: ["base"] };
+		const h = harness(); const event: BeforeAgentStartEvent = { type: "before_agent_start", reason: "prompt", prompt: "done", systemPrompt: ["base"] };
 		const first = h.prompt(event, h.ctx())!;
 		expect(first.systemPrompt?.join()).toContain("skill://noli");
 		expect(h.prompt({ ...event, systemPrompt: first.systemPrompt! }, h.ctx())?.systemPrompt).toEqual(first.systemPrompt);
@@ -137,7 +137,7 @@ describe("current-thread host tool guard", () => {
 		expect(h.prompt(event, h.ctx())).toBeUndefined();
 	});
 	test("mixed-version SDK registrations only recommend tools that can be called", () => {
-		const h = harness(); const event: BeforeAgentStartEvent = { type: "before_agent_start", prompt: "done", systemPrompt: ["base"] };
+		const h = harness(); const event: BeforeAgentStartEvent = { type: "before_agent_start", reason: "prompt", prompt: "done", systemPrompt: ["base"] };
 		h.setTools(["noli_thread_get", "noli_thread_finish"]);
 		expect(h.prompt(event, h.ctx())?.systemPrompt?.join()).not.toContain("noli_attach_file");
 		h.setTools(["noli_attach_file"]);
@@ -285,7 +285,7 @@ describe("read-only native forge resource guard", () => {
 		}
 	});
 	test("forge guidance requires authenticated SDK registration and disappears after revocation", () => {
-		const h = harness(); const event: BeforeAgentStartEvent = { type: "before_agent_start", prompt: "read review", systemPrompt: ["base"] };
+		const h = harness(); const event: BeforeAgentStartEvent = { type: "before_agent_start", reason: "prompt", prompt: "read review", systemPrompt: ["base"] };
 		h.setTools(["noli_forge_resource"]);
 		const first = h.prompt(event, h.ctx())!.systemPrompt!;
 		expect(first.join()).toContain("noli_forge_resource");

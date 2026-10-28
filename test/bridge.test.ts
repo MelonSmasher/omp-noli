@@ -735,7 +735,7 @@ describe("capabilities", () => {
 		const client = await Client.connect(bridge.socketPath);
 		const hello = await client.call({ id: 1, method: "hello", params: { token: TOKEN } });
 		const advertised = hello.result as { protocol: number; capabilities: Capabilities };
-		expect(advertised.protocol).toBe(1);
+		expect(advertised.protocol).toBe(2);
 		expect(advertised.capabilities["agents.kill.parked"]).toEqual({ available: false, api: "internal", reason: "tool_missing", detail: "probe failed" });
 		expect(advertised.capabilities["agents.kill.live"].available).toBe(true);
 	});
