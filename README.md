@@ -18,6 +18,12 @@ For managed Gateway sessions, Noli writes secret-free `gateway-providers.json` a
 
 `test/gateway.test.ts` exercises the pinned real SDK registry, availability and auth storage before bind, after two keys and after revoke, and checks all temporary profile files for credential bytes. `test/review-gateway.test.ts` permanently covers legacy re-hello, uninterrupted renewal, real streaming auth retries, native lifecycle rebinding and process-launched bootstrap isolation with implicit Bun child environment inheritance. Bridge fixtures cover one-use hello, bind acknowledgement, stale-session rejection and rebind/revoke. The Noli repository owns the mock-upstream managed-process security smoke and actual Gateway 429 classifier fixture.
 
+## v0.9.8 paged root history
+
+- Adds `history.entries` (`main-only-v1`): one bounded page of the root session's append history, the same `SessionManager.getEntries()` objects OMP's `get_entries` RPC returns. OMP answers `get_entries` with the whole history (or its whole tail after `since`) and caps a logical RPC frame at 64 MiB, so a long session could never be reconciled through it.
+- Pages hold whole entries up to `maxBytes` UTF-8 bytes (4096..786432, default 524288), so a response fits the bridge's 1 MiB frame. An entry larger than a page arrives as contiguous `partial` slices of its JSON text (UTF-16 offsets, never splitting a surrogate pair) for the client to reassemble. An unknown `since` fails with the new error code `unknown_since`, as `get_entries` does.
+- Reads the canonical list per request: no cache, no second index, no mutation. Older Noli hosts ignore the capability; protocol remains 1.
+
 ## v0.9.7 native watch and model roles
 
 - Negotiates `host.forge_watch` (`main-only-v1`) for Noli's owning-main `noli_forge_watch`. Children and advisors cannot call or relay this tool.
@@ -286,6 +292,7 @@ Every feature maps to a named capability. Each capability has a source:
 | `definitions.list` | public | `pi.pi.discoverAgents` |
 | `work.get` | public | `AgentSession` settlement state (`isStreaming`, `hasAdmittedSubmission`, `queuedMessageCount`, `hasPendingAsyncWork()`), `agent.peekSteeringQueue()` / `peekFollowUpQueue()` and `getAsyncJobSnapshot()` |
 | `work.cancel` | internal | `AgentSession.asyncJobManager.cancel(id, { ownerId })`, scoped to the root session's agent id, followed by the exact owned `getJob(id).promise` completion barrier. Off (`hook_changed`) if owner identity or completion observation is missing; never cancels unscoped. |
+| `history.entries` | main-only-v1 | The root session's `sessionManager.getEntries()` / `getLeafId()`, the list behind OMP's `get_entries` RPC. Off (`not_ready`) before a root session is adopted. |
 
 A capability is either `{ available: true, api, detail }` or `{ available: false, api, reason, detail }`. Act on `reason`; `detail` is human-readable text for logs and tooltips and may change between releases.
 
@@ -368,6 +375,7 @@ Live telemetry uses each agent's own `getSessionStats()` and serving model; chan
 | `agents.followUp` | `agentId`, `text` | `agents.followUp` | Queues a follow-up user message on a live child. Returns `{ queued: true }` once queued. |
 | `agents.turn` | `agentId`, `text`, optional `agent` | `agents.turn` | Runs one turn through OMP's monitored follow-up driver, reviving the child first if it is parked. Uses `params.agent` if given, otherwise the row's `definition`. Returns `{ output, exitCode, aborted }`. Only one bridge turn per child at a time. |
 | `work.get` | none | `work.get` | Returns `{ settled, streaming, admittedSubmission, queued, hiddenQueued, pendingAsyncWork, jobs, undeliveredResults }`. `settled` uses OMP's RPC settle predicate, extended to retain cancellation-draining job bodies. `queued` includes hidden next-turn messages; `hiddenQueued` subtracts only user-authored messages still in the actual steering/follow-up queues, never live-steered chips already consumed from those queues. `jobs` includes running and cancellation-draining background jobs `{ id, kind, label, startedAt, agentId }`, with `kind` one of `bash`, `task`, `eval`, `unknown`. |
+| `history.entries` | optional `since`, `offset`, `maxBytes` | `history.entries` | Returns `{ sessionId, leafId, entries, partial?, more }`: whole root-session entries strictly after `since` in append order, greedily up to `maxBytes` UTF-8 bytes (4096..786432, default 524288). If the first remaining entry alone exceeds the budget, `entries` is empty and `partial` `{ id, offset, total, text }` carries a slice of its `JSON.stringify` text; pass `offset` (UTF-16 units) with the same `since` to continue it. `more` reports anything left. Unknown `since` fails `unknown_since`. |
 | `work.cancel` | `jobId` | `work.cancel` | Cancels one background job owned by the root session and waits for that exact job's body and cleanup to finish. Returns `{ cancelled }`; `false` if already finished or not owned. No timeout is reported as successful cancellation; foreign jobs are neither aborted nor awaited. During cancellation drain, `work.get` retains the job and reports `pendingAsyncWork: true`, `settled: false`. |
 | `agents.kill` | `agentId` | `agents.kill.live` or `agents.kill.parked`, depending on the child | Live child: abort, then terminal release. Parked child: terminal release with no revival and no turn. OMP writes the tombstone, so the child stays terminated after a restart. Returns `{ killed, mode: "live" \| "parked" }`. |
 
