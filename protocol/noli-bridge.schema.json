@@ -133,6 +133,9 @@
         },
         {
           "$ref": "#/$defs/GatewayRequestResult"
+        },
+        {
+          "$ref": "#/$defs/HistoryEntriesResult"
         }
       ]
     },
@@ -388,7 +391,8 @@
         "goal.budget",
         "memory.status",
         "memory.search",
-        "memory.save"
+        "memory.save",
+        "history.entries"
       ]
     },
     "CapabilityReason": {
@@ -481,7 +485,8 @@
         "goal.budget",
         "memory.status",
         "memory.search",
-        "memory.save"
+        "memory.save",
+        "history.entries"
       ],
       "properties": {
         "gateway.bind": {
@@ -662,6 +667,9 @@
           "$ref": "#/$defs/CapabilityState"
         },
         "memory.save": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "history.entries": {
           "$ref": "#/$defs/CapabilityState"
         }
       }
@@ -993,7 +1001,8 @@
         "frame_too_large",
         "unknown_method",
         "not_ready",
-        "internal"
+        "internal",
+        "unknown_since"
       ]
     },
     "ErrorBody": {
@@ -1971,6 +1980,97 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
+        }
+      }
+    },
+    "HistoryEntriesParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "since": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 4096,
+          "maximum": 786432
+        }
+      }
+    },
+    "HistoryEntriesResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "leafId",
+        "entries",
+        "more"
+      ],
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "leafId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "partial": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "offset",
+            "total",
+            "text"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "more": {
+          "type": "boolean"
         }
       }
     }
