@@ -144,17 +144,37 @@ function entryMessage(entry: SessionEntry): MessageLike | undefined {
 	}
 }
 
-/** Origin inputs mapped from observable stock OMP fields (design §5.3 table). */
-function observedSource(item: SourceItem): { origin?: OriginKind; isMeta?: false; promptSource?: "sdk" } | undefined {
-	if (item.role === "developer" && item.synthetic && item.attribution === "agent") return { origin: "auto-continuation", isMeta: false };
-	if (item.role === "custom" && item.customType === IRC_INCOMING) {
-		const details = item.details && typeof item.details === "object" ? item.details as Record<string, unknown> : undefined;
-		return { origin: details?.wakeRelay === true ? "task-notification" : details?.fromParent === true ? "coordinator" : "peer", isMeta: false };
-	}
-	if (item.role === "custom" && item.customType === LAUNCH_COMPLETION) return { origin: "task-notification", isMeta: false };
-	if (item.role === "user" && item.steering && item.attribution === "agent") return { origin: "coordinator", isMeta: false };
-	if (item.role === "user" && item.attribution !== "user" && !item.synthetic) return { promptSource: "sdk" };
+type ObservedSource = { origin?: OriginKind; isMeta?: false; promptSource?: "sdk" };
+
+/** `irc:incoming` origin from its details (irc-bridge.ts:257-280). */
+function ircOrigin(details: unknown): OriginKind {
+	const record = details && typeof details === "object" ? details as Record<string, unknown> : undefined;
+	if (record?.wakeRelay === true) return "task-notification";
+	return record?.fromParent === true ? "coordinator" : "peer";
+}
+
+function customOrigin(item: SourceItem): OriginKind | undefined {
+	if (item.customType === IRC_INCOMING) return ircOrigin(item.details);
+	return item.customType === LAUNCH_COMPLETION ? "task-notification" : undefined;
+}
+
+function userObserved(item: SourceItem): ObservedSource | undefined {
+	if (item.steering && item.attribution === "agent") return { origin: "coordinator", isMeta: false };
+	if (item.attribution !== "user" && !item.synthetic) return { promptSource: "sdk" };
 	return undefined;
+}
+
+/** Origin inputs mapped from observable stock OMP fields (design §5.3 table). */
+function observedSource(item: SourceItem): ObservedSource | undefined {
+	switch (item.role) {
+		case "developer": return item.synthetic && item.attribution === "agent" ? { origin: "auto-continuation", isMeta: false } : undefined;
+		case "custom": {
+			const origin = customOrigin(item);
+			return origin ? { origin, isMeta: false } : undefined;
+		}
+		case "user": return userObserved(item);
+		default: return undefined;
+	}
 }
 
 /** wt `classifyClaudeCodeOrigin`, limited to the kinds stock OMP state can produce. */
@@ -185,26 +205,40 @@ function qualifies(facts: SourceFacts): boolean {
 	return isPromptBearing(facts) || isPosition(facts.turnPosition);
 }
 
-/** wt `stampClaudeCodeMessage` with a one-element history: the nearest qualifying source. */
-function stamp(item: SourceItem, previous: Known | null): SourceFacts {
+type MutableFacts = { -readonly [K in keyof SourceFacts]: SourceFacts[K] };
+
+function isMetaRole(item: SourceItem, human: boolean): boolean {
+	return item.role === "developer" || item.role === "hookMessage" || (item.role === "custom" && !human);
+}
+
+function deliveryFacts(item: SourceItem, observed: ObservedSource | undefined): MutableFacts {
 	const sourceMessageId = derivedUuid("omp-noli/source", item.key);
 	const human = item.attribution === "user";
-	const observed = observedSource(item);
-	const facts: { -readonly [K in keyof SourceFacts]: SourceFacts[K] } = {
+	return {
 		sourceMessageId,
-		isMeta: item.role === "developer" || item.role === "hookMessage" || (item.role === "custom" && !human),
+		isMeta: isMetaRole(item, human),
 		...(human ? { origin: "human" as const, promptId: sourceMessageId } : {}),
 		...(item.synthetic ? { origin: "unclassified" as const } : {}),
 		...observed,
 	};
-	if (facts.promptSource === "sdk" && !facts.isMeta) facts.promptId ??= sourceMessageId;
-	if (!isPromptBearing(facts) && !observed?.origin) return facts;
-	facts.turnOrigin ??= classifyOrigin(facts);
+}
+
+function nextPosition(facts: SourceFacts, previous: Known | null): PromptPosition | undefined {
 	// Unknown history has a source without a position, so no absolute counter is invented.
 	const prior = previous === UNKNOWN ? undefined : previous?.turnPosition;
-	if (previous === null || (isPosition(prior) && prior.turnIndex < MAX_POSITION)) {
-		facts.turnPosition = { promptIndex: (prior?.promptIndex ?? 0) + (facts.turnOrigin === "human" ? 1 : 0), turnIndex: (prior?.turnIndex ?? 0) + 1 };
-	}
+	if (previous !== null && !(isPosition(prior) && prior.turnIndex < MAX_POSITION)) return undefined;
+	return { promptIndex: (prior?.promptIndex ?? 0) + (facts.turnOrigin === "human" ? 1 : 0), turnIndex: (prior?.turnIndex ?? 0) + 1 };
+}
+
+/** wt `stampClaudeCodeMessage` with a one-element history: the nearest qualifying source. */
+function stamp(item: SourceItem, previous: Known | null): SourceFacts {
+	const observed = observedSource(item);
+	const facts = deliveryFacts(item, observed);
+	if (facts.promptSource === "sdk" && !facts.isMeta) facts.promptId ??= facts.sourceMessageId;
+	if (!isPromptBearing(facts) && !observed?.origin) return facts;
+	facts.turnOrigin ??= classifyOrigin(facts);
+	const position = nextPosition(facts, previous);
+	if (position) facts.turnPosition = position;
 	return facts;
 }
 
@@ -238,20 +272,39 @@ function previousOf(state: WalkState): Known | null {
 	return state.source ?? (state.sawAssistant ? UNKNOWN : null);
 }
 
-function advance(state: WalkState, entry: SessionEntry): WalkState {
-	const base: WalkState = { covered: state.covered, source: state.source, sawAssistant: state.sawAssistant };
+/** `/clear` restarts positions; the facts epoch starts coverage. */
+function controlState(base: WalkState, entry: SessionEntry): WalkState | undefined {
 	if (entry.type === "reset_boundary") return { ...base, source: null, sawAssistant: false };
 	if (entry.type === "custom" && entry.customType === EPOCH_ENTRY_TYPE) return { ...base, covered: true };
+	return undefined;
+}
+
+function sawNonErrorAssistant(state: WalkState, message: MessageLike): boolean {
+	return state.sawAssistant || message.stopReason !== "error";
+}
+
+function nextSource(state: WalkState, facts: Known): Known | null {
+	return facts === UNKNOWN || qualifies(facts) ? facts : state.source;
+}
+
+function entryFacts(state: WalkState, entry: SessionEntry, item: SourceItem): Known {
+	if (!state.covered) return UNKNOWN;
+	const previous = previousOf(state);
+	return entry.type === "compaction" || entry.type === "branch_summary" ? summaryFacts(entry, previous) : stamp(item, previous);
+}
+
+function advance(state: WalkState, entry: SessionEntry): WalkState {
+	const base: WalkState = { covered: state.covered, source: state.source, sawAssistant: state.sawAssistant };
+	const control = controlState(base, entry);
+	if (control) return control;
 	const message = entryMessage(entry);
 	if (!message) return base;
 	const key = messageKey(message);
-	if (message.role === "assistant") return { ...base, key, sawAssistant: base.sawAssistant || message.stopReason !== "error" };
+	if (message.role === "assistant") return { ...base, key, sawAssistant: sawNonErrorAssistant(base, message) };
 	const item = sourceItem(message);
 	if (!item) return { ...base, key };
-	const facts: Known = !state.covered ? UNKNOWN
-		: entry.type === "compaction" || entry.type === "branch_summary" ? summaryFacts(entry, previousOf(state))
-			: stamp(item, previousOf(state));
-	return { ...base, key, facts, source: facts === UNKNOWN || qualifies(facts) ? facts : base.source };
+	const facts = entryFacts(state, entry, item);
+	return { ...base, key, facts, source: nextSource(base, facts) };
 }
 
 /** Walk the root-to-leaf path, reusing memoized states of shared prefixes. */
@@ -314,6 +367,94 @@ export interface FactsIdentity {
 
 interface Stamped { item: SourceItem; facts: Known }
 
+/** Persisted message keys on the walked path, and their facts in path order. */
+function indexWalk(states: readonly WalkState[]): { persisted: Set<string>; byKey: Map<string, Known[]> } {
+	const persisted = new Set<string>();
+	const byKey = new Map<string, Known[]>();
+	for (const state of states) {
+		if (state.key === undefined) continue;
+		persisted.add(state.key);
+		if (state.facts === undefined) continue;
+		const list = byKey.get(state.key);
+		if (list) list.push(state.facts);
+		else byKey.set(state.key, [state.facts]);
+	}
+	return { persisted, byKey };
+}
+
+/** Index of the last source-view message that is already persisted, or -1. */
+function persistedBoundary(views: readonly MessageLike[], items: readonly (SourceItem | undefined)[], persisted: ReadonlySet<string>): number {
+	for (let index = views.length - 1; index >= 0; index--) {
+		if (persisted.has(items[index]?.key ?? messageKey(views[index]!))) return index;
+	}
+	return -1;
+}
+
+/** The source view is a suffix of the branch (compaction drops the head), so align from the end. */
+function assignPersisted(items: readonly (SourceItem | undefined)[], boundary: number, byKey: Map<string, Known[]>): (Known | undefined)[] {
+	const assigned: (Known | undefined)[] = new Array(items.length);
+	for (let index = boundary; index >= 0; index--) {
+		const item = items[index];
+		if (item) assigned[index] = byKey.get(item.key)?.pop();
+	}
+	return assigned;
+}
+
+/** The unpersisted tail continues the walk, as the 8.1 tree stamped messages at delivery. */
+function stampTail(views: readonly MessageLike[], items: readonly (SourceItem | undefined)[], boundary: number, assigned: (Known | undefined)[], state: WalkState, fresh: boolean): void {
+	let tail = state;
+	for (let index = boundary + 1; index < views.length; index++) {
+		const message = views[index]!;
+		if (message.role === "assistant") tail = { ...tail, sawAssistant: sawNonErrorAssistant(tail, message) };
+		const item = items[index];
+		if (!item || item.role === "compactionSummary" || item.role === "branchSummary") continue;
+		const facts = tail.covered || fresh ? stamp(item, previousOf(tail)) : UNKNOWN;
+		assigned[index] = facts;
+		tail = { ...tail, source: nextSource(tail, facts) };
+	}
+}
+
+/** The last non-error assistant response id in the source view, when it is an Anthropic `msg_` id. */
+function previousMessageIdOf(views: readonly MessageLike[]): string | undefined {
+	let id: string | undefined;
+	for (const message of views) {
+		if (message.role === "assistant" && message.stopReason !== "error" && typeof message.responseId === "string") id = message.responseId;
+	}
+	return id && /^msg_[A-Za-z0-9_-]{1,508}$/.test(id) ? id : undefined;
+}
+
+function selectFirstEligible(stamped: readonly Stamped[]): RequestFacts["firstEligible"] {
+	for (const { item, facts } of stamped) {
+		if (facts === UNKNOWN) return null;
+		if (facts.isMeta) continue;
+		return { messageId: facts.sourceMessageId, textBlockIndex: item.textBlockIndex, sample: firstInputSample(item.text) };
+	}
+	return { messageId: null, textBlockIndex: null, sample: firstInputSample("") };
+}
+
+/** A prompt's index is the highest among the inputs sharing its turn. */
+function promptPosition(stamped: readonly Stamped[], index: number, facts: SourceFacts): PromptPosition | null {
+	if (!isPosition(facts.turnPosition)) return null;
+	let position = { ...facts.turnPosition };
+	for (let prior = index - 1; prior >= 0; prior--) {
+		const earlier = stamped[prior]!.facts;
+		if (earlier === UNKNOWN || !isPosition(earlier.turnPosition)) continue;
+		if (earlier.turnPosition.turnIndex !== position.turnIndex) break;
+		position = { promptIndex: Math.max(position.promptIndex, earlier.turnPosition.promptIndex), turnIndex: position.turnIndex };
+	}
+	return position;
+}
+
+function selectPrompt(stamped: readonly Stamped[]): RequestFacts["prompt"] {
+	for (let index = stamped.length - 1; index >= 0; index--) {
+		const facts = stamped[index]!.facts;
+		if (facts === UNKNOWN) break;
+		if (!isPromptBearing(facts)) continue;
+		return { id: facts.promptId ?? null, origin: facts.turnOrigin ?? classifyOrigin(facts), position: promptPosition(stamped, index, facts) };
+	}
+	return { id: null, origin: null, position: null };
+}
+
 /**
  * Facts for one request whose source view is `messages` (a `context` event's
  * pre-conversion `AgentMessage[]`, or a compaction preparation).
@@ -325,71 +466,16 @@ interface Stamped { item: SourceItem; facts: Known }
  */
 export function requestFacts(messages: readonly AgentMessage[], branch: readonly SessionEntry[], identity: FactsIdentity): RequestFacts {
 	const states = walk(branch);
-	const persisted = new Set<string>();
-	const byKey = new Map<string, Known[]>();
-	for (const state of states) {
-		if (state.key === undefined) continue;
-		persisted.add(state.key);
-		if (state.facts === undefined) continue;
-		const list = byKey.get(state.key);
-		if (list) list.push(state.facts);
-		else byKey.set(state.key, [state.facts]);
-	}
+	const { persisted, byKey } = indexWalk(states);
 	const views = messages as readonly MessageLike[];
 	const items = views.map(sourceItem);
-	let boundary = -1;
-	for (let index = views.length - 1; index >= 0; index--) {
-		if (persisted.has(items[index]?.key ?? messageKey(views[index]!))) { boundary = index; break; }
-	}
-	// The source view is a suffix of the branch (compaction drops the head), so align from the end.
-	const assigned: (Known | undefined)[] = new Array(views.length);
-	for (let index = boundary; index >= 0; index--) {
-		const item = items[index];
-		if (item) assigned[index] = byKey.get(item.key)?.pop();
-	}
-	let tail = states.at(-1) ?? INITIAL;
-	const fresh = !tail.covered && !hasConversation(branch);
-	let previousMessageId: string | undefined;
-	for (let index = 0; index < views.length; index++) {
-		const message = views[index]!;
-		if (message.role === "assistant" && message.stopReason !== "error" && typeof message.responseId === "string") previousMessageId = message.responseId;
-		if (index <= boundary) continue;
-		if (message.role === "assistant") tail = { ...tail, sawAssistant: tail.sawAssistant || message.stopReason !== "error" };
-		const item = items[index];
-		if (!item || item.role === "compactionSummary" || item.role === "branchSummary") continue;
-		const facts = tail.covered || fresh ? stamp(item, previousOf(tail)) : UNKNOWN;
-		assigned[index] = facts;
-		tail = { ...tail, source: facts === UNKNOWN || qualifies(facts) ? facts : tail.source };
-	}
+	const boundary = persistedBoundary(views, items, persisted);
+	const assigned = assignPersisted(items, boundary, byKey);
+	const tail = states.at(-1) ?? INITIAL;
+	stampTail(views, items, boundary, assigned, tail, !tail.covered && !hasConversation(branch));
 	const stamped: Stamped[] = [];
 	assigned.forEach((facts, index) => { if (facts !== undefined) stamped.push({ item: items[index]!, facts }); });
-
-	let firstEligible: RequestFacts["firstEligible"] = { messageId: null, textBlockIndex: null, sample: firstInputSample("") };
-	for (const { item, facts } of stamped) {
-		if (facts === UNKNOWN) { firstEligible = null; break; }
-		if (facts.isMeta) continue;
-		firstEligible = { messageId: facts.sourceMessageId, textBlockIndex: item.textBlockIndex, sample: firstInputSample(item.text) };
-		break;
-	}
-
-	let prompt: RequestFacts["prompt"] = { id: null, origin: null, position: null };
-	for (let index = stamped.length - 1; index >= 0; index--) {
-		const facts = stamped[index]!.facts;
-		if (facts === UNKNOWN) break;
-		if (!isPromptBearing(facts)) continue;
-		let position = isPosition(facts.turnPosition) ? { ...facts.turnPosition } : null;
-		if (position) {
-			for (let prior = index - 1; prior >= 0; prior--) {
-				const earlier = stamped[prior]!.facts;
-				if (earlier === UNKNOWN || !isPosition(earlier.turnPosition)) continue;
-				if (earlier.turnPosition.turnIndex !== position.turnIndex) break;
-				position = { promptIndex: Math.max(position.promptIndex, earlier.turnPosition.promptIndex), turnIndex: position.turnIndex };
-			}
-		}
-		prompt = { id: facts.promptId ?? null, origin: facts.turnOrigin ?? classifyOrigin(facts), position };
-		break;
-	}
-
+	const previousMessageId = previousMessageIdOf(views);
 	return {
 		version: 1,
 		producerSessionId: identity.ompSessionId,
@@ -399,9 +485,9 @@ export function requestFacts(messages: readonly AgentMessage[], branch: readonly
 		parentProducerSessionId: identity.parentOmpSessionId,
 		requestClass: identity.requestClass,
 		querySource: identity.querySource,
-		...(previousMessageId && /^msg_[A-Za-z0-9_-]{1,508}$/.test(previousMessageId) ? { previousMessageId } : {}),
-		firstEligible,
-		prompt,
+		...(previousMessageId ? { previousMessageId } : {}),
+		firstEligible: selectFirstEligible(stamped),
+		prompt: selectPrompt(stamped),
 	};
 }
 
@@ -452,6 +538,52 @@ export function wireToolName(name: string, naming: WireNaming): string {
 	return name;
 }
 
+type FinishedTiming = ToolTiming & { end: number };
+interface TimedCall { id: string; name: string; index: number; timing: FinishedTiming }
+
+function isCurrentExecution(timing: ToolTiming | undefined, epoch: number): timing is FinishedTiming {
+	return !!timing?.executed && timing.end !== undefined && timing.epoch === epoch;
+}
+
+function timedCalls(content: unknown, timings: ReadonlyMap<string, ToolTiming>, epoch: number): TimedCall[] {
+	const blocks = Array.isArray(content) ? content as { type?: unknown; id?: unknown; name?: unknown }[] : [];
+	const calls: TimedCall[] = [];
+	blocks.forEach((block, position) => {
+		if (block.type !== "toolCall" || typeof block.id !== "string" || typeof block.name !== "string") return;
+		const timing = timings.get(block.id);
+		if (isCurrentExecution(timing, epoch)) calls.push({ id: block.id, name: block.name, index: position, timing });
+	});
+	return calls;
+}
+
+/** Executed, timed tool calls of the last non-error assistant message. */
+function lastBatch(messages: readonly AgentMessage[], timings: ReadonlyMap<string, ToolTiming>, epoch: number): TimedCall[] {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index] as MessageLike & { content?: unknown };
+		if (message.role !== "assistant" || message.stopReason === "error") continue;
+		return timedCalls(message.content, timings, epoch);
+	}
+	return [];
+}
+
+function persistedStart(entry: SessionEntry): { id: string; at: number } | undefined {
+	if (entry.type !== "custom" || entry.customType !== TOOL_START_ENTRY_TYPE) return undefined;
+	const data = entry.data as { toolCallId?: unknown; startedAt?: unknown } | undefined;
+	if (typeof data?.toolCallId !== "string") return undefined;
+	return { id: data.toolCallId, at: typeof data.startedAt === "string" ? Date.parse(data.startedAt) : Number.NaN };
+}
+
+/** Starts persisted on the branch for the wanted calls; the newest entry per call wins. */
+function persistedStarts(branch: readonly SessionEntry[], wanted: ReadonlySet<string>): Map<string, number> {
+	const persisted = new Map<string, number>();
+	for (let index = branch.length - 1; index >= 0 && persisted.size < wanted.size; index--) {
+		const start = persistedStart(branch[index]!);
+		if (!start || !wanted.has(start.id) || persisted.has(start.id)) continue;
+		if (Number.isFinite(start.at)) persisted.set(start.id, start.at);
+	}
+	return persisted;
+}
+
 /**
  * Claude Code `prevToolDurations` for the request whose source view is `messages`:
  * the executed tool calls of the last non-error assistant message, in completion
@@ -460,30 +592,9 @@ export function wireToolName(name: string, naming: WireNaming): string {
  * batch has no executed, timed tool.
  */
 export function prevToolDurations(messages: readonly AgentMessage[], branch: readonly SessionEntry[], timings: ReadonlyMap<string, ToolTiming>, epoch: number, naming: WireNaming = { escape: false, oauth: false }): PrevToolDuration[] | undefined {
-	let calls: { id: string; name: string; index: number; timing: ToolTiming & { end: number } }[] = [];
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const message = messages[index] as MessageLike & { content?: unknown };
-		if (message.role !== "assistant" || message.stopReason === "error") continue;
-		const blocks = Array.isArray(message.content) ? message.content as { type?: unknown; id?: unknown; name?: unknown }[] : [];
-		blocks.forEach((block, position) => {
-			if (block.type !== "toolCall" || typeof block.id !== "string" || typeof block.name !== "string") return;
-			const timing = timings.get(block.id);
-			if (!timing?.executed || timing.end === undefined || timing.epoch !== epoch) return;
-			calls.push({ id: block.id, name: block.name, index: position, timing: timing as ToolTiming & { end: number } });
-		});
-		break;
-	}
+	const calls = lastBatch(messages, timings, epoch);
 	if (calls.length === 0) return undefined;
-	const wanted = new Set(calls.map(call => call.id));
-	const persisted = new Map<string, number>();
-	for (let index = branch.length - 1; index >= 0 && persisted.size < wanted.size; index--) {
-		const entry = branch[index]!;
-		if (entry.type !== "custom" || entry.customType !== TOOL_START_ENTRY_TYPE) continue;
-		const data = entry.data as { toolCallId?: unknown; startedAt?: unknown } | undefined;
-		if (typeof data?.toolCallId !== "string" || !wanted.has(data.toolCallId) || persisted.has(data.toolCallId)) continue;
-		const startedAt = typeof data.startedAt === "string" ? Date.parse(data.startedAt) : Number.NaN;
-		if (Number.isFinite(startedAt)) persisted.set(data.toolCallId, startedAt);
-	}
-	calls = calls.sort((left, right) => left.timing.end - right.timing.end || left.index - right.index).slice(0, MAX_PREV_TOOL_DURATIONS);
-	return calls.map(call => ({ toolName: wireToolName(call.name, naming), durationMs: Math.max(0, Math.round(call.timing.end - (persisted.get(call.id) ?? call.timing.start))) }));
+	const persisted = persistedStarts(branch, new Set(calls.map(call => call.id)));
+	const ordered = calls.sort((left, right) => left.timing.end - right.timing.end || left.index - right.index).slice(0, MAX_PREV_TOOL_DURATIONS);
+	return ordered.map(call => ({ toolName: wireToolName(call.name, naming), durationMs: Math.max(0, Math.round(call.timing.end - (persisted.get(call.id) ?? call.timing.start))) }));
 }
