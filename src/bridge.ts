@@ -17,6 +17,10 @@ import {
 	type ErrorBody,
 	type ErrorCode,
 	type HelloResult,
+	HISTORY_MAX_BYTES,
+	HISTORY_MIN_BYTES,
+	type HistoryEntriesParams,
+	type HistoryEntriesResult,
 	type KillResult,
 	type ListResult,
 	type NativeMethod,
@@ -70,6 +74,8 @@ export interface BridgeHost {
 	work(): WorkResult;
 	/** Cancel an owned job and await its body/cleanup. False if already finished or not owned. */
 	cancelJob(id: string): Promise<boolean>;
+	/** One bounded page of the root session's append history. */
+	history(params: HistoryEntriesParams): HistoryEntriesResult;
 	/** Supplemental authenticated root-session controls; absent hosts fail closed. */
 	nativeControl?(method: NativeMethod, params: Record<string, unknown>): Promise<unknown>;
 }
@@ -501,6 +507,18 @@ export function startBridge(options: BridgeOptions): Bridge {
 			case "work.get": {
 				requireCapability("work.get");
 				return host.work() satisfies WorkResult;
+			}
+			case "history.entries": {
+				requireCapability("history.entries");
+				const { since, offset, maxBytes } = params;
+				if (since !== undefined) paramString(params, "since");
+				if (offset !== undefined && (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0)) {
+					throw new BridgeError("bad_request", "params.offset must be a non-negative safe integer");
+				}
+				if (maxBytes !== undefined && (typeof maxBytes !== "number" || !Number.isSafeInteger(maxBytes) || maxBytes < HISTORY_MIN_BYTES || maxBytes > HISTORY_MAX_BYTES)) {
+					throw new BridgeError("bad_request", `params.maxBytes must be an integer from ${HISTORY_MIN_BYTES} to ${HISTORY_MAX_BYTES}`);
+				}
+				return host.history({ since: since as string | undefined, offset: offset as number | undefined, maxBytes: maxBytes as number | undefined }) satisfies HistoryEntriesResult;
 			}
 			case "work.cancel": {
 				requireCapability("work.cancel");

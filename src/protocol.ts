@@ -43,6 +43,7 @@ export const CAPABILITY_NAMES = [
 	"memory.status",
 	"memory.search",
 	"memory.save",
+	"history.entries",
 ] as const;
 export type CapabilityName = (typeof CAPABILITY_NAMES)[number];
 
@@ -273,6 +274,40 @@ export interface CancelWorkResult {
 	cancelled: boolean;
 }
 
+// --------------------------------------------------------------------- history
+
+/**
+ * v0.9.8+: one bounded page of the root session's append history, the same
+ * entries OMP's `get_entries` returns, strictly after `since`.
+ */
+/** `history.entries` page budgets, UTF-8 bytes. The bridge client reads frames of at most 1 MiB. */
+export const HISTORY_MIN_BYTES = 4096;
+export const HISTORY_MAX_BYTES = 768 * 1024;
+export const HISTORY_DEFAULT_BYTES = 512 * 1024;
+
+export interface HistoryEntriesParams {
+	/** Entry id; the page starts after it. Omitted: from the first entry. Unknown: `unknown_since`. */
+	since?: string;
+	/** UTF-16 offset into the JSON text of the first entry after `since`; continues a `partial`. */
+	offset?: number;
+	/** UTF-8 budget for the page's entry payload (4096..786432, default 524288). */
+	maxBytes?: number;
+}
+
+export interface HistoryEntriesResult {
+	sessionId: string;
+	leafId: string | null;
+	/** Whole entries in append order; never mixed with `partial`. */
+	entries: Record<string, unknown>[];
+	/**
+	 * A slice of `JSON.stringify(entry)` for an entry larger than one page.
+	 * Offsets are UTF-16 code units; slices never split a surrogate pair.
+	 */
+	partial?: { id: string; offset: number; total: number; text: string };
+	/** Anything remains after this page: more entries or the rest of `partial`. */
+	more: boolean;
+}
+
 export interface HelloResult {
 	protocol: typeof PROTOCOL_VERSION;
 	sessionId: string;
@@ -373,6 +408,7 @@ export const ERROR_CODES = [
 	"unknown_method",
 	"not_ready",
 	"internal",
+	"unknown_since",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 

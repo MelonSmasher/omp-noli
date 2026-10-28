@@ -12,6 +12,7 @@ import { type BridgeHost, BridgeError } from "./bridge";
 import { type Probe, available, probeJobCanceller, probeLifecycle, probeRosterReader, probeWork, unavailable } from "./capabilities";
 import { clearSnapshots, releaseSnapshots, renderAgentOutput } from "./agent-output";
 import { AgentTelemetry } from "./agent-telemetry";
+import { historyPage } from "./history";
 import { nativeCapabilities, nativeControl } from "./native-controls";
 import {
 	type AgentKind,
@@ -130,6 +131,21 @@ function rosterScanRan(registry: object, rootFile: string): boolean {
 	const wanted = resolve(rootFile);
 	for (const key of latches.keys()) if (typeof key === "string" && resolve(key) === wanted) return true;
 	return false;
+}
+
+interface HistoryManager {
+	getEntries(): readonly { id?: unknown }[];
+	getLeafId(): string | null;
+	getSessionId(): string;
+}
+
+/** The root session's canonical entry list reader, when it still has the shape `get_entries` relies on. */
+function historyManager(session: unknown): HistoryManager | undefined {
+	if (!session || typeof session !== "object" || !("sessionManager" in session)) return undefined;
+	const manager = session.sessionManager as Partial<HistoryManager> | null | undefined;
+	return manager && typeof manager.getEntries === "function" && typeof manager.getLeafId === "function" && typeof manager.getSessionId === "function"
+		? manager as HistoryManager
+		: undefined;
 }
 
 export interface OmpHost {
@@ -301,6 +317,10 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 				if (session === undefined) return unavailable("public", "not_ready", "main session not established");
 				const probe = probeWork(session);
 				return probe.ok ? available("public", probe.detail) : unavailable("public", probe.reason, probe.detail);
+			})(),
+			"history.entries": (() => {
+				if (!current || session === undefined) return unavailable("main-only-v1", "not_ready", "main session not established");
+				return historyManager(session) ? available("main-only-v1", "SessionManager.getEntries + getLeafId, paged by the bridge") : unavailable("main-only-v1", "hook_changed", "SessionManager.getEntries and getLeafId must be functions");
 			})(),
 			"work.cancel": internalCap("work.cancel", probeJobCanceller),
 			"host.attach_file": available("main-only-v1", "Authenticated native host attachment calls are restricted to the owning main agent by installThreadControl"),
@@ -736,6 +756,11 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 				throw new BridgeError("internal", `agent "${id}" was released but did not reach a terminal state; verify before retrying`);
 			}
 			return true;
+		},
+		history: params => {
+			const manager = current ? historyManager(mainSession()) : undefined;
+			if (!current || !manager || manager.getSessionId() !== current.sessionManager.getSessionId()) throw new BridgeError("stale_session", "No owned root session");
+			return historyPage(manager.getEntries(), manager.getLeafId(), manager.getSessionId(), params);
 		},
 		work: () => {
 			const probe = probeWork(mainSession());
