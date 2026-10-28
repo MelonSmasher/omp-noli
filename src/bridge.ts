@@ -234,17 +234,23 @@ export function startBridge(options: BridgeOptions): Bridge {
 	/** Producer identities, re-sent after each authentication so Noli can admit their requests. */
 	const announcements = new Map<string, ProducerSessionParams>();
 	const branches = new Map<string, ProducerBranchParams>();
+	/** The open, authenticated connection of `sessionId` at `generation`, if any. */
+	const ownerSocket = (sessionId: string | undefined, generation: number | undefined): BridgeSocket | undefined => {
+		if (generation === undefined) return undefined;
+		for (const candidate of sockets) {
+			if (!candidate.data.closed && candidate.data.authed && candidate.data.authenticatedSession === sessionId
+				&& candidate.data.authenticationGeneration === generation) return candidate;
+		}
+		return undefined;
+	};
+	const credentialInstalled = (socket: BridgeSocket): boolean => (socket.data.installedExpiry ?? 0) > Date.now();
 	/** One request on the owning authenticated connection; `credential` also requires an installed gateway key. */
 	const producerRequest = (frame: (id: string) => ServerFrame, timeoutMs: number, credential: boolean, signal?: AbortSignal): Promise<unknown> => {
 		signal?.throwIfAborted();
 		const sessionId = host.sessionId();
 		const generation = authenticatedGeneration(sessionId);
-		let socket: BridgeSocket | undefined;
-		for (const candidate of sockets) {
-			if (!candidate.data.closed && candidate.data.authed && candidate.data.authenticatedSession === sessionId
-				&& candidate.data.authenticationGeneration === generation) { socket = candidate; break; }
-		}
-		if (generation === undefined || !socket || (credential && (!options.gateway || (socket.data.installedExpiry ?? 0) <= Date.now()))) {
+		const socket = ownerSocket(sessionId, generation);
+		if (!socket || (credential && (!options.gateway || !credentialInstalled(socket)))) {
 			return Promise.reject(new Error("Noli producer facts require a current authenticated bridge"));
 		}
 		const owner = socket;
@@ -268,7 +274,7 @@ export function startBridge(options: BridgeOptions): Bridge {
 		send(owner, frame(id));
 		return promise.then(result => {
 			if (owner.data.closed || host.sessionId() !== sessionId || authenticatedGeneration(sessionId) !== generation
-				|| (credential && (owner.data.installedExpiry ?? 0) <= Date.now())) {
+				|| (credential && !credentialInstalled(owner))) {
 				throw new Error("Noli bridge authentication changed during a producer request");
 			}
 			return result;

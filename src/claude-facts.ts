@@ -75,13 +75,20 @@ export function firstInputSample(text: string): string {
 
 type Content = string | readonly { type: string; text?: string }[] | undefined;
 
-function textOf(content: Content): { text: string; textBlockIndex: number | null; digestText: string } {
+interface ContentText {
+	text: string;
+	textBlockIndex: number | null;
+	digestText: string;
+}
+
+function textOf(content: Content): ContentText {
 	if (typeof content === "string") return { text: content, textBlockIndex: null, digestText: content };
 	const blocks = content ?? [];
 	const index = blocks.findIndex(block => block.type === "text");
+	const first = index >= 0 ? blocks[index] : undefined;
 	// Identity covers every block's text and kind; image bytes are left out on purpose.
 	const digestText = blocks.map(block => block.type === "text" ? `t${block.text ?? ""}` : `x${block.type}`).join("\0");
-	return { text: index < 0 ? "" : blocks[index]!.text ?? "", textBlockIndex: index < 0 ? null : index, digestText };
+	return { text: first?.text ?? "", textBlockIndex: first ? index : null, digestText };
 }
 
 function identityKey(role: string, timestamp: number, extra: string): string {

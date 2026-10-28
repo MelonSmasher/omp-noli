@@ -34,37 +34,49 @@ export function assertRequestFacts(value: unknown, requestClasses: readonly Requ
 	integer(facts.historyRevision, 0);
 	if (!requestClasses.includes(facts.requestClass as RequestFacts["requestClass"])) throw new Error("Unsupported Noli request class");
 	text(facts.querySource, 128);
-	if (facts.previousMessageId !== undefined && (typeof facts.previousMessageId !== "string" || !/^msg_[A-Za-z0-9_-]{1,508}$/.test(facts.previousMessageId))) {
+	previousMessageId(facts.previousMessageId);
+	if (facts.firstEligible !== null) firstEligible(facts.firstEligible);
+	prompt(facts.prompt);
+	if (facts.prevToolDurations !== undefined) {
+		if (facts.requestClass === "compaction") throw new Error("Compaction requests carry no previous tool durations");
+		prevToolDurations(facts.prevToolDurations);
+	}
+}
+
+function previousMessageId(value: unknown): void {
+	if (value !== undefined && (typeof value !== "string" || !/^msg_[A-Za-z0-9_-]{1,508}$/.test(value))) {
 		throw new Error("Invalid Noli previous message id");
 	}
-	if (facts.firstEligible !== null) {
-		const first = object(facts.firstEligible, ["messageId", "textBlockIndex", "sample"]);
-		nullableText(first.messageId);
-		if (first.textBlockIndex !== null) integer(first.textBlockIndex, 0);
-		// Exactly three UTF-16 code units; lone surrogates were replaced by U+FFFD.
-		if (typeof first.sample !== "string" || first.sample.length !== 3 || !first.sample.isWellFormed()) {
-			throw new Error("Invalid Noli first-input sample");
-		}
+}
+
+function firstEligible(value: unknown): void {
+	const first = object(value, ["messageId", "textBlockIndex", "sample"]);
+	nullableText(first.messageId);
+	if (first.textBlockIndex !== null) integer(first.textBlockIndex, 0);
+	// Exactly three UTF-16 code units; lone surrogates were replaced by U+FFFD.
+	if (typeof first.sample !== "string" || first.sample.length !== 3 || !first.sample.isWellFormed()) {
+		throw new Error("Invalid Noli first-input sample");
 	}
-	const prompt = object(facts.prompt, ["id", "origin", "position"]);
-	nullableText(prompt.id);
-	nullableText(prompt.origin);
-	if (prompt.position !== null) {
-		const position = object(prompt.position, ["promptIndex", "turnIndex"]);
-		integer(position.promptIndex, 0, 10_000_000);
-		integer(position.turnIndex, 1, 10_000_000);
-		if ((position.promptIndex as number) > (position.turnIndex as number)) throw new Error("Invalid Noli request turn position");
-	}
-	if (facts.prevToolDurations !== undefined) {
-		const durations = facts.prevToolDurations;
-		if (facts.requestClass === "compaction") throw new Error("Compaction requests carry no previous tool durations");
-		if (!Array.isArray(durations) || durations.length < 1 || durations.length > 32) throw new Error("Invalid Noli previous tool durations");
-		for (const item of durations) {
-			const duration = object(item, ["toolName", "durationMs"]);
-			text(duration.toolName);
-			if (!(duration.toolName as string).isWellFormed()) throw new Error("Invalid Noli producer facts string");
-			integer(duration.durationMs, 0);
-		}
+}
+
+function prompt(value: unknown): void {
+	const facts = object(value, ["id", "origin", "position"]);
+	nullableText(facts.id);
+	nullableText(facts.origin);
+	if (facts.position === null) return;
+	const position = object(facts.position, ["promptIndex", "turnIndex"]);
+	integer(position.promptIndex, 0, 10_000_000);
+	integer(position.turnIndex, 1, 10_000_000);
+	if ((position.promptIndex as number) > (position.turnIndex as number)) throw new Error("Invalid Noli request turn position");
+}
+
+function prevToolDurations(value: unknown): void {
+	if (!Array.isArray(value) || value.length < 1 || value.length > 32) throw new Error("Invalid Noli previous tool durations");
+	for (const item of value) {
+		const duration = object(item, ["toolName", "durationMs"]);
+		text(duration.toolName);
+		if (!(duration.toolName as string).isWellFormed()) throw new Error("Invalid Noli producer facts string");
+		integer(duration.durationMs, 0);
 	}
 }
 

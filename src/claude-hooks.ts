@@ -147,34 +147,40 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 		pending = undefined;
 	});
 
+	/** Facts for one main-loop or subagent request, including the previous tool batch under its wire names. */
+	const factsFor = (messages: readonly AgentMessage[], ctx: ExtensionContext, self: Omit<FactsIdentity, "requestClass" | "querySource">) => {
+		const branch = ctx.sessionManager.getBranch();
+		const durations = prevToolDurations(messages, branch, timings, toolEpoch, wireNaming(ctx.model));
+		const main = ctx.agent.kind === "main";
+		const facts = requestFacts(messages, branch, { ...self, requestClass: main ? "main" : "subagent", querySource: main ? "agent" : "task" });
+		return durations ? { ...facts, prevToolDurations: durations } : facts;
+	};
+
+	/** Registers one request's facts; the reference lands in `slot` unless a newer request replaced it. */
+	const registerFacts = async (messages: readonly AgentMessage[], ctx: ExtensionContext, slot: { ref: string | null }): Promise<void> => {
+		ensureEpoch(ctx);
+		if (announced !== ctx.sessionManager.getSessionId() && !announce(ctx)) return;
+		const self = identity(ctx);
+		const producer = live()?.producer;
+		if (!self || !producer) return;
+		const facts = factsFor(messages, ctx, self);
+		pruneTimings();
+		await sendBranch(ctx, false);
+		const ref = await producer.register(self.ompSessionId, facts);
+		if (pending === slot) slot.ref = ref;
+	};
+	/** Timings of earlier resets are never emitted again; the cap bounds a session that never resets. */
+	const pruneTimings = (): void => {
+		for (const [id, timing] of timings) if (timing.epoch !== toolEpoch || timings.size > 1024) timings.delete(id);
+	};
+
 	pi.on("context", async (event, ctx) => {
 		warmUntil = 0;
 		if (!live() || !isGatewayClaudeModel(ctx.model) || isSideTurn(event.messages)) return;
 		const slot: { ref: string | null } = { ref: null };
 		pending = slot;
 		try {
-			ensureEpoch(ctx);
-			if (announced !== ctx.sessionManager.getSessionId() && !announce(ctx)) return;
-			const self = identity(ctx);
-			const producer = live()?.producer;
-			if (!self || !producer) return;
-			const branch = ctx.sessionManager.getBranch();
-			const durations = prevToolDurations(event.messages, branch, timings, toolEpoch, {
-				escape: (ctx.model?.compat as { escapeBuiltinToolNames?: unknown } | undefined)?.escapeBuiltinToolNames === true,
-				// The Gateway key is a base64url token, never `sk-ant-oat`, so the key-based fallback is false.
-				oauth: (ctx.model as { isOAuth?: unknown } | undefined)?.isOAuth === true,
-			});
-			const facts = {
-				...requestFacts(event.messages, branch, {
-					...self, requestClass: ctx.agent.kind === "main" ? "main" : "subagent", querySource: ctx.agent.kind === "main" ? "agent" : "task",
-				}),
-				...(durations ? { prevToolDurations: durations } : {}),
-			};
-			// Timings of earlier resets are never emitted again; the cap bounds a session that never resets.
-			for (const [id, timing] of timings) if (timing.epoch !== toolEpoch || timings.size > 1024) timings.delete(id);
-			await sendBranch(ctx, false);
-			const ref = await producer.register(self.ompSessionId, facts);
-			if (pending === slot) slot.ref = ref;
+			await registerFacts(event.messages, ctx, slot);
 		} catch (error) {
 			// Fail closed: the call is tagged with a null reference and Noli rejects it.
 			pi.logger?.warn("Noli request registration failed", { error: error instanceof Error ? error.message : String(error) });
@@ -246,4 +252,13 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 			if (timing) timings.set(event.toolCallId, { ...timing, end: Date.now(), executed: !event.isError });
 		});
 	}
+}
+
+/** Stock OMP's tool-name encoding inputs for the model a request is built for. */
+function wireNaming(model: ExtensionContext["model"]): { escape: boolean; oauth: boolean } {
+	return {
+		escape: (model?.compat as { escapeBuiltinToolNames?: unknown } | undefined)?.escapeBuiltinToolNames === true,
+		// The Gateway key is a base64url token, never `sk-ant-oat`, so the key-based fallback is false.
+		oauth: (model as { isOAuth?: unknown } | undefined)?.isOAuth === true,
+	};
 }
