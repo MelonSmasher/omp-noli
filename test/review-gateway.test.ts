@@ -454,7 +454,7 @@ test("review: bootstrap files reject symlinks and non-private permissions", () =
 
 // Synthetic producer facts; no Claude Code process, profile or provider is used.
 function requestFacts(overrides: Partial<RequestFacts> = {}): RequestFacts {
-  return { version: 1, producerSessionId: "private-root", producerAgentId: "Main", parentProducerSessionId: null,
+  return { version: 2, producerSessionId: "private-root", producerAgentId: "Main", parentProducerSessionId: null,
     branchAnchor: null, historyRevision: 1, requestClass: "main", querySource: "agent",
     firstEligible: { messageId: "message-1", textBlockIndex: null, sample: "abc" },
     prompt: { id: "prompt-1", origin: "human", position: { promptIndex: 1, turnIndex: 1 } }, ...overrides };
@@ -603,19 +603,22 @@ test("review: the private boundary rejects unsupported producer frames before se
   const f = await authenticatedGateway();
   try {
     const legacy = { ...requestFacts(), firstEligible: { messageId: null, textBlockIndex: null, fingerprint: "abc" } };
-    for (const facts of [undefined, { ...requestFacts(), version: 2 }, { ...requestFacts(), producerSessionId: "x".repeat(513) },
+    for (const facts of [undefined, { ...requestFacts(), version: 1 }, { ...requestFacts(), producerSessionId: "x".repeat(513) },
       { ...requestFacts(), historyRevision: -1 }, { ...requestFacts(), unrecognized: true }, legacy,
       { ...requestFacts(), ownership: { conversationId: "minted-by-noli" } }, { ...requestFacts(), requestClass: "compaction" },
       { ...requestFacts(), firstEligible: { messageId: null, textBlockIndex: null, sample: "ab" } },
       { ...requestFacts(), prompt: { id: null, origin: null, position: { promptIndex: 2, turnIndex: 1 } } },
-      { ...requestFacts(), previousMessageId: "resp_not_anthropic" }, { ...requestFacts(), producerSessionId: "private-child" }]) {
+      { ...requestFacts(), previousMessageId: "resp_not_anthropic" }, { ...requestFacts(), producerSessionId: "private-child" },
+      { ...requestFacts(), compactionKind: "manual" }, { ...requestFacts(), contextCompacted: "later" }]) {
       await expect(f.bridge.producer.register("private-root", facts as RequestFacts)).rejects.toThrow();
     }
     await expect(f.bridge.producer.register("unannounced", requestFacts({ producerSessionId: "unannounced" }))).rejects.toThrow("unannounced");
     expect(() => f.bridge.producer.announce({ ...childSession, parentOmpSessionId: null })).toThrow();
     expect(() => f.bridge.producer.announce({ ...rootSession, systemPrefix: { sha256: "A".repeat(64), len: 1 } })).toThrow();
-    await expect(f.bridge.producer.compaction({ ompSessionId: "private-root", phase: "end", facts: requestFacts({ requestClass: "compaction" }) })).rejects.toThrow();
+    await expect(f.bridge.producer.compaction({ ompSessionId: "private-root", phase: "end", facts: requestFacts({ requestClass: "compaction", compactionKind: "manual" }) })).rejects.toThrow();
     await expect(f.bridge.producer.compaction({ ompSessionId: "private-root", phase: "begin", facts: requestFacts() })).rejects.toThrow();
+    // Every compaction is a native fork with its kind.
+    await expect(f.bridge.producer.compaction({ ompSessionId: "private-root", phase: "begin", facts: requestFacts({ requestClass: "compaction", querySource: "compaction" }) })).rejects.toThrow();
     await expect(f.bridge.producer.branch({ ompSessionId: "private-root", leafId: null, resetEntryIds: ["\n"] })).rejects.toThrow();
     const pending = f.bridge.producer.register("private-root", requestFacts({ firstEligible: null, prompt: { id: null, origin: null, position: null } }));
     const frame = await f.client.next();
@@ -629,7 +632,7 @@ test("review: the private boundary rejects unsupported producer frames before se
 test("review: compaction brackets and branch resets wait for Noli's acknowledgement", async () => {
   const f = await authenticatedGateway();
   try {
-    const facts = requestFacts({ requestClass: "compaction", querySource: "compaction" });
+    const facts = requestFacts({ requestClass: "compaction", querySource: "compaction", compactionKind: "reactive" });
     const begin = f.bridge.producer.compaction({ ompSessionId: "private-root", phase: "begin", facts });
     const opened = await f.client.next();
     expect(opened).toMatchObject({ method: "producer.compaction", params: { ompSessionId: "private-root", phase: "begin", facts } });

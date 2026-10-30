@@ -43,6 +43,7 @@ export const CAPABILITY_NAMES = [
 	"memory.status",
 	"memory.search",
 	"memory.save",
+	"history.entries",
 ] as const;
 export type CapabilityName = (typeof CAPABILITY_NAMES)[number];
 
@@ -273,6 +274,40 @@ export interface CancelWorkResult {
 	cancelled: boolean;
 }
 
+// --------------------------------------------------------------------- history
+
+/**
+ * `history.entries`: one bounded page of the root session's append history,
+ * the same entries OMP's `get_entries` returns, strictly after `since`.
+ * Page budgets are UTF-8 bytes; the bridge client reads frames of at most 1 MiB.
+ */
+export const HISTORY_MIN_BYTES = 4096;
+export const HISTORY_MAX_BYTES = 768 * 1024;
+export const HISTORY_DEFAULT_BYTES = 512 * 1024;
+
+export interface HistoryEntriesParams {
+	/** Entry id; the page starts after it. Omitted: from the first entry. Unknown: `unknown_since`. */
+	since?: string;
+	/** UTF-16 offset into the JSON text of the first entry after `since`; continues a `partial`. */
+	offset?: number;
+	/** UTF-8 budget for the page's entry payload (4096..786432, default 524288). */
+	maxBytes?: number;
+}
+
+export interface HistoryEntriesResult {
+	sessionId: string;
+	leafId: string | null;
+	/** Whole entries in append order; never mixed with `partial`. */
+	entries: Record<string, unknown>[];
+	/**
+	 * A slice of `JSON.stringify(entry)` for an entry larger than one page.
+	 * Offsets are UTF-16 code units; slices never split a surrogate pair.
+	 */
+	partial?: { id: string; offset: number; total: number; text: string };
+	/** Anything remains after this page: more entries or the rest of `partial`. */
+	more: boolean;
+}
+
 export interface HelloResult {
 	protocol: typeof PROTOCOL_VERSION;
 	sessionId: string;
@@ -298,9 +333,14 @@ export interface FirstEligibleInput { messageId: string | null; textBlockIndex: 
 export interface RequestPrompt { id: string | null; origin: string | null; position: PromptPosition | null }
 /** One tool the previous batch executed: resolved wire tool name and max(0, round(end - start)) in ms. */
 export interface PrevToolDuration { toolName: string; durationMs: number }
-/** Producer facts for one main, subagent or compaction request. Noli mints ownership. */
+/** Claude Code `compactionRequestKind`: the `x-cc-compaction-request` / `x-cc-context-compacted` value. */
+export type CompactionKind = "auto" | "manual" | "reactive";
+/**
+ * Producer facts for one main, subagent or compaction request. Noli mints ownership.
+ * Version 2 adds the native compaction kinds; Noli accepts only this version.
+ */
 export interface RequestFacts {
-	version: 1;
+	version: 2;
 	/** Always the registering `ompSessionId`. */
 	producerSessionId: string;
 	/** Active leaf entry id when the facts were computed. */
@@ -322,6 +362,13 @@ export interface RequestFacts {
 	 * never null or empty, and never on compaction.
 	 */
 	prevToolDurations?: PrevToolDuration[];
+	/** Required on compaction (the fork's `x-cc-compaction-request`), absent otherwise. */
+	compactionKind?: CompactionKind;
+	/**
+	 * The kind of the native compaction the main thread committed since its previous main
+	 * request (CC `NEn`/`T7o`: `x-cc-context-compacted`, consumed once). Main only.
+	 */
+	contextCompacted?: CompactionKind;
 }
 /** UTF-8 SHA-256 and byte length of OMP's bundled system-prompt static prefix. */
 export interface SystemPrefix { sha256: string; len: number }
@@ -373,6 +420,7 @@ export const ERROR_CODES = [
 	"unknown_method",
 	"not_ready",
 	"internal",
+	"unknown_since",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 

@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
-import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import type { ContextEvent, ExtensionAPI, ExtensionContext, SessionBeforeCompactEvent, SessionBeforeCompactResult, SessionEntry } from "@oh-my-pi/pi-coding-agent";
 import type { ProducerChannel } from "./bridge";
-import { EPOCH_ENTRY_TYPE, type EpochData, type FactsIdentity, type ToolTiming, compactionSource, epochEntryId, prevToolDurations, requestFacts, resetEntryIds } from "./claude-facts";
+import { EPOCH_ENTRY_TYPE, type EpochData, type FactsIdentity, type ToolTiming, epochEntryId, prevToolDurations, requestFacts, resetEntryIds, wireToolName } from "./claude-facts";
 import { isGatewayClaudeModel } from "./gateway";
-import type { NoliRequestTag } from "./protocol";
+import { type ForkAttempt, NATIVE_COMPACTION_KEY, type NativeCompactionData, ReactiveLadder, TRUNCATION_NOTE, compactionPrompt, foldReminderBeforeSummary, hasSummaryBlock, isPromptTooLong, nativeCompactionData, nativeSummaries, nativeSummaryKey, nativeSummaryText, nativeSummaryTexts, promptTooLongGap, renderNativeSummaries, toolNamesUsed } from "./native-compaction";
+import type { CompactionKind, NoliRequestTag } from "./protocol";
 import { SIDE_CHANNEL_REMINDERS, SYSTEM_PREFIXES } from "./system-prefix.generated";
 
 /**
@@ -35,6 +38,61 @@ const WARM_WINDOW_MS = 30_000;
 
 type AgentMessage = ContextEvent["messages"][number];
 
+/**
+ * Stock OMP races every extension handler against a fixed 30 s budget and drops a late result
+ * (runner.ts:133-168, 1676-1689), which would let stock summarization run after a long fork.
+ * While a native compaction runs, the budget of the live runner module is raised to this, and
+ * restored when the last compaction in the process ends. Noli's bracket TTL matches it.
+ */
+export const COMPACTION_HANDLER_BUDGET_MS = 20 * 60_000;
+
+/** Raises the live runner's handler budget for one compaction; `false` when unavailable (fail closed). */
+export interface HandlerBudget {
+	lift(ctx: ExtensionContext): boolean;
+	restore(): void;
+}
+interface RunnerModule {
+	ExtensionRunner: abstract new (...args: never[]) => unknown;
+	EXTENSION_HANDLER_TIMEOUT_MS: number;
+	testSetExtensionHandlerTimeoutMs(timeoutMs: number): void;
+}
+type AgentRegistryApi = { AgentRegistry?: { global(): { get(id: string): { session?: { extensionRunner?: unknown } } | undefined } } };
+
+let budgetHolders = 0;
+
+/**
+ * A budget over `runner`, valid only for sessions whose live extension runner is an instance of
+ * that module's `ExtensionRunner` (so the module global it sets is the one the host reads).
+ */
+export function runnerHandlerBudget(runner: RunnerModule, liveRunner: (ctx: ExtensionContext) => unknown): HandlerBudget {
+	return {
+		lift(ctx) {
+			if (!(liveRunner(ctx) instanceof runner.ExtensionRunner)) return false;
+			if (budgetHolders++ === 0) runner.testSetExtensionHandlerTimeoutMs(COMPACTION_HANDLER_BUDGET_MS);
+			return true;
+		},
+		restore() {
+			if (budgetHolders > 0 && --budgetHolders === 0) runner.testSetExtensionHandlerTimeoutMs(runner.EXTENSION_HANDLER_TIMEOUT_MS);
+		},
+	};
+}
+
+/** The managed launch runs OMP from source (`NOLI_OMP_SDK_ROOT`), so a deep import binds the live module. */
+async function sdkHandlerBudget(pi: ExtensionAPI): Promise<HandlerBudget | undefined> {
+	const root = process.env.NOLI_OMP_SDK_ROOT;
+	if (!root) return undefined;
+	try {
+		// Runtime-selected: the live runner module is the launcher's SDK root, not the extension's own dependency.
+		const runner = await import(pathToFileURL(join(root, "src/extensibility/extensions/runner.ts")).href) as Partial<RunnerModule>;
+		if (typeof runner.ExtensionRunner !== "function" || typeof runner.testSetExtensionHandlerTimeoutMs !== "function"
+			|| typeof runner.EXTENSION_HANDLER_TIMEOUT_MS !== "number") return undefined;
+		const registry = (pi.pi as AgentRegistryApi | undefined)?.AgentRegistry;
+		return runnerHandlerBudget(runner as RunnerModule, ctx => registry?.global().get(ctx.agent.id)?.session?.extensionRunner);
+	} catch {
+		return undefined;
+	}
+}
+
 export interface ClaudeHookOptions {
 	/**
 	 * Observe `tool_result` to time and include only tools that actually executed. Set it only
@@ -42,6 +100,21 @@ export interface ClaudeHookOptions {
 	 * a first `tool_result` handler makes stock OMP skip speculative execution (speculation/host.ts:76-83).
 	 */
 	toolResults: boolean;
+	/** Tests only: the handler budget; the managed launch resolves the live runner module. */
+	handlerBudget?: Promise<HandlerBudget | undefined>;
+}
+
+/** One native compaction in progress: its summarizer fork and the reactive ladder over its history. */
+interface Fork {
+	kind: CompactionKind;
+	prompt: string;
+	gap: number | undefined;
+	controller: AbortController;
+	/** The history before the side-turn reminder, as the first fork attempt saw it. */
+	history?: AgentMessage[];
+	ladder?: ReactiveLadder;
+	attempt?: ForkAttempt;
+	failure?: string;
 }
 
 export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: ClaudeHookOptions): void {
@@ -57,6 +130,17 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 	/** Tool timings of this session in memory only; a restart starts without them, as Claude Code does. */
 	const timings = new Map<string, ToolTiming>();
 	let toolEpoch = 0;
+	/** The reason of the auto compaction OMP announced last; none means a manual `/compact`. */
+	let autoReason: string | undefined;
+	/** The latest assistant error text, for the prompt-too-long gap that seeds the reactive ladder. */
+	let lastError: string | undefined;
+	/** The native compaction in progress in this session. */
+	let fork: Fork | undefined;
+	/** CC `NEn`: the kind the main thread compacted with, consumed by its next main request (`T7o`). */
+	let compacted: CompactionKind | undefined;
+	let budget: HandlerBudget | undefined;
+	let budgetHeld = false;
+	const budgetSource = options.handlerBudget ?? sdkHandlerBudget(pi);
 	const live = () => channel?.dir === dir ? channel : undefined;
 
 	const identity = (ctx: ExtensionContext): Omit<FactsIdentity, "requestClass" | "querySource"> | undefined => {
@@ -153,7 +237,9 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 		const durations = prevToolDurations(messages, branch, timings, toolEpoch, wireNaming(ctx.model));
 		const main = ctx.agent.kind === "main";
 		const facts = requestFacts(messages, branch, { ...self, requestClass: main ? "main" : "subagent", querySource: main ? "agent" : "task" });
-		return durations ? { ...facts, prevToolDurations: durations } : facts;
+		const contextCompacted = main ? compacted : undefined;
+		if (main) compacted = undefined;
+		return { ...facts, ...(durations ? { prevToolDurations: durations } : {}), ...(contextCompacted ? { contextCompacted } : {}) };
 	};
 
 	/** Registers one request's facts; the reference lands in `slot` unless a newer request replaced it. */
@@ -187,6 +273,62 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 		}
 	});
 
+	/** `sve`'s meta row; developer + user attribution keeps it a user row on the wire and meta for T0. */
+	const truncationRow = (): AgentMessage => ({ role: "developer", content: TRUNCATION_NOTE, attribution: "user", timestamp: Date.now() }) as AgentMessage;
+
+	/**
+	 * One fork attempt: the summarized history plus the side prompt, without OMP's side-turn
+	 * reminder, under a compaction bracket whose facts describe exactly the summarized messages.
+	 * Any inconsistency aborts the side turn before a request is built (fail closed).
+	 */
+	const shapeFork = async (original: readonly AgentMessage[], rendered: readonly AgentMessage[], ctx: ExtensionContext, state: Fork): Promise<AgentMessage[]> => {
+		const fail = (reason: string): AgentMessage[] => {
+			state.failure = reason;
+			state.controller.abort(new Error(`Native compaction: ${reason}`));
+			return [...rendered];
+		};
+		const prompt = original.length - 1;
+		if (prompt < 1 || !isSideTurn([original[prompt - 1]!])) return fail("unexpected side-turn shape");
+		const history = original.slice(0, prompt - 1);
+		if (!state.history || !state.ladder) {
+			state.history = history;
+			state.ladder = new ReactiveLadder(history, state.gap, truncationRow);
+		} else if (state.history.length !== history.length) return fail("history changed during compaction");
+		const step = state.ladder.next();
+		if ("failure" in step) return fail(step.failure);
+		state.attempt = step.attempt;
+		// The ladder holds the first attempt's clones; map them to this call's messages by position.
+		const position = new Map(state.history.map((message, index) => [message, index]));
+		const current = (source: readonly AgentMessage[]) => step.attempt.summarize.map(message => {
+			const index = position.get(message);
+			return index === undefined ? message : source[index]!;
+		});
+		const self = identity(ctx);
+		const producer = live()?.producer;
+		if (!self || !producer) return fail("Noli bridge unavailable");
+		const branch = ctx.sessionManager.getBranch();
+		const facts = requestFacts(current(original), branch, { ...self, requestClass: "compaction", querySource: "compaction" });
+		compacting = self.ompSessionId;
+		try {
+			await producer.compaction({ ompSessionId: self.ompSessionId, phase: "begin", facts: { ...facts, compactionKind: state.kind } });
+		} catch (error) {
+			return fail(`bracket failed to open (${error instanceof Error ? error.message : String(error)})`);
+		}
+		return [...current(rendered), rendered[prompt]!];
+	};
+
+	// Registered after the facts handler, which must still see OMP's `compactionSummary` messages.
+	pi.on("context", async (event, ctx) => {
+		if (!live() || !isGatewayClaudeModel(ctx.model)) return undefined;
+		const rendered = renderNativeSummaries(event.messages, nativeSummaries(ctx.sessionManager.getBranch()));
+		const state = fork;
+		const last = event.messages.at(-1);
+		const forkTurn = state !== undefined && last?.role === "user" && Array.isArray(last.content)
+			&& last.content[0]?.type === "text" && last.content[0].text === state.prompt && isSideTurn(event.messages);
+		const messages = forkTurn ? await shapeFork(event.messages, rendered, ctx, state) : rendered;
+		return messages === event.messages ? undefined : { messages };
+	});
+
 	// Synchronous on purpose: the runner's timeout and fail-open paths cannot drop a value returned without awaiting.
 	pi.on("before_provider_request", (event, ctx) => {
 		if (!live() || !isGatewayClaudeModel(ctx.model)) return undefined;
@@ -194,7 +336,8 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 		if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
 		const warm = Date.now() < warmUntil;
 		const tag: NoliRequestTag = { session: ctx.sessionManager.getSessionId(), ref: warm ? null : pending?.ref ?? null, warm };
-		return { ...payload, noli_request: tag };
+		const messages = "messages" in payload ? foldReminderBeforeSummary(payload.messages, nativeSummaryTexts(ctx.sessionManager.getBranch())) : undefined;
+		return { ...payload, ...(messages ? { messages } : {}), noli_request: tag };
 	});
 
 	pi.on("cache_warming_decision", event => {
@@ -202,29 +345,128 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 		return undefined;
 	});
 
-	// Not `session_before_compact`: registering it makes stock OMP skip speculative compaction
-	// (session-maintenance.ts:2162,2255,2490). `auto_compaction_start` is awaited before the
-	// summarization request (session-maintenance.ts:1767,4953) and changes nothing when observed.
-	pi.on("auto_compaction_start", async (event, ctx) => {
-		// Claude Code drops the previous batch on a prompt-too-long retry, keeps it for proactive compaction.
-		if (event.reason === "overflow") toolEpoch++;
-		const producer = live()?.producer;
-		const self = identity(ctx);
-		// Shake and snapcompact are local rewrites with no provider request.
-		if (!producer || !self || event.action === "shake" || event.action === "snapcompact") return;
-		endCompaction();
+	/**
+	 * The committed entry: `summary` is the exact summary row text (`nee()` plus `kcn` when a tail
+	 * is kept), and the kept tail starts at the first kept message's entry. `undefined` when that
+	 * entry cannot be found (fail closed).
+	 */
+	const nativeResult = (event: SessionBeforeCompactEvent, ctx: ExtensionContext, state: Fork, attempt: ForkAttempt, history: readonly AgentMessage[], reply: string) => {
+		const branch = ctx.sessionManager.getBranch();
+		const first = attempt.keep[0];
+		const firstKeptEntryId = first === undefined ? "" : branch.findLast((entry: SessionEntry) => entry.type === "message"
+			&& entry.message.role === first.role && entry.message.timestamp === first.timestamp)?.id;
+		if (firstKeptEntryId === undefined) return undefined;
+		const natives = nativeSummaries(branch);
+		const earlier = history.flatMap(message => message.role === "compactionSummary"
+			? natives.get(nativeSummaryKey(message.timestamp, message.summary))?.toolNames ?? [] : []);
+		const naming = wireNaming(ctx.model);
+		const toolNames = toolNamesUsed(history, name => wireToolName(name, naming), earlier);
+		// No transcript sentence: the variant native renders when `cve()` yields no path (diskless
+		// `J()`, `Xa()` or `compactTranscriptUnavailable`, 5hada5qy:2567069). OMP's session file
+		// path would be a non-native string, and a CC-shaped path would not exist.
+		const summary = nativeSummaryText({ reply, toolNames, headTruncated: attempt.headTruncated, keptTail: attempt.keep.length > 0 });
+		const data: NativeCompactionData = { v: 1, kind: state.kind, toolNames };
+		return { summary, firstKeptEntryId, tokensBefore: event.preparation.tokensBefore, preserveData: { [NATIVE_COMPACTION_KEY]: data } };
+	};
+
+	/**
+	 * One native compaction (CC `Hfr` through `ive`): summarizer forks through OMP's own side-turn
+	 * path until one returns a summary, then the entry OMP commits as-is. Every failure cancels:
+	 * OMP's own summarizer never reaches the Gateway for a Claude model.
+	 */
+	const compactNatively = async (event: SessionBeforeCompactEvent, ctx: ExtensionContext, reason: string | undefined): Promise<SessionBeforeCompactResult> => {
+		// CC 2.1.309 never compacts proactively under the default window source (`Nmr`,
+		// 5hada5qy:2568633): it sends the request and compacts on prompt-too-long instead.
+		if (reason === "threshold" || reason === "idle") {
+			pi.logger?.debug("Native compaction declined: Claude Code compacts only on prompt-too-long or /compact", { reason, agent: ctx.agent.kind });
+			return { cancel: true };
+		}
+		const run = ctx.runEphemeralTurn;
+		if (!budgetHeld || !run) {
+			pi.logger?.warn("Native compaction unavailable: the handler budget or side turns cannot be used");
+			return { cancel: true };
+		}
+		const kind: CompactionKind = reason === undefined ? "manual" : "reactive";
+		// `/compact` trims its arguments before `eve` splices them (fzcbqdwj:16225).
+		const instructions = kind === "manual" ? event.customInstructions?.trim() : undefined;
+		const state: Fork = {
+			kind, prompt: compactionPrompt(instructions), controller: new AbortController(),
+			gap: reason === "overflow" && lastError !== undefined ? promptTooLongGap(lastError) : undefined,
+		};
+		fork = state;
+		const signal = AbortSignal.any([event.signal, state.controller.signal]);
+		for (;;) {
+			let reply: string | undefined;
+			let error: string | undefined;
+			try {
+				const result = await run({ promptText: state.prompt, signal, dedupeReply: false, replyMaxBytes: Number.POSITIVE_INFINITY });
+				// `YTe`: the first text block of the reply, trimmed.
+				const text = result.assistantMessage.content.find(block => block.type === "text");
+				reply = text?.type === "text" ? text.text.trim() : undefined;
+			} catch (thrown) {
+				error = thrown instanceof Error ? thrown.message : String(thrown);
+			}
+			const { attempt, ladder, history } = state;
+			if (signal.aborted || !attempt || !ladder || !history) {
+				pi.logger?.warn("Native compaction stopped", { reason: state.failure ?? error ?? "aborted" });
+				return { cancel: true };
+			}
+			if (attempt.openingRoundAlone && !(reply && hasSummaryBlock(reply))) {
+				ladder.openingRoundFailed();
+				continue;
+			}
+			if (reply) {
+				const compaction = nativeResult(event, ctx, state, attempt, history, reply);
+				if (compaction) return { compaction };
+				pi.logger?.warn("Native compaction failed: the kept tail has no session entry");
+				return { cancel: true };
+			}
+			if (error !== undefined && isPromptTooLong(error) && ladder.promptTooLong(promptTooLongGap(error))) continue;
+			pi.logger?.warn("Native compaction failed", { error: error ?? "empty summary" });
+			return { cancel: true };
+		}
+	};
+
+	pi.on("session_before_compact", async (_event, ctx) => {
+		if (!live() || !isGatewayClaudeModel(ctx.model)) return undefined;
+		// Lifted here so the next handler, and the context handlers of its forks, run under it.
+		budget = await budgetSource;
+		budgetHeld = budget?.lift(ctx) === true;
+		return undefined;
+	});
+	// Registering this also turns stock speculative compaction off (session-maintenance.ts:2232, 2325, 2560).
+	pi.on("session_before_compact", async (event, ctx) => {
+		const reason = autoReason;
+		autoReason = undefined;
+		if (!live() || !isGatewayClaudeModel(ctx.model)) return undefined;
 		try {
-			const branch = ctx.sessionManager.getBranch();
-			const facts = requestFacts(compactionSource(branch), branch, { ...self, requestClass: "compaction", querySource: "compaction" });
-			compacting = self.ompSessionId;
-			await producer.compaction({ ompSessionId: self.ompSessionId, phase: "begin", facts });
-		} catch (error) {
-			pi.logger?.warn("Noli compaction bracket failed to open", { error: error instanceof Error ? error.message : String(error) });
+			return await compactNatively(event, ctx, reason);
+		} finally {
+			fork = undefined;
+			endCompaction();
+			if (budgetHeld) {
+				budgetHeld = false;
+				budget?.restore();
+			}
 		}
 	});
-	pi.on("session_compact", endCompaction);
-	pi.on("auto_compaction_end", endCompaction);
-	pi.on("agent_start", endCompaction);
+	// The only extension-visible trace of an automatic pass; a manual `/compact` emits none.
+	pi.on("auto_compaction_start", event => {
+		// Claude Code drops the previous batch on a prompt-too-long retry, keeps it for proactive compaction.
+		if (event.reason === "overflow") toolEpoch++;
+		autoReason = event.reason;
+	});
+	// A shake pass announces itself but never reaches `session_before_compact`.
+	pi.on("auto_compaction_end", () => { autoReason = undefined; });
+	pi.on("message_end", event => {
+		const message = event.message as { role: string; stopReason?: string; errorMessage?: string };
+		if (message.role === "assistant") lastError = message.stopReason === "error" ? message.errorMessage : undefined;
+	});
+	pi.on("session_compact", (event, ctx) => {
+		const data = nativeCompactionData(event.compactionEntry.preserveData);
+		// The one-shot `x-cc-context-compacted` is armed for the main thread only (`vv`, 5hada5qy:2843681).
+		if (data && ctx.agent.kind === "main") compacted = data.kind;
+	});
 
 	// Claude Code starts a fresh tool-duration list for every new prompt (design spec §1.4).
 	pi.on("before_agent_start", event => {

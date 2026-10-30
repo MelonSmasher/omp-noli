@@ -3,7 +3,7 @@ import { writeSchemaFiles } from "./schema-files";
 import { join } from "node:path";
 import ts from "typescript";
 import { sameSchemaText } from "./schema-text";
-import { AGENT_KINDS, AGENT_STATES, CAPABILITY_NAMES, CAPABILITY_REASONS, DEFINITION_SOURCES, DISCOVERY_REASONS, DISCOVERY_STATUSES, ERROR_CODES, JOB_KINDS, PROTOCOL_VERSION } from "../src/protocol";
+import { AGENT_KINDS, AGENT_STATES, CAPABILITY_NAMES, CAPABILITY_REASONS, DEFINITION_SOURCES, DISCOVERY_REASONS, DISCOVERY_STATUSES, ERROR_CODES, HISTORY_MAX_BYTES, HISTORY_MIN_BYTES, JOB_KINDS, PROTOCOL_VERSION } from "../src/protocol";
 
 // The existing frame schema remains the wire envelope. Generate the evolving
 // agent contracts from their TypeScript declarations, not a second field list.
@@ -50,7 +50,7 @@ function generate(type: ts.Type): Schema {
 	throw new Error(`Unsupported protocol type: ${checker.typeToString(type)}`);
 }
 const PRODUCER_DEFS = ["PromptPosition", "FirstEligibleInput", "RequestPrompt", "PrevToolDuration", "RequestFacts", "SystemPrefix", "ProducerSessionParams", "ProducerBranchParams", "GatewayRequestParams", "GatewayRequestResult", "ProducerCompactionParams", "ProducerResult", "GatewayRequest", "ProducerSessionRequest", "ProducerBranchRequest", "ProducerCompactionRequest", "NoliRequestTag"];
-for (const name of ["GatewayBindParams", "GatewayBindResult", "GatewayReadyResult", "GatewayBindRequest", ...PRODUCER_DEFS, "AgentView", "AgentOutputParams", "AgentOutputResult", "NavigateTreeParams", "GoalBudgetParams", "MemorySearchParams", "MemorySaveParams", "NativeControlResult"]) {
+for (const name of ["GatewayBindParams", "GatewayBindResult", "GatewayReadyResult", "GatewayBindRequest", ...PRODUCER_DEFS, "AgentView", "AgentOutputParams", "AgentOutputResult", "HistoryEntriesParams", "HistoryEntriesResult", "NavigateTreeParams", "GoalBudgetParams", "MemorySearchParams", "MemorySaveParams", "NativeControlResult"]) {
 	const declaration = declarations.get(name);
 	if (!declaration) throw new Error(`Missing ${name}`);
 	schema.$defs[name] = generate(checker.getTypeAtLocation(declaration));
@@ -102,9 +102,19 @@ for (const key of ["start", "end"]) output.properties.spans.items.properties[key
 schema.$defs.AgentOutputParams.properties.offset = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 schema.$defs.AgentOutputParams.properties.limit = { type: "integer", minimum: 1, maximum: 500 };
 schema.$defs.AgentOutputParams.properties.revision = { type: "string", minLength: 1, maxLength: 256 };
+schema.$defs.HistoryEntriesParams.properties.since = { type: "string", minLength: 1, maxLength: 512 };
+schema.$defs.HistoryEntriesParams.properties.offset = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
+schema.$defs.HistoryEntriesParams.properties.maxBytes = { type: "integer", minimum: HISTORY_MIN_BYTES, maximum: HISTORY_MAX_BYTES };
+// Entries are OMP's own session entry objects, passed through unchanged.
+schema.$defs.HistoryEntriesResult.properties.entries = { type: "array", items: { type: "object", required: ["id"], properties: { id: { type: "string" } } } };
+schema.$defs.HistoryEntriesResult.properties.partial = {
+	type: "object", additionalProperties: false, required: ["id", "offset", "total", "text"],
+	properties: { id: { type: "string" }, offset: { type: "integer", minimum: 0 }, total: { type: "integer", minimum: 1 }, text: { type: "string", minLength: 1 } },
+};
 const results = schema.$defs.Result.anyOf;
 if (!results.some((result: Schema) => result.$ref === "#/$defs/AgentOutputResult")) results.push({ $ref: "#/$defs/AgentOutputResult" });
 if (!results.some((result: Schema) => result.$ref === "#/$defs/NativeControlResult")) results.push({ $ref: "#/$defs/NativeControlResult" });
+if (!results.some((result: Schema) => result.$ref === "#/$defs/HistoryEntriesResult")) results.push({ $ref: "#/$defs/HistoryEntriesResult" });
 for (const name of ["GatewayBindResult", "GatewayReadyResult", "GatewayRequestResult"]) {
     if (!results.some((result: Schema) => result.$ref === `#/$defs/${name}`)) results.push({ $ref: `#/$defs/${name}` });
 }

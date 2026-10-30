@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { convertMessageToLlm } from "@oh-my-pi/pi-agent-core/compaction/messages";
 import type { ContextEvent, SessionEntry } from "@oh-my-pi/pi-coding-agent";
+import { type NativeSummaries, nativeSummaries, nativeSummaryKey } from "./native-compaction";
 import type { PrevToolDuration, PromptPosition, RequestFacts } from "./protocol";
 
 /**
@@ -49,7 +51,7 @@ interface SourceItem {
 	steering?: boolean;
 	customType?: string;
 	details?: unknown;
-	/** First text for T0, and its block index (null for string content and summaries). */
+	/** First text for T0 as the model receives it, and its block index (null for string content and summaries). */
 	text: string;
 	textBlockIndex: number | null;
 	key: string;
@@ -110,12 +112,20 @@ interface MessageLike {
 	toolCallId?: string;
 }
 
-function sourceItem(message: MessageLike): SourceItem | undefined {
+const NO_NATIVE: NativeSummaries = new Map();
+
+function sourceItem(message: MessageLike, native: NativeSummaries = NO_NATIVE): SourceItem | undefined {
 	if (!Object.hasOwn(SOURCE_ROLES, message.role)) return undefined;
 	const timestamp = message.timestamp ?? 0;
 	if (message.role === "compactionSummary" || message.role === "branchSummary") {
 		const summary = message.summary ?? "";
-		return { role: message.role, text: summary, textBlockIndex: null, key: identityKey(message.role, timestamp, summary) };
+		// Claude Code's T0 samples the summary user message's whole content (its `nee()` preamble
+		// included), so sample the user text the model receives, never the bare summary body: a
+		// native compaction's summary is that text; otherwise OMP's rendered summary context.
+		const text = message.role === "compactionSummary" && native.has(nativeSummaryKey(timestamp, summary))
+			? summary
+			: textOf(convertMessageToLlm(message as unknown as Parameters<typeof convertMessageToLlm>[0])?.content as Content).text;
+		return { role: message.role, text, textBlockIndex: null, key: identityKey(message.role, timestamp, summary) };
 	}
 	const { text, textBlockIndex, digestText } = textOf(message.content);
 	// Some stock paths persist custom messages with their append time, not the message's own.
@@ -337,26 +347,6 @@ export function hasConversation(branch: readonly SessionEntry[]): boolean {
 	return branch.some(entry => entry.type === "message" || entry.type === "custom_message" || entry.type === "compaction" || entry.type === "branch_summary");
 }
 
-/**
- * The history a compaction starting now summarizes: entries since the latest
- * compaction (its summary first) or `/clear`. Stock auto compaction announces
- * itself without a preparation, so the source view comes from the branch.
- */
-export function compactionSource(branch: readonly SessionEntry[]): AgentMessage[] {
-	let start = 0;
-	for (let index = branch.length - 1; index >= 0; index--) {
-		const type = branch[index]!.type;
-		if (type === "compaction") { start = index; break; }
-		if (type === "reset_boundary") { start = index + 1; break; }
-	}
-	const messages: MessageLike[] = [];
-	for (const entry of branch.slice(start)) {
-		const message = entryMessage(entry);
-		if (message) messages.push(message);
-	}
-	return messages as unknown as AgentMessage[];
-}
-
 export interface FactsIdentity {
 	ompSessionId: string;
 	agentId: string;
@@ -468,7 +458,8 @@ export function requestFacts(messages: readonly AgentMessage[], branch: readonly
 	const states = walk(branch);
 	const { persisted, byKey } = indexWalk(states);
 	const views = messages as readonly MessageLike[];
-	const items = views.map(sourceItem);
+	const native = nativeSummaries(branch);
+	const items = views.map(view => sourceItem(view, native));
 	const boundary = persistedBoundary(views, items, persisted);
 	const assigned = assignPersisted(items, boundary, byKey);
 	const tail = states.at(-1) ?? INITIAL;
@@ -477,7 +468,7 @@ export function requestFacts(messages: readonly AgentMessage[], branch: readonly
 	assigned.forEach((facts, index) => { if (facts !== undefined) stamped.push({ item: items[index]!, facts }); });
 	const previousMessageId = previousMessageIdOf(views);
 	return {
-		version: 1,
+		version: 2,
 		producerSessionId: identity.ompSessionId,
 		branchAnchor: branch.at(-1)?.id ?? null,
 		historyRevision: branch.length,

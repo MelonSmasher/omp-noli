@@ -23,10 +23,12 @@ function integer(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): vo
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max) throw new Error("Invalid Noli producer facts integer");
 }
 
-/** Validate the frozen protocol-2 producer contract before it leaves the process. */
+const COMPACTION_KINDS: readonly unknown[] = ["auto", "manual", "reactive"];
+
+/** Validate the frozen protocol-2 producer contract (facts version 2) before it leaves the process. */
 export function assertRequestFacts(value: unknown, requestClasses: readonly RequestFacts["requestClass"][]): asserts value is RequestFacts {
-	const facts = object(value, ["version", "producerSessionId", "branchAnchor", "historyRevision", "producerAgentId", "parentProducerSessionId", "requestClass", "querySource", "firstEligible", "prompt"], ["previousMessageId", "prevToolDurations"]);
-	if (facts.version !== 1) throw new Error("Unsupported Noli producer facts version");
+	const facts = object(value, ["version", "producerSessionId", "branchAnchor", "historyRevision", "producerAgentId", "parentProducerSessionId", "requestClass", "querySource", "firstEligible", "prompt"], ["previousMessageId", "prevToolDurations", "compactionKind", "contextCompacted"]);
+	if (facts.version !== 2) throw new Error("Unsupported Noli producer facts version");
 	text(facts.producerSessionId);
 	text(facts.producerAgentId);
 	nullableText(facts.parentProducerSessionId);
@@ -40,6 +42,12 @@ export function assertRequestFacts(value: unknown, requestClasses: readonly Requ
 	if (facts.prevToolDurations !== undefined) {
 		if (facts.requestClass === "compaction") throw new Error("Compaction requests carry no previous tool durations");
 		prevToolDurations(facts.prevToolDurations);
+	}
+	// Every compaction is a native fork with its kind; the one-shot marker is main-only.
+	if ((facts.requestClass === "compaction") !== (facts.compactionKind !== undefined)
+		|| (facts.compactionKind !== undefined && !COMPACTION_KINDS.includes(facts.compactionKind))) throw new Error("Invalid Noli compaction kind");
+	if (facts.contextCompacted !== undefined && (facts.requestClass !== "main" || !COMPACTION_KINDS.includes(facts.contextCompacted))) {
+		throw new Error("Invalid Noli context-compacted kind");
 	}
 }
 

@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import type { ContextEvent } from "@oh-my-pi/pi-coding-agent";
 import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { MemorySessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent";
 import { EPOCH_ENTRY_TYPE, type FactsIdentity, type ToolTiming, branchFacts, derivedUuid, epochEntryId, firstInputSample, hasConversation, prevToolDurations, requestFacts, resetEntryIds } from "../src/claude-facts";
@@ -24,6 +26,18 @@ const facts = (manager: SessionManager, tail: AgentMessage[] = []) =>
 	requestFacts([...manager.buildSessionContext().messages, ...tail], manager.getBranch(), { ...identity, ompSessionId: manager.getSessionId() });
 const factsOf = (manager: SessionManager, id: string) => branchFacts(manager.getBranch()).get(id);
 const persist = (manager: SessionManager, message: AgentMessage) => manager.appendMessage(message as Parameters<SessionManager["appendMessage"]>[0]);
+/** Claude Code 2.1.309 `Of`: the cc_version suffix the gateway derives from a T0 sample. */
+const of = (sample: string) => createHash("sha256").update(`59cf53e54c78${sample}2.1.309`).digest("hex").slice(0, 3);
+const summaryText = (manager: SessionManager) => {
+	const [first] = convertToLlm(manager.buildSessionContext().messages);
+	const block = first && Array.isArray(first.content) ? first.content[0] : undefined;
+	return block?.type === "text" ? block.text : undefined;
+};
+// Published-stack evidence-1793240364337466752 upstream/037, decoded.body SHA-256
+// a02e83122ff1049658f0557463024e095cc766bf29a3dca295f1092c5aa73b2e:
+// messages[0].content[1] is the post-compaction summary user text OMP sent; the bare summary is its <summary> body.
+const SUMMARY_037 = "EXT_SUMMARY_compaction-summary_93e07d0583ec: synthetic summary of the conversation.\n\n---\n\n**Turn Context (split turn):**\n\nEXT_SUMMARY_compaction-turn-prefix_976a2587087c: synthetic summary of the conversation.\n\n<files>\n# /results/project/\nlong-1.txt (Read)\nlong-2.txt (Read)\nlong-3.txt (Read)\nlong-4.txt (Read)\nlong-5.txt (Read)\n</files>";
+const WIRE_037 = `Prior model work/tool state available.\nMUST build on prior work; NEVER duplicate prior work.\n\n<summary>\n${SUMMARY_037}\n</summary>`;
 
 describe("durable producer facts (session vectors)", () => {
 	test("reselects summary T0 while retaining absolute positions and source ids through restart", async () => {
@@ -41,7 +55,7 @@ describe("durable producer facts (session vectors)", () => {
 		const summary = "summary is the new first eligible source input";
 		const summaryId = manager.appendCompaction(summary, undefined, retained, 100);
 		const compacted = facts(manager);
-		expect(compacted.firstEligible).toEqual({ messageId: derivedUuid("omp-noli/summary", summaryId), textBlockIndex: null, sample: firstInputSample(summary) });
+		expect(compacted.firstEligible).toEqual({ messageId: derivedUuid("omp-noli/summary", summaryId), textBlockIndex: null, sample: firstInputSample(summaryText(manager)!) });
 		expect(compacted.prompt).toEqual({ id: factsOf(manager, secondId)!.promptId!, origin: "human", position: { promptIndex: 2, turnIndex: 2 } });
 		expect(factsOf(manager, summaryId)?.summarizedTurnPromptUuids).toEqual([factsOf(manager, secondId)!.sourceMessageId]);
 		const nextId = manager.appendMessage(user("after compaction", 4));
@@ -50,6 +64,39 @@ describe("durable producer facts (session vectors)", () => {
 		const reopened = await SessionManager.open(manager.getSessionFile()!, "/fixture/sessions", storage);
 		expect(facts(reopened)).toEqual(facts(manager));
 		expect(factsOf(reopened, nextId)).toEqual(factsOf(manager, nextId));
+	});
+
+	test("post-compaction T0 samples the summary user text the model receives, as Claude Code's nee() content (upstream/037)", () => {
+		const manager = SessionManager.inMemory("/fixture");
+		epoch(manager);
+		manager.appendMessage(user("EXT_LONG_5_PROMPT", 1));
+		const retained = manager.appendMessage(assistant(2));
+		const summaryId = manager.appendCompaction(SUMMARY_037, undefined, retained, 100);
+		expect(manager.buildSessionContext().messages[0]?.role).toBe("compactionSummary");
+		expect(summaryText(manager)).toBe(WIRE_037);
+		const compacted = facts(manager);
+		expect(compacted.firstEligible).toEqual({ messageId: derivedUuid("omp-noli/summary", summaryId), textBlockIndex: null, sample: "rol" });
+		// Native Of over the wire summary is 302; the bare summary body ("SMo") gave the divergent 3a9.
+		expect(of(compacted.firstEligible!.sample)).toBe("302");
+		expect(of(firstInputSample(SUMMARY_037))).toBe("3a9");
+	});
+
+	test("handoff and branch summaries that come first sample their rendered user text too", () => {
+		const handoff = SessionManager.inMemory("/fixture");
+		epoch(handoff);
+		handoff.appendMessage(user("before handoff", 1));
+		const kept = handoff.appendMessage(assistant(2));
+		handoff.appendCompaction("handoff body", undefined, kept, 100, { method: "handoff" });
+		const handoffText = summaryText(handoff)!;
+		expect(handoffText.startsWith("Context replaced. The <handoff> below")).toBe(true);
+		expect(facts(handoff).firstEligible?.sample).toBe(firstInputSample(handoffText));
+		const branch = SessionManager.inMemory("/fixture");
+		const epochId = epoch(branch);
+		branch.appendMessage(user("abandoned path", 1));
+		branch.appendMessage(assistant(2));
+		branch.branchWithSummary(epochId, "branch body");
+		expect(summaryText(branch)).toBe("Branch-return summary:\n\n<summary>\nbranch body\n</summary>");
+		expect(facts(branch).firstEligible?.sample).toBe(firstInputSample("Branch-return summary:"));
 	});
 
 	test("keeps history before the epoch unknown rather than inventing absolute counters", async () => {
