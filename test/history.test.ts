@@ -39,10 +39,16 @@ describe("historyPage", () => {
 		const { read, pages } = drain(entries, HISTORY_MIN_BYTES);
 		expect(read).toEqual(entries);
 		expect(pages.length).toBeGreaterThan(2);
+		let next = 0;
 		for (const page of pages) {
-			expect(page.entries.reduce((sum, entry) => sum + bytes(entry), 0)).toBeLessThanOrEqual(HISTORY_MIN_BYTES);
+			const used = page.entries.reduce((sum, entry) => sum + bytes(entry), 0);
+			expect(used).toBeLessThanOrEqual(HISTORY_MIN_BYTES);
 			expect(page.partial).toBeUndefined();
+			next += page.entries.length;
+			// Greedy: a page ends only where the next entry would not fit.
+			if (page.more) expect(used + bytes(entries[next])).toBeGreaterThan(HISTORY_MIN_BYTES);
 		}
+		expect(next).toBe(entries.length);
 		expect(pages.at(-1)!.more).toBe(false);
 	});
 
@@ -79,5 +85,8 @@ describe("historyPage", () => {
 		expect(code(() => historyPage([{ id: "a" }], "a", "s", { since: "lost" }))).toBe("unknown_since");
 		expect(code(() => historyPage([{ id: "a" }], "a", "s", { offset: 100 }))).toBe("bad_request");
 		expect(code(() => historyPage([{ id: "a" }], "a", "s", { since: "a", offset: 1 }))).toBe("bad_request");
+		// `{"id":"😀"}`: offset 8 falls between the emoji's two UTF-16 units.
+		expect(code(() => historyPage([{ id: "😀" }], "😀", "s", { offset: 8 }))).toBe("bad_request");
+		expect(historyPage([{ id: "😀" }], "😀", "s", { offset: 7 }).partial?.text).toBe("😀\"}");
 	});
 });

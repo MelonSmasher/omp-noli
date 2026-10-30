@@ -26,6 +26,8 @@ describe("native compaction prompt (spec §3, captures compact-reactive-ptl / co
 	test("custom instructions splice untrimmed before the reminder tail", () => {
 		expect(sha(compactionPrompt("CUSTOM_INSTRUCTIONS"))).toBe("d288cae597b6a4b25ebacdacacf0348edd8465167a7bd43cfe9a4921e8aa5898");
 		expect(sha(compactionPrompt("Focus on the fixture file names."))).toBe("5d134b0e85e2902434b714e22317c93c6e4ffb1585e7f8412cd23f9581c1e877");
+		// Surrounding whitespace is kept verbatim; only `/compact` trims its arguments before splicing.
+		expect(compactionPrompt("  Focus.\n")).toBe(compactionPrompt(undefined).replace(/\n\nREMINDER:/, "\n\nAdditional Instructions:\n  Focus.\n\n\nREMINDER:"));
 	});
 });
 

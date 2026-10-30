@@ -15,16 +15,13 @@ const utf8 = (text: string): number => encoder.encode(text).length;
 
 interface Entry { id?: unknown }
 
+const isHigh = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
+const isLow = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
+
 /** The largest `end` such that `text.slice(offset, end)`, escaped as a JSON string, fits `budget` bytes; never splits a surrogate pair and always advances one code point. */
 function fragmentEnd(text: string, offset: number, budget: number): number {
-	const step = (index: number): number => {
-		const code = text.charCodeAt(index);
-		return code >= 0xd800 && code <= 0xdbff && index + 1 < text.length ? 2 : 1;
-	};
-	const settle = (end: number): number => {
-		const code = text.charCodeAt(end - 1);
-		return end < text.length && code >= 0xd800 && code <= 0xdbff ? end - 1 : end;
-	};
+	const step = (index: number): number => isHigh(text.charCodeAt(index)) && index + 1 < text.length ? 2 : 1;
+	const settle = (end: number): number => end < text.length && isHigh(text.charCodeAt(end - 1)) ? end - 1 : end;
 	const minimum = offset + step(offset);
 	let low = minimum;
 	// Every UTF-16 unit costs at least one escaped byte, so no slice longer than the budget fits.
@@ -36,6 +33,12 @@ function fragmentEnd(text: string, offset: number, budget: number): number {
 		else high = middle - 1;
 	}
 	return Math.max(minimum, settle(low));
+}
+
+/** Rejects an offset no fragment starts at: past the entry, or inside a surrogate pair (fragments start where an earlier one ended). */
+function checkFragmentOffset(text: string, from: number): void {
+	if (from >= text.length) throw new BridgeError("bad_request", "params.offset is past the end of the entry");
+	if (from > 0 && isLow(text.charCodeAt(from)) && isHigh(text.charCodeAt(from - 1))) throw new BridgeError("bad_request", "params.offset splits a surrogate pair");
 }
 
 /** One page strictly after `params.since`, in append order. */
@@ -52,7 +55,7 @@ export function historyPage(entries: readonly Entry[], leafId: string | null, se
 	const fragment = (entry: Entry, from: number): HistoryEntriesResult => {
 		if (typeof entry.id !== "string") throw new BridgeError("internal", "History entry has no id");
 		const text = JSON.stringify(entry);
-		if (from >= text.length) throw new BridgeError("bad_request", "params.offset is past the end of the entry");
+		checkFragmentOffset(text, from);
 		const end = fragmentEnd(text, from, budget);
 		return { sessionId, leafId, entries: [], partial: { id: entry.id, offset: from, total: text.length, text: text.slice(from, end) }, more: end < text.length || start + 1 < entries.length };
 	};

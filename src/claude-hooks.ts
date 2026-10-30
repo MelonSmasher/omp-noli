@@ -139,11 +139,15 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 	let lastError: string | undefined;
 	/** The native compaction in progress in this session. */
 	let fork: Fork | undefined;
-	/** CC `NEn`: the kind the main thread compacted with, consumed by its next main request (`T7o`). */
-	let compacted: CompactionKind | undefined;
+	/**
+	 * CC `NEn`: the kind a session's main thread compacted with, for that session's next main
+	 * request (`T7o`). Consumed once a registration carrying it is accepted.
+	 */
+	let compacted: { ompSessionId: string; kind: CompactionKind } | undefined;
 	let budget: HandlerBudget | undefined;
 	let budgetHeld = false;
-	const budgetSource = options.handlerBudget ?? sdkHandlerBudget(pi);
+	// Resolved once, ahead of any compaction: a raced `session_before_compact` handler never waits on it.
+	void (options.handlerBudget ?? sdkHandlerBudget(pi)).then(resolved => { budget = resolved; }, () => {});
 	const live = () => channel?.dir === dir ? channel : undefined;
 
 	const identity = (ctx: ExtensionContext): Omit<FactsIdentity, "requestClass" | "querySource"> | undefined => {
@@ -235,13 +239,11 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 	});
 
 	/** Facts for one main-loop or subagent request, including the previous tool batch under its wire names. */
-	const factsFor = (messages: readonly AgentMessage[], ctx: ExtensionContext, self: Omit<FactsIdentity, "requestClass" | "querySource">) => {
+	const factsFor = (messages: readonly AgentMessage[], ctx: ExtensionContext, self: Omit<FactsIdentity, "requestClass" | "querySource">, contextCompacted: CompactionKind | undefined) => {
 		const branch = ctx.sessionManager.getBranch();
 		const durations = prevToolDurations(messages, branch, timings, toolEpoch, wireNaming(ctx.model));
 		const main = ctx.agent.kind === "main";
 		const facts = requestFacts(messages, branch, { ...self, requestClass: main ? "main" : "subagent", querySource: main ? "agent" : "task" });
-		const contextCompacted = main ? compacted : undefined;
-		if (main) compacted = undefined;
 		return { ...facts, ...(durations ? { prevToolDurations: durations } : {}), ...(contextCompacted ? { contextCompacted } : {}) };
 	};
 
@@ -252,10 +254,13 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 		const self = identity(ctx);
 		const producer = live()?.producer;
 		if (!self || !producer) return;
-		const facts = factsFor(messages, ctx, self);
+		const marker = ctx.agent.kind === "main" && compacted?.ompSessionId === self.ompSessionId ? compacted : undefined;
+		const facts = factsFor(messages, ctx, self, marker?.kind);
 		pruneTimings();
 		await sendBranch(ctx, false);
 		const ref = await producer.register(self.ompSessionId, facts);
+		// A failed branch delivery or registration keeps the marker for the next main request.
+		if (compacted === marker) compacted = undefined;
 		if (pending === slot) slot.ref = ref;
 	};
 	/** Timings of earlier resets are never emitted again; the cap bounds a session that never resets. */
@@ -351,13 +356,12 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 	/**
 	 * The committed entry: `summary` is the exact summary row text (`nee()` plus `kcn` when a tail
 	 * is kept), and the kept tail starts at the first kept message's entry. `undefined` when that
-	 * entry cannot be found (fail closed).
+	 * entry cannot be identified (fail closed).
 	 */
 	const nativeResult = (event: SessionBeforeCompactEvent, ctx: ExtensionContext, state: Fork, attempt: ForkAttempt, history: readonly AgentMessage[], reply: string) => {
 		const branch = ctx.sessionManager.getBranch();
 		const first = attempt.keep[0];
-		const firstKeptEntryId = first === undefined ? "" : branch.findLast((entry: SessionEntry) => entry.type === "message"
-			&& entry.message.role === first.role && entry.message.timestamp === first.timestamp)?.id;
+		const firstKeptEntryId = first === undefined ? "" : keptEntryId(branch, first);
 		if (firstKeptEntryId === undefined) return undefined;
 		const natives = nativeSummaries(branch);
 		const earlier = history.flatMap(message => message.role === "compactionSummary"
@@ -461,10 +465,10 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 		}
 	};
 
-	pi.on("session_before_compact", async (_event, ctx) => {
+	pi.on("session_before_compact", (_event, ctx) => {
 		if (!live() || !isGatewayClaudeModel(ctx.model)) return undefined;
-		// Lifted here so the next handler, and the context handlers of its forks, run under it.
-		budget = await budgetSource;
+		// Lifted synchronously here, so the next handler and the context handlers of its forks run
+		// under it, and a lift can never land after that handler has finished and restored.
 		budgetHeld = budget?.lift(ctx) === true;
 		return undefined;
 	});
@@ -499,7 +503,7 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 	pi.on("session_compact", (event, ctx) => {
 		const data = nativeCompactionData(event.compactionEntry.preserveData);
 		// The one-shot `x-cc-context-compacted` is armed for the main thread only (`vv`, 5hada5qy:2843681).
-		if (data && ctx.agent.kind === "main") compacted = data.kind;
+		if (data && ctx.agent.kind === "main") compacted = { ompSessionId: ctx.sessionManager.getSessionId(), kind: data.kind };
 	});
 
 	// Claude Code starts a fresh tool-duration list for every new prompt (design spec §1.4).
@@ -528,6 +532,16 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 			if (timing) timings.set(event.toolCallId, { ...timing, end: Date.now(), executed: !event.isError });
 		});
 	}
+}
+
+/**
+ * The `message` entry persisting the first kept message. A kept tail starts at an API round (an
+ * assistant) or at the pending user prompt, so it is always a `message` entry; the context event
+ * carries copies, so it is matched by role and timestamp. None or several matches: `undefined`.
+ */
+function keptEntryId(branch: readonly SessionEntry[], first: AgentMessage): string | undefined {
+	const matches = branch.filter(entry => entry.type === "message" && entry.message.role === first.role && entry.message.timestamp === first.timestamp);
+	return matches.length === 1 ? matches[0]!.id : undefined;
 }
 
 /** Stock OMP's tool-name encoding inputs for the model a request is built for. */

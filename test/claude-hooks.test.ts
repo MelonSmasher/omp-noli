@@ -132,6 +132,28 @@ test("root: a failed registration tags the main call with a null reference", asy
 	expect(await runner.emitBeforeProviderRequest(payload(), gatewayModel)).toMatchObject({ noli_request: { ref: null, warm: false } });
 });
 
+test("root: the context-compacted marker survives a failed registration and stays with its session", async () => {
+	const sessionManager = SessionManager.inMemory(dir);
+	const channel = recorder(async () => { throw new Error("synthetic registration rejection"); });
+	bindProducerChannel(dir, channel.producer, () => sessionManager.getSessionId());
+	const runner = await runnerFor([hooks], sessionManager);
+	await runner.emit({ type: "session_start" });
+	const compactionEntry = { preserveData: { noliNativeCompaction: { v: 1, kind: "manual", toolNames: [] } } };
+	await runner.emit({ type: "session_compact", compactionEntry, fromExtension: true } as unknown as RunnerEvent);
+	await runner.emitContext([prompt("rejected", 1)]);
+	channel.register = async () => reference("r");
+	await runner.emitContext([prompt("rejected", 1), prompt("accepted", 2)]);
+	await runner.emitContext([prompt("rejected", 1), prompt("accepted", 2), prompt("later", 3)]);
+	expect(channel.calls.registered.map(call => call.facts.contextCompacted)).toEqual(["manual", "manual", undefined]);
+	// A marker armed in one session is never delivered for another.
+	await runner.emit({ type: "session_compact", compactionEntry, fromExtension: true } as unknown as RunnerEvent);
+	await sessionManager.newSession();
+	await runner.emit({ type: "session_switch" } as unknown as RunnerEvent);
+	await runner.emitContext([prompt("other session", 4)]);
+	expect(channel.calls.registered.at(-1)).toMatchObject({ ompSessionId: sessionManager.getSessionId() });
+	expect(channel.calls.registered.at(-1)!.facts.contextCompacted).toBeUndefined();
+});
+
 test("root: side turns never register, warm replays carry no reference, and other providers are untouched", async () => {
 	const sessionManager = SessionManager.inMemory(dir);
 	const channel = recorder();
