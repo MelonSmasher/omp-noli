@@ -43,7 +43,11 @@ export function assertRequestFacts(value: unknown, requestClasses: readonly Requ
 		if (facts.requestClass === "compaction") throw new Error("Compaction requests carry no previous tool durations");
 		prevToolDurations(facts.prevToolDurations);
 	}
-	// Every compaction is a native fork with its kind; the one-shot marker is main-only.
+	compactionKinds(facts);
+}
+
+/** Every compaction is a native fork with its kind; the one-shot marker is main-only. */
+function compactionKinds(facts: Record<string, unknown>): void {
 	if ((facts.requestClass === "compaction") !== (facts.compactionKind !== undefined)
 		|| (facts.compactionKind !== undefined && !COMPACTION_KINDS.includes(facts.compactionKind))) throw new Error("Invalid Noli compaction kind");
 	if (facts.contextCompacted !== undefined && (facts.requestClass !== "main" || !COMPACTION_KINDS.includes(facts.contextCompacted))) {

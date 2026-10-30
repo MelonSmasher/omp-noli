@@ -114,19 +114,23 @@ interface MessageLike {
 
 const NO_NATIVE: NativeSummaries = new Map();
 
+/**
+ * Claude Code's T0 samples the summary user message's whole content (its `nee()` preamble
+ * included), so sample the user text the model receives, never the bare summary body: a native
+ * compaction's summary is that text; otherwise OMP's rendered summary context.
+ */
+function summarySourceItem(message: MessageLike, timestamp: number, native: NativeSummaries): SourceItem {
+	const summary = message.summary ?? "";
+	const text = message.role === "compactionSummary" && native.has(nativeSummaryKey(timestamp, summary))
+		? summary
+		: textOf(convertMessageToLlm(message as unknown as Parameters<typeof convertMessageToLlm>[0])?.content as Content).text;
+	return { role: message.role, text, textBlockIndex: null, key: identityKey(message.role, timestamp, summary) };
+}
+
 function sourceItem(message: MessageLike, native: NativeSummaries = NO_NATIVE): SourceItem | undefined {
 	if (!Object.hasOwn(SOURCE_ROLES, message.role)) return undefined;
 	const timestamp = message.timestamp ?? 0;
-	if (message.role === "compactionSummary" || message.role === "branchSummary") {
-		const summary = message.summary ?? "";
-		// Claude Code's T0 samples the summary user message's whole content (its `nee()` preamble
-		// included), so sample the user text the model receives, never the bare summary body: a
-		// native compaction's summary is that text; otherwise OMP's rendered summary context.
-		const text = message.role === "compactionSummary" && native.has(nativeSummaryKey(timestamp, summary))
-			? summary
-			: textOf(convertMessageToLlm(message as unknown as Parameters<typeof convertMessageToLlm>[0])?.content as Content).text;
-		return { role: message.role, text, textBlockIndex: null, key: identityKey(message.role, timestamp, summary) };
-	}
+	if (message.role === "compactionSummary" || message.role === "branchSummary") return summarySourceItem(message, timestamp, native);
 	const { text, textBlockIndex, digestText } = textOf(message.content);
 	// Some stock paths persist custom messages with their append time, not the message's own.
 	const custom = message.role === "custom" || message.role === "hookMessage";

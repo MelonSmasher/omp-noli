@@ -117,6 +117,9 @@ interface Fork {
 	failure?: string;
 }
 
+/** One summarizer fork's result: the trimmed reply text, or the error it threw. */
+interface ForkOutcome { reply: string | undefined; error: string | undefined }
+
 export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: ClaudeHookOptions): void {
 	const version: unknown = (pi.pi as { VERSION?: unknown } | undefined)?.VERSION;
 	const ompVersion = typeof version === "string" && version ? version : "unknown";
@@ -370,60 +373,91 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 	};
 
 	/**
+	 * The side-turn runner native compaction forks through, or `undefined` (logged) when it must
+	 * not run. CC 2.1.309 never compacts proactively under the default window source (`Nmr`,
+	 * 5hada5qy:2568633): it sends the request and compacts on prompt-too-long instead.
+	 */
+	const sideTurns = (reason: string | undefined, ctx: ExtensionContext) => {
+		if (reason === "threshold" || reason === "idle") {
+			pi.logger?.debug("Native compaction declined: Claude Code compacts only on prompt-too-long or /compact", { reason, agent: ctx.agent.kind });
+			return undefined;
+		}
+		const run = ctx.runEphemeralTurn;
+		if (budgetHeld && run) return run;
+		pi.logger?.warn("Native compaction unavailable: the handler budget or side turns cannot be used");
+		return undefined;
+	};
+
+	const openFork = (event: SessionBeforeCompactEvent, reason: string | undefined): Fork => {
+		const kind: CompactionKind = reason === undefined ? "manual" : "reactive";
+		// `/compact` trims its arguments before `eve` splices them (fzcbqdwj:16225).
+		const instructions = kind === "manual" ? event.customInstructions?.trim() : undefined;
+		return {
+			kind, prompt: compactionPrompt(instructions), controller: new AbortController(),
+			gap: reason === "overflow" && lastError !== undefined ? promptTooLongGap(lastError) : undefined,
+		};
+	};
+
+	/** One summarizer fork: `YTe`, the first text block of the reply trimmed, or what it threw. */
+	const runFork = async (run: NonNullable<ExtensionContext["runEphemeralTurn"]>, state: Fork, signal: AbortSignal): Promise<ForkOutcome> => {
+		try {
+			const result = await run({ promptText: state.prompt, signal, dedupeReply: false, replyMaxBytes: Number.POSITIVE_INFINITY });
+			const text = result.assistantMessage.content.find(block => block.type === "text");
+			return { reply: text?.type === "text" ? text.text.trim() : undefined, error: undefined };
+		} catch (thrown) {
+			return { reply: undefined, error: thrown instanceof Error ? thrown.message : String(thrown) };
+		}
+	};
+
+	/** The attempt the fork's `context` handler shaped, or `undefined` (logged) once aborted or never shaped. */
+	const shapedAttempt = (state: Fork, signal: AbortSignal, error: string | undefined) => {
+		const { attempt, ladder, history } = state;
+		if (!signal.aborted && attempt && ladder && history) return { attempt, ladder, history };
+		pi.logger?.warn("Native compaction stopped", { reason: state.failure ?? error ?? "aborted" });
+		return undefined;
+	};
+
+	const committed = (event: SessionBeforeCompactEvent, ctx: ExtensionContext, state: Fork, attempt: ForkAttempt, history: readonly AgentMessage[], reply: string): SessionBeforeCompactResult => {
+		const compaction = nativeResult(event, ctx, state, attempt, history, reply);
+		if (compaction) return { compaction };
+		pi.logger?.warn("Native compaction failed: the kept tail has no session entry");
+		return { cancel: true };
+	};
+
+	/** A fork that gave no summary: `true` to retry a prompt-too-long on the ladder's next rung, else logged. */
+	const retryFork = (ladder: ReactiveLadder, error: string | undefined): boolean => {
+		if (error !== undefined && isPromptTooLong(error) && ladder.promptTooLong(promptTooLongGap(error))) return true;
+		pi.logger?.warn("Native compaction failed", { error: error ?? "empty summary" });
+		return false;
+	};
+
+	/** What one fork's outcome means: the committed entry, a cancel, or `undefined` to fork again. */
+	const settleFork = (event: SessionBeforeCompactEvent, ctx: ExtensionContext, state: Fork, signal: AbortSignal, outcome: ForkOutcome): SessionBeforeCompactResult | undefined => {
+		const shaped = shapedAttempt(state, signal, outcome.error);
+		if (!shaped) return { cancel: true };
+		const { reply } = outcome;
+		if (shaped.attempt.openingRoundAlone && !(reply && hasSummaryBlock(reply))) {
+			shaped.ladder.openingRoundFailed();
+			return undefined;
+		}
+		if (reply) return committed(event, ctx, state, shaped.attempt, shaped.history, reply);
+		return retryFork(shaped.ladder, outcome.error) ? undefined : { cancel: true };
+	};
+
+	/**
 	 * One native compaction (CC `Hfr` through `ive`): summarizer forks through OMP's own side-turn
 	 * path until one returns a summary, then the entry OMP commits as-is. Every failure cancels:
 	 * OMP's own summarizer never reaches the Gateway for a Claude model.
 	 */
 	const compactNatively = async (event: SessionBeforeCompactEvent, ctx: ExtensionContext, reason: string | undefined): Promise<SessionBeforeCompactResult> => {
-		// CC 2.1.309 never compacts proactively under the default window source (`Nmr`,
-		// 5hada5qy:2568633): it sends the request and compacts on prompt-too-long instead.
-		if (reason === "threshold" || reason === "idle") {
-			pi.logger?.debug("Native compaction declined: Claude Code compacts only on prompt-too-long or /compact", { reason, agent: ctx.agent.kind });
-			return { cancel: true };
-		}
-		const run = ctx.runEphemeralTurn;
-		if (!budgetHeld || !run) {
-			pi.logger?.warn("Native compaction unavailable: the handler budget or side turns cannot be used");
-			return { cancel: true };
-		}
-		const kind: CompactionKind = reason === undefined ? "manual" : "reactive";
-		// `/compact` trims its arguments before `eve` splices them (fzcbqdwj:16225).
-		const instructions = kind === "manual" ? event.customInstructions?.trim() : undefined;
-		const state: Fork = {
-			kind, prompt: compactionPrompt(instructions), controller: new AbortController(),
-			gap: reason === "overflow" && lastError !== undefined ? promptTooLongGap(lastError) : undefined,
-		};
+		const run = sideTurns(reason, ctx);
+		if (!run) return { cancel: true };
+		const state = openFork(event, reason);
 		fork = state;
 		const signal = AbortSignal.any([event.signal, state.controller.signal]);
 		for (;;) {
-			let reply: string | undefined;
-			let error: string | undefined;
-			try {
-				const result = await run({ promptText: state.prompt, signal, dedupeReply: false, replyMaxBytes: Number.POSITIVE_INFINITY });
-				// `YTe`: the first text block of the reply, trimmed.
-				const text = result.assistantMessage.content.find(block => block.type === "text");
-				reply = text?.type === "text" ? text.text.trim() : undefined;
-			} catch (thrown) {
-				error = thrown instanceof Error ? thrown.message : String(thrown);
-			}
-			const { attempt, ladder, history } = state;
-			if (signal.aborted || !attempt || !ladder || !history) {
-				pi.logger?.warn("Native compaction stopped", { reason: state.failure ?? error ?? "aborted" });
-				return { cancel: true };
-			}
-			if (attempt.openingRoundAlone && !(reply && hasSummaryBlock(reply))) {
-				ladder.openingRoundFailed();
-				continue;
-			}
-			if (reply) {
-				const compaction = nativeResult(event, ctx, state, attempt, history, reply);
-				if (compaction) return { compaction };
-				pi.logger?.warn("Native compaction failed: the kept tail has no session entry");
-				return { cancel: true };
-			}
-			if (error !== undefined && isPromptTooLong(error) && ladder.promptTooLong(promptTooLongGap(error))) continue;
-			pi.logger?.warn("Native compaction failed", { error: error ?? "empty summary" });
-			return { cancel: true };
+			const settled = settleFork(event, ctx, state, signal, await runFork(run, state, signal));
+			if (settled) return settled;
 		}
 	};
 

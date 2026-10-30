@@ -18,13 +18,23 @@ type AgentMessage = ContextEvent["messages"][number];
 export const NATIVE_COMPACTION_KEY = "noliNativeCompaction";
 export interface NativeCompactionData { v: 1; kind: CompactionKind; toolNames: string[] }
 
+const COMPACTION_KINDS: Record<CompactionKind, true> = { auto: true, manual: true, reactive: true };
+const isCompactionKind = (value: unknown): value is CompactionKind => typeof value === "string" && Object.hasOwn(COMPACTION_KINDS, value);
+const isStringList = (value: unknown): value is string[] => Array.isArray(value) && value.every(name => typeof name === "string");
+
+/** The object under {@link NATIVE_COMPACTION_KEY} in an entry's `preserveData`, if any. */
+function nativeMarker(preserveData: unknown): object | undefined {
+	if (typeof preserveData !== "object" || preserveData === null) return undefined;
+	const data: unknown = (preserveData as Record<string, unknown>)[NATIVE_COMPACTION_KEY];
+	return typeof data === "object" && data !== null ? data : undefined;
+}
+
 /** The native marker of a compaction entry's `preserveData`, when omp-noli produced it. */
 export function nativeCompactionData(preserveData: unknown): NativeCompactionData | undefined {
-	const data = preserveData && typeof preserveData === "object" ? (preserveData as Record<string, unknown>)[NATIVE_COMPACTION_KEY] : undefined;
-	if (!data || typeof data !== "object") return undefined;
-	const { v, kind, toolNames } = data as Partial<NativeCompactionData>;
-	if (v !== 1 || (kind !== "auto" && kind !== "manual" && kind !== "reactive") || !Array.isArray(toolNames) || !toolNames.every(name => typeof name === "string")) return undefined;
-	return { v, kind, toolNames };
+	const marker = nativeMarker(preserveData);
+	if (!marker) return undefined;
+	const { v, kind, toolNames } = marker as Partial<NativeCompactionData>;
+	return v === 1 && isCompactionKind(kind) && isStringList(toolNames) ? { v, kind, toolNames } : undefined;
 }
 
 /**
@@ -76,6 +86,17 @@ function wireText(block: unknown): string | undefined {
 	return typeof block.text === "string" ? block.text : undefined;
 }
 
+/** The first wire message and its blocks, when it is a user message with at least two blocks. */
+function leadingUserBlocks(messages: readonly unknown[]): { first: object; content: unknown[] } | undefined {
+	const first: unknown = messages[0];
+	if (!first || typeof first !== "object" || !("role" in first) || first.role !== "user" || !("content" in first)) return undefined;
+	const content = first.content;
+	return Array.isArray(content) && content.length >= 2 ? { first, content } : undefined;
+}
+
+const isSystemReminder = (text: string | undefined): text is string =>
+	text !== undefined && text.startsWith("<system-reminder>") && text.endsWith("</system-reminder>");
+
 /**
  * Claude Code sends its date reminder as a meta row of its own before the summary row; folding the
  * two into one message (`sLe`) appends `"\n"` to the reminder (`lRo`, 5hada5qy orig 254069724).
@@ -84,15 +105,13 @@ function wireText(block: unknown): string | undefined {
  */
 export function foldReminderBeforeSummary(messages: unknown, summaries: ReadonlySet<string>): unknown[] | undefined {
 	if (!Array.isArray(messages) || summaries.size === 0) return undefined;
-	const first: unknown = messages[0];
-	if (!first || typeof first !== "object" || !("role" in first) || first.role !== "user" || !("content" in first)) return undefined;
-	const content = first.content;
-	if (!Array.isArray(content) || content.length < 2) return undefined;
+	const lead = leadingUserBlocks(messages);
+	if (!lead) return undefined;
+	const { first, content } = lead;
 	const reminder = wireText(content[0]);
 	const summary = wireText(content[1]);
-	if (reminder === undefined || !reminder.startsWith("<system-reminder>") || !reminder.endsWith("</system-reminder>")) return undefined;
-	if (summary === undefined || !summaries.has(summary)) return undefined;
-	const folded = { ...first, content: [{ ...content[0], text: `${reminder}\n` }, ...content.slice(1)] };
+	if (!isSystemReminder(reminder) || summary === undefined || !summaries.has(summary)) return undefined;
+	const folded = { ...first, content: [{ ...(content[0] as object), text: `${reminder}\n` }, ...content.slice(1)] };
 	return [folded, ...messages.slice(1)];
 }
 
@@ -337,38 +356,56 @@ export class ReactiveLadder {
 	}
 
 	next(): LadderStep {
-		const total = this.#groups.length;
-		if (total < 2) return { failure: "too_few_groups" };
+		if (this.#groups.length < 2) return { failure: "too_few_groups" };
 		for (;;) {
 			if (this.#lastResort !== null) {
 				const { toSummarize, toKeep, head } = this.#lastResort;
 				return { attempt: { summarize: toSummarize, keep: toKeep, headTruncated: head > 0, openingRoundAlone: false } };
 			}
-			const end = Math.max(0, total - this.#preserve);
+			const end = Math.max(0, this.#groups.length - this.#preserve);
 			const summarize = this.#groups.slice(0, end).flat();
-			if (!summarize.some(isAssistant) && !(this.#openingAlone && end === 1)) {
-				const { toSummarize, toKeep } = splitAtPrompt(this.#all);
-				const gaps: number[] = [];
-				if (this.#ladderGap?.gap !== undefined) gaps.push(this.#ladderGap.gap + this.#sum(this.#ladderGap.summarizeEnd));
-				if (this.#initialGap !== undefined) gaps.push(this.#initialGap);
-				if (this.#openingGap !== undefined) gaps.push(this.#openingGap + estimateTokens(toKeep));
-				if (this.#afterOpeningGap !== undefined) gaps.push(this.#afterOpeningGap + this.#sum(1));
-				let truncate: { gap: number | undefined } | undefined;
-				if (gaps.length > 0) {
-					const gap = Math.max(...gaps) - estimateTokens(toKeep);
-					if (gap > 0) truncate = { gap };
-				} else if (this.#ladderGap !== undefined) truncate = { gap: undefined };
-				if (truncate?.gap !== undefined && end === 1 && this.#openingRoundFits(Math.max(...gaps))) {
-					this.#openingAlone = true;
-					continue;
-				}
-				const chosen = truncate === undefined ? viable(toSummarize, []) : viable(truncateHead(toSummarize, truncate.gap, this.#truncationRow), toKeep);
-				if (chosen === null) return { failure: "nothing_to_summarize" };
-				this.#lastResort = { toSummarize: chosen, toKeep, head: truncate === undefined ? 0 : 1 };
-				continue;
+			if (summarize.some(isAssistant) || (this.#openingAlone && end === 1)) {
+				return { attempt: { summarize, keep: this.#groups.slice(end).flat(), headTruncated: false, openingRoundAlone: this.#openingAlone } };
 			}
-			return { attempt: { summarize, keep: this.#groups.slice(end).flat(), headTruncated: false, openingRoundAlone: this.#openingAlone } };
+			const failure = this.#leaveLadder(end);
+			if (failure) return failure;
 		}
+	}
+
+	/**
+	 * No assistant turn is left to summarize before `end` (`zfr`): try the opening round alone when
+	 * it fits, else take the last resort, head-truncated when a gap is known. A failure when nothing
+	 * viable remains; `undefined` to take the next step.
+	 */
+	#leaveLadder(end: number): LadderStep | undefined {
+		const { toSummarize, toKeep } = splitAtPrompt(this.#all);
+		const gaps = this.#lastResortGaps(toKeep);
+		const truncate = this.#lastResortTruncation(gaps, toKeep);
+		if (truncate?.gap !== undefined && end === 1 && this.#openingRoundFits(Math.max(...gaps))) {
+			this.#openingAlone = true;
+			return undefined;
+		}
+		const chosen = truncate === undefined ? viable(toSummarize, []) : viable(truncateHead(toSummarize, truncate.gap, this.#truncationRow), toKeep);
+		if (chosen === null) return { failure: "nothing_to_summarize" };
+		this.#lastResort = { toSummarize: chosen, toKeep, head: truncate === undefined ? 0 : 1 };
+		return undefined;
+	}
+
+	/** Every gap the ladder learned, measured against the last resort's kept tail. */
+	#lastResortGaps(toKeep: readonly AgentMessage[]): number[] {
+		const gaps: number[] = [];
+		if (this.#ladderGap?.gap !== undefined) gaps.push(this.#ladderGap.gap + this.#sum(this.#ladderGap.summarizeEnd));
+		if (this.#initialGap !== undefined) gaps.push(this.#initialGap);
+		if (this.#openingGap !== undefined) gaps.push(this.#openingGap + estimateTokens(toKeep));
+		if (this.#afterOpeningGap !== undefined) gaps.push(this.#afterOpeningGap + this.#sum(1));
+		return gaps;
+	}
+
+	/** The head truncation the last resort starts with; `undefined` to summarize everything before the prompt. */
+	#lastResortTruncation(gaps: readonly number[], toKeep: readonly AgentMessage[]): { gap: number | undefined } | undefined {
+		if (gaps.length === 0) return this.#ladderGap === undefined ? undefined : { gap: undefined };
+		const gap = Math.max(...gaps) - estimateTokens(toKeep);
+		return gap > 0 ? { gap } : undefined;
 	}
 
 	/** The previous attempt (the opening round alone) gave no usable summary: fall back to the last resort. */
