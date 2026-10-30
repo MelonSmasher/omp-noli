@@ -83,7 +83,7 @@ describe("schema rejects frames that would leak host internals or drift", () => 
 
 describe("protocol-2 producer frames", () => {
 	const facts = {
-		version: 1, producerSessionId: "root", branchAnchor: "leaf", historyRevision: 3, producerAgentId: "Main", parentProducerSessionId: null,
+		version: 2, producerSessionId: "root", branchAnchor: "leaf", historyRevision: 3, producerAgentId: "Main", parentProducerSessionId: null,
 		requestClass: "main", querySource: "agent", previousMessageId: "msg_01abc",
 		firstEligible: { messageId: "6f1c0b8e-6d0e-4b9a-8f43-2f6a1c7d9e10", textBlockIndex: 0, sample: "ts0" },
 		prompt: { id: "6f1c0b8e-6d0e-4b9a-8f43-2f6a1c7d9e10", origin: "human", position: { promptIndex: 1, turnIndex: 1 } },
@@ -95,7 +95,8 @@ describe("protocol-2 producer frames", () => {
 		assertValidFrame(request("producer.branch", { ompSessionId: "root", leafId: null, resetEntryIds: ["r1"] }));
 		assertValidFrame(request("gateway.request.register", { ompSessionId: "root", facts }));
 		assertValidFrame(request("gateway.request.register", { ompSessionId: "root", facts: { ...facts, firstEligible: null, prompt: { id: null, origin: null, position: null } } }));
-		assertValidFrame(request("producer.compaction", { ompSessionId: "root", phase: "begin", facts: { ...facts, requestClass: "compaction", querySource: "compaction" } }));
+		assertValidFrame(request("producer.compaction", { ompSessionId: "root", phase: "begin", facts: { ...facts, requestClass: "compaction", querySource: "compaction", compactionKind: "reactive" } }));
+		assertValidFrame(request("gateway.request.register", { ompSessionId: "root", facts: { ...facts, contextCompacted: "manual" } }));
 		assertValidFrame(request("producer.compaction", { ompSessionId: "root", phase: "end", facts: null }));
 	});
 	test("the withdrawn digest binding and producer-minted ownership no longer validate", () => {

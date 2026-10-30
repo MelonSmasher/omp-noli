@@ -10,6 +10,7 @@ import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, RpcFra
 import type { RpcHostToolCallRequest } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
 import { installThreadControl } from "../src/thread-control";
 import { type Bridge, type BridgeHost, BridgeError, startBridge } from "../src/bridge";
+import { historyPage } from "../src/history";
 import { available, unavailable } from "../src/capabilities";
 import { type AgentView, type Capabilities, CAPABILITY_NAMES, type CapabilityName, type CapabilityReason, type TurnResult } from "../src/protocol";
 import { assertValidFrame } from "./schema";
@@ -63,6 +64,8 @@ interface Harness {
 	/** Persisted children only surfaced by list({ includePersisted: true }). */
 	persisted: AgentView[];
 	session: string;
+	/** The root session's append history `history.entries` pages. */
+	entries: Array<Record<string, unknown>>;
 	calls: string[];
 	listeners: Array<(a: AgentView) => void>;
 	capabilityListeners: Array<(c: Capabilities) => void>;
@@ -74,6 +77,7 @@ const h: Harness = {
 	agents: [],
 	persisted: [],
 	session: "sess-1",
+	entries: [],
 	calls: [],
 	listeners: [],
 	capabilityListeners: [],
@@ -138,6 +142,7 @@ const h: Harness = {
 			h.calls.push(`cancelJob:${id}`);
 			return id === "bg_1";
 		},
+		history: params => historyPage(h.entries, h.entries.at(-1)?.id as string ?? null, h.session, params),
 		nativeControl: async (method, params) => {
 			h.calls.push(`native:${method}:${JSON.stringify(params)}`);
 			return { cancelled: true };
@@ -236,6 +241,7 @@ beforeEach(() => {
 	h.agents = [];
 	h.persisted = [];
 	h.session = "sess-1";
+	h.entries = [];
 	h.calls = [];
 	h.listeners = [];
 	h.capabilityListeners = [];
@@ -795,6 +801,31 @@ describe("capabilities", () => {
 		disable("work.get", "not_ready");
 		expect((await call(client, "work.get")).error).toMatchObject({ code: "capability_unavailable", capability: "work.get" });
 		expect(h.calls).toEqual(["cancelJob:bg_1", "cancelJob:gone"]);
+	});
+
+	test("history.entries pages the root history over the frame transport, gated and validated", async () => {
+		const big = "x".repeat(700 * 1024);
+		h.entries = [{ id: "a", type: "message" }, { id: "b", type: "message", text: big }, { id: "c", type: "message" }];
+		const client = await authed();
+		const first = (await call(client, "history.entries", { maxBytes: 4096 })).result as { entries: unknown[]; more: boolean; leafId: string };
+		expect(first).toMatchObject({ sessionId: "sess-1", leafId: "c", entries: [{ id: "a" }], more: true });
+		let offset = 0;
+		let text = "";
+		for (;;) {
+			const page = (await call(client, "history.entries", { since: "a", offset })).result as { partial: { id: string; offset: number; total: number; text: string }; more: boolean };
+			expect(page.partial).toMatchObject({ id: "b", offset });
+			text += page.partial.text;
+			offset += page.partial.text.length;
+			if (offset === page.partial.total) break;
+		}
+		expect(JSON.parse(text)).toEqual(h.entries[1]!);
+		expect((await call(client, "history.entries", { since: "b" })).result).toMatchObject({ entries: [{ id: "c" }], more: false });
+		expect((await call(client, "history.entries", { since: "lost" })).error).toMatchObject({ code: "unknown_since" });
+		for (const params of [{ maxBytes: 4095 }, { maxBytes: 786433 }, { offset: -1 }, { since: "" }, { since: "c", offset: 1 }]) {
+			expect((await call(client, "history.entries", params)).error).toMatchObject({ code: "bad_request" });
+		}
+		disable("history.entries", "not_ready");
+		expect((await call(client, "history.entries")).error).toMatchObject({ code: "capability_unavailable", capability: "history.entries" });
 	});
 
 	test("agents.list includes persisted children by default when discovery is available", async () => {

@@ -14,7 +14,7 @@ import { EXTENSION_HANDLER_TIMEOUT_MS, ExtensionRunner, testSetExtensionHandlerT
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import type { ProducerChannel } from "../src/bridge";
 import { epochEntryId, prevToolDurations, wireToolName } from "../src/claude-facts";
-import { bindProducerChannel, installClaudeHooks, releaseProducerChannel } from "../src/claude-hooks";
+import { COMPACTION_HANDLER_BUDGET_MS, type HandlerBudget, bindProducerChannel, installClaudeHooks, releaseProducerChannel, runnerHandlerBudget } from "../src/claude-hooks";
 import { registerGateway } from "../src/gateway";
 import type { ProducerBranchParams, ProducerCompactionParams, ProducerSessionParams, RequestFacts } from "../src/protocol";
 import { SIDE_CHANNEL_REMINDERS, SYSTEM_PREFIXES } from "../src/system-prefix.generated";
@@ -132,6 +132,28 @@ test("root: a failed registration tags the main call with a null reference", asy
 	expect(await runner.emitBeforeProviderRequest(payload(), gatewayModel)).toMatchObject({ noli_request: { ref: null, warm: false } });
 });
 
+test("root: the context-compacted marker survives a failed registration and stays with its session", async () => {
+	const sessionManager = SessionManager.inMemory(dir);
+	const channel = recorder(async () => { throw new Error("synthetic registration rejection"); });
+	bindProducerChannel(dir, channel.producer, () => sessionManager.getSessionId());
+	const runner = await runnerFor([hooks], sessionManager);
+	await runner.emit({ type: "session_start" });
+	const compactionEntry = { preserveData: { noliNativeCompaction: { v: 1, kind: "manual", toolNames: [] } } };
+	await runner.emit({ type: "session_compact", compactionEntry, fromExtension: true } as unknown as RunnerEvent);
+	await runner.emitContext([prompt("rejected", 1)]);
+	channel.register = async () => reference("r");
+	await runner.emitContext([prompt("rejected", 1), prompt("accepted", 2)]);
+	await runner.emitContext([prompt("rejected", 1), prompt("accepted", 2), prompt("later", 3)]);
+	expect(channel.calls.registered.map(call => call.facts.contextCompacted)).toEqual(["manual", "manual", undefined]);
+	// A marker armed in one session is never delivered for another.
+	await runner.emit({ type: "session_compact", compactionEntry, fromExtension: true } as unknown as RunnerEvent);
+	await sessionManager.newSession();
+	await runner.emit({ type: "session_switch" } as unknown as RunnerEvent);
+	await runner.emitContext([prompt("other session", 4)]);
+	expect(channel.calls.registered.at(-1)).toMatchObject({ ompSessionId: sessionManager.getSessionId() });
+	expect(channel.calls.registered.at(-1)!.facts.contextCompacted).toBeUndefined();
+});
+
 test("root: side turns never register, warm replays carry no reference, and other providers are untouched", async () => {
 	const sessionManager = SessionManager.inMemory(dir);
 	const channel = recorder();
@@ -151,32 +173,49 @@ test("root: side turns never register, warm replays carry no reference, and othe
 	expect(await runner.emitBeforeProviderRequest(payload(), other)).toEqual(payload());
 });
 
-test("root: compaction brackets follow auto-compaction events without observing session_before_compact", async () => {
+test("root: native compaction cancels proactive passes and fails closed without the lifted budget, logging each reason", async () => {
 	const sessionManager = SessionManager.inMemory(dir);
 	const channel = recorder();
 	bindProducerChannel(dir, channel.producer, () => sessionManager.getSessionId());
-	const runner = await runnerFor([hooks], sessionManager);
-	// Stock OMP skips speculative compaction whenever this event has a handler.
-	expect(runner.hasHandlers("session_before_compact")).toBe(false);
+	const logged: Array<[string, string, unknown]> = [];
+	const spy = { debug: (message: string, data?: unknown) => { logged.push(["debug", message, data]); }, warn: (message: string, data?: unknown) => { logged.push(["warn", message, data]); } };
+	const loggingHooks: ExtensionFactory = pi => installClaudeHooks(Object.create(pi, { logger: { value: spy } }) as ExtensionAPI, dir, { toolResults: true });
+	const runner = await runnerFor([loggingHooks], sessionManager);
+	// Registering it also turns stock speculative compaction off.
+	expect(runner.hasHandlers("session_before_compact")).toBe(true);
 	await runner.emit({ type: "session_start" });
 	sessionManager.appendMessage(prompt("summarized", 1) as Parameters<SessionManager["appendMessage"]>[0]);
-	const start = (action: string) => ({ type: "auto_compaction_start", reason: "threshold", action }) as unknown as RunnerEvent;
-	const end = { type: "auto_compaction_end", action: "remote", result: undefined, aborted: false, willRetry: false } as unknown as RunnerEvent;
-	await runner.emit(start("shake"));
+	const before = { type: "session_before_compact", preparation: { tokensBefore: 1 }, branchEntries: [], customInstructions: undefined, signal: new AbortController().signal } as unknown as RunnerEvent;
+	// Claude Code never compacts proactively: threshold and idle passes are cancelled.
+	for (const reason of ["threshold", "idle"]) {
+		await runner.emit({ type: "auto_compaction_start", reason, action: "context-full" } as unknown as RunnerEvent);
+		expect(await runner.emit(before)).toEqual({ cancel: true });
+	}
+	// Outside the managed source launch there is no live runner to lift: fail closed, no stock summary.
+	expect(await runner.emit(before)).toEqual({ cancel: true });
 	expect(channel.calls.compactions).toHaveLength(0);
-	await runner.emit(start("context-full"));
-	expect(channel.calls.compactions).toHaveLength(1);
-	expect(channel.calls.compactions[0]).toMatchObject({ ompSessionId: sessionManager.getSessionId(), phase: "begin", facts: { requestClass: "compaction", querySource: "compaction", firstEligible: { sample: "az0" } } });
-	await runner.emit(end);
-	expect(channel.calls.compactions[1]).toEqual({ ompSessionId: sessionManager.getSessionId(), phase: "end", facts: null });
-	await runner.emit(start("remote"));
-	await runner.emit({ type: "session_compact", compactionEntry: {}, fromExtension: false } as unknown as RunnerEvent);
-	await runner.emit(start("handoff"));
-	await runner.emit({ type: "agent_start" });
-	expect(channel.calls.compactions.map(call => call.phase)).toEqual(["begin", "end", "begin", "end", "begin", "end"]);
-	await runner.emit({ type: "agent_start" });
-	await runner.emit(end);
-	expect(channel.calls.compactions).toHaveLength(6);
+	// No cancel is silent: each one leaves its reason in the OMP log.
+	expect(logged).toEqual([
+		["debug", "Native compaction declined: Claude Code compacts only on prompt-too-long or /compact", { reason: "threshold", agent: "main" }],
+		["debug", "Native compaction declined: Claude Code compacts only on prompt-too-long or /compact", { reason: "idle", agent: "main" }],
+		["warn", "Native compaction unavailable: the handler budget or side turns cannot be used", undefined],
+	]);
+});
+
+test("the handler budget is lifted only for the live runner module and restored by the last holder", () => {
+	const runnerModule = { ExtensionRunner, EXTENSION_HANDLER_TIMEOUT_MS, testSetExtensionHandlerTimeoutMs: (value: number) => { calls.push(value); } };
+	const calls: number[] = [];
+	const live = {} as ExtensionRunner;
+	Object.setPrototypeOf(live, ExtensionRunner.prototype);
+	const budget = runnerHandlerBudget(runnerModule, ctx => (ctx as unknown as { live: boolean }).live ? live : {});
+	const ctx = (value: boolean) => ({ live: value }) as unknown as Parameters<HandlerBudget["lift"]>[0];
+	expect(budget.lift(ctx(false))).toBe(false);
+	expect(budget.lift(ctx(true))).toBe(true);
+	expect(budget.lift(ctx(true))).toBe(true);
+	budget.restore();
+	expect(calls).toEqual([COMPACTION_HANDLER_BUDGET_MS]);
+	budget.restore();
+	expect(calls).toEqual([COMPACTION_HANDLER_BUDGET_MS, EXTENSION_HANDLER_TIMEOUT_MS]);
 });
 
 test("children announce under their spawning agent's session and register subagent facts", async () => {
