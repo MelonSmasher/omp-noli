@@ -31,10 +31,12 @@ export function forgeArguments(input: Record<string, unknown>): boolean {
 const watchText = (value: unknown, bytes: number): value is string => typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= bytes && !/\p{Cc}/u.test(value);
 
 function forgeWatchStartArguments(input: Record<string, unknown>): boolean {
- if (!only(input, ["action", "number", "git_ref", "until"])) return false;
+ if (!only(input, ["action", "number", "git_ref", "run", "until"])) return false;
  if (typeof input.until !== "string") return false;
- if (decimal(input.number)) return input.git_ref === undefined && ["ready", "green", "any-change"].includes(input.until);
- return watchText(input.git_ref, 1024) && input.number === undefined && ["green", "any-change"].includes(input.until);
+ if (decimal(input.number)) return input.git_ref === undefined && input.run === undefined && ["ready", "green", "pipeline-success", "any-change"].includes(input.until);
+ if (input.number !== undefined || !["green", "pipeline-success", "any-change"].includes(input.until)) return false;
+ if (watchText(input.git_ref, 1024)) return input.run === undefined;
+ return input.git_ref === undefined && record(input.run) && input.run.kind === "pipeline" && forgeResourceHandle(input.run);
 }
 
 /** Transport shape only; native Noli validates selectors, lifecycle and authority. */
