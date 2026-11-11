@@ -418,6 +418,30 @@ test("watch selectors enforce bounded UTF-8 transport shapes", () => {
  expect(h.call({ ...h.event, toolName: "noli_forge_watch", input: { action: "start", git_ref: "x".repeat(1025), until: "green" } }, h.ctx())?.block).toBe(true);
 });
 
+test("pipeline watches admit each native selector without weakening owning-main authority", () => {
+ const runs = [
+  { origin: "https://github.com", account: "account", repository: { provider: "github", repository_id: "71", node_id: "repo-node" }, kind: "pipeline", resource: { type: "github", id: "501" }, web_url: "https://github.com/group/repo/actions/runs/501" },
+  { origin: "https://gitlab.example", account: "account", repository: { provider: "gitlab", project_id: "71" }, kind: "pipeline", resource: { type: "gitlab", id: "501" }, web_url: "https://gitlab.example/group/repo/-/pipelines/501" },
+ ];
+ const h = harness(); h.setTools(["noli_forge_watch"]);
+ for (const selector of [{ number: "17" }, { git_ref: "refs/heads/topic" }, ...runs.map(run => ({ run }))]) {
+  for (const until of ["green", "pipeline-success", "any-change"]) {
+   const event = { ...h.event, toolName: "noli_forge_watch", input: { action: "start", until, ...selector } };
+   expect(h.call(event, h.ctx())).toBeUndefined();
+   for (const kind of ["sub", "advisor", "unknown"]) expect(h.call(event, h.ctx(kind))?.block).toBe(true);
+   h.setAuth(false); expect(h.call(event, h.ctx())?.block).toBe(true); h.setAuth(true);
+   expect(h.call({ ...event, input: { ...event.input, caller: "main" } }, h.ctx())?.block).toBe(true);
+  }
+ }
+ for (const run of runs) {
+  for (const extra of [{ until: "ready" }, { number: "17" }, { git_ref: "topic" }, { run: { ...run, kind: "job" } }, { run: { ...run, resource: { ...run.resource, id: "" } } }, { run: { ...run, caller: "main" } }, { run: null }]) {
+   expect(forgeWatchArguments({ action: "start", until: "pipeline-success", run, ...extra })).toBe(false);
+  }
+ }
+ expect(forgeWatchArguments({ action: "start", until: "pipeline-success" })).toBe(false);
+ expect(forgeWatchArguments({ action: "start", number: "17", git_ref: "topic", until: "pipeline-success" })).toBe(false);
+});
+
 test("stale model-role results name their tool and discard success and error details", () => {
  for (const isError of [false, true]) {
   const h = harness(); h.setTools(["noli_model_roles"]);
