@@ -41,6 +41,12 @@ Facts (`src/claude-facts.ts`) are a pure port of the 8.1 delivery-time stamping,
 
 Known limits on stock OMP: manual `/handoff` emits no event before its request, so it is untagged and falls to Noli's helper row. Any `context` handler makes the stock runner structuredClone the request messages and defeats the identity-keyed conversion memo for that call (`runner.ts:2117-2184`, `session/messages.ts:1023-1049`); the produced bytes are unchanged. `assistant_message` cannot change non-text blocks, so thinking blocks cannot be marked as narration.
 
+## v0.10.3 pipeline-success watch admission
+
+- Accepts `until: "pipeline-success"` for native review, Git-ref and exact pipeline/run targets. Exactly one of `number`, `git_ref` or `run` is required; exact targets use a validated native pipeline handle and remain pinned by Noli.
+- Keeps the owning-main restriction, bounded selectors and native host authorization unchanged. Invalid combinations, malformed handles and caller overrides still fail before forwarding. Noli owns the terminal-status semantics; required-check `green` and review `ready` retain their existing meanings.
+- `test/thread-control.test.ts` covers all three selectors, both provider handle shapes and rejected mixed/invalid targets. Noli's real-OMP `agent_tools_smoke` exercises this producer against the native watcher and loopback GitHub/GitLab transport.
+
 ## v0.10.2 native compaction and paged root history (bridge protocol 2)
 
 - Gateway Claude models compact the way Claude Code 2.1.309 does: no proactive passes, overflow and manual `/compact` run as native summarizer forks, and `producer.compaction` carries RequestFacts v2 over the summarized messages (see the native compaction paragraph above). A summary that starts the branch is sampled for T0 from its rendered context.
