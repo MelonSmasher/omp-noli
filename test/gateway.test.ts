@@ -6,7 +6,9 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionAPI, ProviderConfig } from "@oh-my-pi/pi-coding-agent";
-import { registerGateway, rejoinGateway } from "../src/gateway";
+import { generateTaskLabel } from "@oh-my-pi/pi-coding-agent/task/label";
+import { streamSimple } from "@oh-my-pi/pi-ai";
+import { enrichGatewayModels, registerGateway, rejoinGateway } from "../src/gateway";
 
 const model = { id: "gateway-test", name: "Gateway fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 512 };
 
@@ -170,4 +172,177 @@ test("a session whose startup is cancelled is never retained for later binds", a
 		root.gateway.revoke();
 		expect(calls).toBe(queuedAtFactory);
 	} finally { root.close(); }
+});
+
+test("an advisor selected before binding retains actual dispatch headers after credential changes", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "noli-advisor-binding-"));
+	const received: Array<{ body: string; headers: Headers }> = [];
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+		received.push({ body: await request.text(), headers: request.headers });
+		return Response.json({ error: { message: "synthetic non-retryable rejection" } }, { status: 400 });
+	} });
+	const auth = await AuthStorage.create(join(dir, "agent.db"));
+	try {
+		writeFileSync(join(dir, "gateway-providers.json"), JSON.stringify({ providers: {
+			"noli-openai": { baseUrl: `http://127.0.0.1:${server.port}`, api: "openai-responses", models: [model] },
+			"noli-anthropic": { baseUrl: `http://127.0.0.1:${server.port}`, api: "anthropic-messages", models: [model] },
+		} }));
+		const registry = new ModelRegistry(auth, join(dir, "models.yml"), { settings: Settings.isolated({ enabledModels: ["noli-*/*"] }) });
+		const pi = { registerProvider: (name: string, config: ProviderConfig) => registry.registerProvider(name, config, "advisor-binding") } as ExtensionAPI;
+		const gateway = registerGateway(pi, dir)!;
+		// Actual OMP advisors capture a model before the managed launch binds.
+		const advisor = registry.getAvailable().find(candidate => candidate.provider === "noli-openai")!;
+		const sessionId = "019a0000-0000-7000-8000-000000000001";
+		for (const token of ["a".repeat(43), "b".repeat(43)]) {
+			gateway.bind({ token, expires_ms: Date.now() + 60_000 });
+			enrichGatewayModels({ modelRegistry: registry, model: registry.find("noli-anthropic", model.id) });
+			await streamSimple(advisor, { messages: [{ role: "user", content: "unchanged advisor input", timestamp: 1 }] }, {
+				apiKey: registry.resolver(advisor, sessionId), sessionId,
+			}).result();
+			const request = received.at(-1)!;
+			expect(request.headers.get("authorization")).toBe(`Bearer ${token}`);
+			expect(request.headers.get("x-noli-producer-session-id")).toBe(sessionId);
+			expect(JSON.parse(request.body).prompt_cache_key).toBe(sessionId);
+			expect(JSON.stringify(JSON.parse(request.body).input)).toContain("unchanged advisor input");
+		}
+	} finally { server.stop(true); auth.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("managed Anthropic helpers omit generated identity but preserve caller metadata and dispatch ownership", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "noli-anthropic-helper-"));
+	const received: Array<{ body: Record<string, any>; headers: Headers }> = [];
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+		received.push({ body: await request.json() as Record<string, any>, headers: request.headers });
+		const events = [
+			{ type: "message_start", message: { id: "msg_fixture", type: "message", role: "assistant", model: model.id, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } } },
+			{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+			{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "<title>Inspect compiler diagnostics</title>" } },
+			{ type: "content_block_stop", index: 0 },
+			{ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 6 } },
+			{ type: "message_stop" },
+		];
+		return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+	} });
+	const auth = await AuthStorage.create(join(dir, "agent.db"));
+	const settings = Settings.isolated({ enabledModels: ["noli-*/*"], modelRoles: { tiny: `noli-anthropic/${model.id}` } });
+	const registry = new ModelRegistry(auth, join(dir, "models.yml"), { settings });
+	try {
+		writeFileSync(join(dir, "gateway-providers.json"), JSON.stringify({ providers: {
+			"noli-anthropic": { baseUrl: `http://127.0.0.1:${server.port}`, api: "anthropic-messages", models: [model] },
+		} }));
+		const pi = { registerProvider: (name: string, config: ProviderConfig) => registry.registerProvider(name, config, "native-helper") } as ExtensionAPI;
+		const gateway = registerGateway(pi, dir)!;
+		gateway.bind({ token: "a".repeat(43), expires_ms: Date.now() + 60_000 });
+		const signal = AbortSignal.timeout(10_000);
+		const label = await generateTaskLabel("Inspect the compiler diagnostics and fix the type error", registry, settings, "task-label-session", signal);
+		expect(label).toBe("Inspect compiler diagnostics");
+		expect(received).toHaveLength(1);
+		expect(received[0]!.body.metadata).toBeUndefined();
+		expect(received[0]!.headers.get("x-noli-producer-session-id")).toBe("task-label-session");
+		expect(received[0]!.headers.get("authorization")).toBe(`Bearer ${"a".repeat(43)}`);
+		// Retained models and concurrent helpers must not borrow another request's
+		// identity or keep an old credential after a normal registry re-registration.
+		const retained = registry.find("noli-anthropic", model.id)!;
+		gateway.bind({ token: "b".repeat(43), expires_ms: Date.now() + 60_000 });
+		let dispatched = 0;
+		await Promise.all(["main-session", "parent:side:conversation:topic"].map(async sessionId => {
+			const metadata = { user_id: JSON.stringify({ session_id: sessionId, custom: "must remain visible" }) };
+			const response = await streamSimple(retained, { systemPrompt: ["Original instructions"], messages: [{ role: "user", content: sessionId, timestamp: 1 }] }, {
+				apiKey: registry.resolver(retained, sessionId), sessionId, metadata, signal,
+				maxInFlightRequests: { "noli-anthropic": 1 }, beforeDispatch: () => { dispatched++; },
+			}).result();
+			expect(response.stopReason).toBe("stop");
+			const sent = received.find(item => item.headers.get("x-noli-producer-session-id") === sessionId)!;
+			expect(sent.body.metadata).toEqual(metadata);
+			expect(sent.headers.get("authorization")).toBe(`Bearer ${"b".repeat(43)}`);
+			expect(JSON.stringify(sent.body.system)).toContain("Original instructions");
+		}));
+		expect(dispatched).toBe(2);
+		expect(received).toHaveLength(3);
+	} finally {
+		registry.clearSourceRegistrations("native-helper");
+		server.stop(true); auth.close(); rmSync(dir, { recursive: true, force: true });
+	}
+}, 15_000);
+
+test("scoped Anthropic dispatch preserves model sampling compatibility overrides", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "noli-anthropic-controls-"));
+	const received: Array<Record<string, unknown>> = [];
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+		received.push(await request.json() as Record<string, unknown>);
+		return Response.json({ error: { message: "synthetic non-retryable rejection" } }, { status: 400 });
+	} });
+	const auth = await AuthStorage.create(join(dir, "agent.db"));
+	const registry = new ModelRegistry(auth, join(dir, "models.yml"), { settings: Settings.isolated({ enabledModels: ["noli-*/*"] }) });
+	try {
+		writeFileSync(join(dir, "gateway-providers.json"), JSON.stringify({ providers: {
+			"noli-anthropic": { baseUrl: `http://127.0.0.1:${server.port}`, api: "anthropic-messages",
+				models: [false, true].map(sampling => ({ ...model, id: sampling ? "metered" : "native",
+					compat: { supportsSamplingParams: sampling, injectClaudeCodeInstruction: false } })) },
+		} }));
+		const pi = { registerProvider: (name: string, config: ProviderConfig) => registry.registerProvider(name, config, "sampling-controls") } as ExtensionAPI;
+		registerGateway(pi, dir)!.bind({ token: "a".repeat(43), expires_ms: Date.now() + 60_000 });
+		for (const id of ["native", "metered"]) {
+			const selected = registry.find("noli-anthropic", id)!;
+			await streamSimple(selected, { messages: [{ role: "user", content: "Helper request", timestamp: 1 }] }, {
+				apiKey: registry.resolver(selected, "helper"), sessionId: "helper", temperature: 0.25, topP: 0.7,
+			}).result();
+			const request = received.at(-1)!;
+			expect(request.temperature).toBe(id === "metered" ? 0.25 : undefined);
+			expect(request.top_p).toBe(id === "metered" ? 0.7 : undefined);
+		}
+	} finally {
+		registry.clearSourceRegistrations("sampling-controls");
+		server.stop(true); auth.close(); rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("scoped Anthropic authentication preserves cache retention and caller precedence", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "noli-anthropic-cache-"));
+	const received: Array<Record<string, any>> = [];
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+		received.push(await request.json() as Record<string, any>);
+		return Response.json({ error: { message: "synthetic non-retryable rejection" } }, { status: 400 });
+	} });
+	const auth = await AuthStorage.create(join(dir, "agent.db"));
+	const registry = new ModelRegistry(auth, join(dir, "models.yml"), { settings: Settings.isolated({ enabledModels: ["noli-*/*"] }) });
+	const previousRetention = process.env.PI_CACHE_RETENTION;
+	try {
+		delete process.env.PI_CACHE_RETENTION;
+		writeFileSync(join(dir, "gateway-providers.json"), JSON.stringify({ providers: {
+			"noli-anthropic": { baseUrl: `http://127.0.0.1:${server.port}`, api: "anthropic-messages",
+				models: [false, true].map(long => ({ ...model, id: long ? "long" : "short",
+					compat: { supportsLongCacheRetention: long, injectClaudeCodeInstruction: false } })) },
+		} }));
+		const pi = { registerProvider: (name: string, config: ProviderConfig) => registry.registerProvider(name, config, "cache-controls") } as ExtensionAPI;
+		registerGateway(pi, dir)!.bind({ token: "a".repeat(43), expires_ms: Date.now() + 60_000 });
+		for (const id of ["long", "short"]) {
+			const selected = registry.find("noli-anthropic", id)!;
+			for (const cacheRetention of [undefined, "long", "short", "none"] as const) {
+				await streamSimple(selected, { messages: [{ role: "user", content: "Cache prefix stays intact", timestamp: 1 }] }, {
+					apiKey: registry.resolver(selected, "cache-session"), sessionId: "cache-session", cacheRetention,
+				}).result();
+				const sent = received.at(-1)!;
+				const content = sent.messages[0].content;
+				const blocks = Array.isArray(content) ? content : [{ type: "text", text: content }];
+				expect(blocks.map(block => block.text).join("")).toBe("Cache prefix stays intact");
+				expect(blocks.flatMap(block => block.cache_control ? [block.cache_control] : [])).toEqual(cacheRetention === "none" ? [] : [
+					{ type: "ephemeral", ...(id === "long" && cacheRetention !== "short" ? { ttl: "1h" } : {}) },
+				]);
+			}
+		}
+		const selected = registry.find("noli-anthropic", "long")!;
+		process.env.PI_CACHE_RETENTION = "short";
+		for (const cacheRetention of [undefined, "long"] as const) {
+			await streamSimple(selected, { messages: [{ role: "user", content: "Explicit retention wins", timestamp: 1 }] }, {
+				apiKey: registry.resolver(selected, "cache-session"), sessionId: "cache-session", cacheRetention,
+			}).result();
+			expect(received.at(-1)!.messages[0].content[0].cache_control).toEqual({ type: "ephemeral", ...(cacheRetention === "long" ? { ttl: "1h" } : {}) });
+		}
+	} finally {
+		if (previousRetention === undefined) delete process.env.PI_CACHE_RETENTION;
+		else process.env.PI_CACHE_RETENTION = previousRetention;
+		registry.clearSourceRegistrations("cache-controls");
+		server.stop(true); auth.close(); rmSync(dir, { recursive: true, force: true });
+	}
 });

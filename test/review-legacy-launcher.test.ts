@@ -83,12 +83,12 @@ test("review: a gateway catalog refuses legacy environment-token bootstrap", () 
   }
 });
 
-test("review: stale root shutdown preserves the replacement bridge, host and forge root", async () => {
+test.each([false, true])("review: stale root shutdown preserves replacement bridge during gateway preparation=%s", async managed => {
   const dir = mkdtempSync(join(tmpdir(), "noli-review-root-shutdown-"));
   const oldDir = process.env.NOLI_BRIDGE_DIR;
   const oldToken = process.env.NOLI_BRIDGE_TOKEN;
   const oldFile = process.env.NOLI_BRIDGE_TOKEN_FILE;
-  const handlers = new Map<string, Array<(event: unknown, ctx: ExtensionContext) => void>>();
+  const handlers = new Map<string, Array<(event: unknown, ctx: ExtensionContext) => void | Promise<void>>>();
   const clearedStatuses: string[] = [];
   const tool = { description: "Forge status", parameters: {}, async execute() { return { content: [] }; } };
   const registry = {
@@ -99,7 +99,7 @@ test("review: stale root shutdown preserves the replacement bridge, host and for
   const pi = {
     zod,
     pi: { AgentRegistry: { global: () => registry } },
-    on(name: string, handler: (event: unknown, ctx: ExtensionContext) => void) {
+    on(name: string, handler: (event: unknown, ctx: ExtensionContext) => void | Promise<void>) {
       const list = handlers.get(name) ?? [];
       list.push(handler);
       handlers.set(name, list);
@@ -109,25 +109,37 @@ test("review: stale root shutdown preserves the replacement bridge, host and for
     logger: { warn() {} },
     events: { on: () => () => {} },
   } as unknown as ExtensionAPI;
+  const modelRegistry = { resolver() {}, getProviderModels: () => [] };
   const oldContext = {
     agent: { kind: "main", id: "Main" },
-    sessionManager: { getSessionId: () => "old-root", getSessionFile: () => undefined },
+    sessionManager: { getSessionId: () => "old-root", getSessionFile: () => undefined, getBranch: () => [], getLeafId: () => null },
+    modelRegistry,
     ui: { notify() {}, setStatus() { clearedStatuses.push("old-root"); } },
   } as unknown as ExtensionContext;
   const replacement = {
     agent: { kind: "main", id: "Main" },
-    sessionManager: { getSessionId: () => "replacement-root", getSessionFile: () => undefined },
+    sessionManager: { getSessionId: () => "replacement-root", getSessionFile: () => undefined, getBranch: () => [], getLeafId: () => null },
+    modelRegistry,
     ui: { notify() {}, setStatus() { clearedStatuses.push("replacement-root"); } },
   } as unknown as ExtensionContext;
   let socket: Socket | undefined;
   try {
     process.env.NOLI_BRIDGE_DIR = dir;
-    process.env.NOLI_BRIDGE_TOKEN = "synthetic-root-shutdown-bootstrap";
-    delete process.env.NOLI_BRIDGE_TOKEN_FILE;
+    if (managed) {
+      const token = join(dir, "bootstrap");
+      writeFileSync(token, "synthetic-root-shutdown-bootstrap", { mode: 0o600 });
+      writeFileSync(join(dir, "gateway-providers.json"), JSON.stringify({ providers: {} }));
+      process.env.NOLI_BRIDGE_TOKEN_FILE = token;
+      delete process.env.NOLI_BRIDGE_TOKEN;
+    } else {
+      process.env.NOLI_BRIDGE_TOKEN = "synthetic-root-shutdown-bootstrap";
+      delete process.env.NOLI_BRIDGE_TOKEN_FILE;
+    }
     noli(pi);
-    for (const handler of handlers.get("session_start") ?? []) handler({}, oldContext);
-    for (const handler of handlers.get("session_switch") ?? []) handler({}, replacement);
-    for (const handler of handlers.get("session_shutdown") ?? []) handler({}, oldContext);
+    const starting = (handlers.get("session_start") ?? []).map(handler => handler({}, oldContext));
+    const switching = (handlers.get("session_switch") ?? []).map(handler => handler({}, replacement));
+    for (const handler of handlers.get("session_shutdown") ?? []) await handler({}, oldContext);
+    await Promise.all([...starting, ...switching]);
     expect(clearedStatuses).toEqual([]);
     expect(existsSync(join(dir, `omp-${process.pid}.sock`))).toBe(true);
     const names: string[] = [];

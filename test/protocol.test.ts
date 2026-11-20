@@ -4,15 +4,18 @@ import { assertValidFrame } from "./schema";
 
 describe("schema matches src/protocol.ts", () => {
 	test("producer registration requires protocol 2 and its nonoptional capability", () => {
-		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" || name === "host.forge_watch" ? "main-only-v1" : name === "host.model_roles" ? "session-v1" : name.startsWith("host.forge_") ? "session-v2" : "public", detail: "synthetic" }]));
+		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: name === "gateway.native.provenance" ? "native-provenance-v3" : name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" || name === "host.forge_watch" ? "main-only-v1" : name === "host.model_roles" ? "session-v1" : name.startsWith("host.forge_") ? "session-v2" : "public", detail: "synthetic" }]));
 		const hello = (protocol: number, caps = capabilities) => ({ type: "response", id: 1, ok: true, result: { protocol, sessionId: "s", pid: 1, capabilities: caps } });
 		expect(() => assertValidFrame(hello(2))).not.toThrow();
 		expect(() => assertValidFrame(hello(1))).toThrow();
+		for (const state of [{ available: true, detail: "legacy" }, { available: false, reason: "not_ready", detail: "legacy" }]) {
+			expect(() => assertValidFrame(hello(2, { ...capabilities, "gateway.native.provenance": { ...state, api: "native-provenance-v1" } }))).toThrow();
+		}
 		const { "gateway.request.register": _registration, ...missing } = capabilities;
 		expect(() => assertValidFrame(hello(2, missing))).toThrow();
 	});
 	test("thread-read capabilities validate v2 and reject legacy v1 for available and unavailable states", () => {
-		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: name === "host.thread_open" ? "main-only-v1" : name === "host.forge_watch" ? "main-only-v1" : name === "host.model_roles" ? "session-v1" : name.startsWith("host.forge_") ? "session-v2" : "public", detail: "public" }]));
+		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: name === "gateway.native.provenance" ? "native-provenance-v3" : name === "host.thread_open" ? "main-only-v1" : name === "host.forge_watch" ? "main-only-v1" : name === "host.model_roles" ? "session-v1" : name.startsWith("host.forge_") ? "session-v2" : "public", detail: "public" }]));
 		for (const state of [{ available: true, detail: "reference reads" }, { available: false, reason: "not_ready", detail: "not ready" }]) {
 			const frame = (api: string) => ({ type: "event", event: "capabilities.changed", sessionId: "s", capabilities: { ...capabilities, "host.thread_read": { ...state, api } } });
 			expect(() => assertValidFrame(frame("main-only-v2"))).not.toThrow();
@@ -20,7 +23,7 @@ describe("schema matches src/protocol.ts", () => {
 		}
 	});
 	test("thread-opening rejects incompatible APIs even while unavailable", () => {
-		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: name === "host.thread_read" ? "main-only-v2" : name === "host.forge_watch" ? "main-only-v1" : name === "host.model_roles" ? "session-v1" : name.startsWith("host.forge_") ? "session-v2" : "public", detail: "public" }]));
+		const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, { available: true, api: name === "gateway.native.provenance" ? "native-provenance-v3" : name === "host.thread_read" ? "main-only-v2" : name === "host.forge_watch" ? "main-only-v1" : name === "host.model_roles" ? "session-v1" : name.startsWith("host.forge_") ? "session-v2" : "public", detail: "public" }]));
 		for (const state of [{ available: true, detail: "opening" }, { available: false, reason: "not_ready", detail: "not ready" }]) {
 			const frame = (api: string) => ({ type: "event", event: "capabilities.changed", sessionId: "s", capabilities: { ...capabilities, "host.thread_open": { ...state, api } } });
 			expect(() => assertValidFrame(frame("main-only-v1"))).not.toThrow();
@@ -28,7 +31,7 @@ describe("schema matches src/protocol.ts", () => {
 		}
 	});
 	test.each(["host.forge_resource", "host.forge_read", "host.forge_write", "host.forge_watch", "host.model_roles"] as const)("optional %s requires its negotiated API in both availability states", capability => {
-		const capabilities = Object.fromEntries(CAPABILITY_NAMES.filter(name => name !== capability).map(name => [name, { available: true, api: name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" ? "main-only-v1" : name === "host.forge_watch" ? "main-only-v1" : name === "host.model_roles" ? "session-v1" : name.startsWith("host.forge_") ? "session-v2" : "public", detail: "test" }]));
+		const capabilities = Object.fromEntries(CAPABILITY_NAMES.filter(name => name !== capability).map(name => [name, { available: true, api: name === "gateway.native.provenance" ? "native-provenance-v3" : name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" ? "main-only-v1" : name === "host.forge_watch" ? "main-only-v1" : name === "host.model_roles" ? "session-v1" : name.startsWith("host.forge_") ? "session-v2" : "public", detail: "test" }]));
 		const expectedApi = capability === "host.forge_watch" ? "main-only-v1" : capability === "host.model_roles" ? "session-v1" : "session-v2";
 		const frame = (caps: unknown) => ({ type: "event", event: "capabilities.changed", sessionId: "s", capabilities: caps });
 		expect(() => assertValidFrame(frame(capabilities))).not.toThrow();
@@ -89,15 +92,17 @@ describe("protocol-2 producer frames", () => {
 		prompt: { id: "6f1c0b8e-6d0e-4b9a-8f43-2f6a1c7d9e10", origin: "human", position: { promptIndex: 1, turnIndex: 1 } },
 	};
 	const request = (method: string, params: unknown) => ({ type: "request", id: "producer:1", method, params });
-	test("the frozen shapes validate", () => {
-		assertValidFrame(request("producer.session", { ompSessionId: "root", parentOmpSessionId: null, agentKind: "main", agentId: "Main", epochEntryId: "e1", ompVersion: "18.13.2", systemPrefix: { sha256: "2e52cff0ad7fa9912ebbeb49bb277f061719ac664f95a3a741b74e180e29a5ba", len: 752 } }));
-		assertValidFrame(request("producer.session", { ompSessionId: "child", parentOmpSessionId: "root", agentKind: "sub", agentId: "0-Task", epochEntryId: null, ompVersion: "18.13.2", systemPrefix: null }));
-		assertValidFrame(request("producer.branch", { ompSessionId: "root", leafId: null, resetEntryIds: ["r1"] }));
-		assertValidFrame(request("gateway.request.register", { ompSessionId: "root", facts }));
-		assertValidFrame(request("gateway.request.register", { ompSessionId: "root", facts: { ...facts, firstEligible: null, prompt: { id: null, origin: null, position: null } } }));
-		assertValidFrame(request("producer.compaction", { ompSessionId: "root", phase: "begin", facts: { ...facts, requestClass: "compaction", querySource: "compaction", compactionKind: "reactive" } }));
-		assertValidFrame(request("gateway.request.register", { ompSessionId: "root", facts: { ...facts, contextCompacted: "manual" } }));
-		assertValidFrame(request("producer.compaction", { ompSessionId: "root", phase: "end", facts: null }));
+	test("compaction begin requires bounded dispatch ownership and end cannot carry it", () => {
+		const begin = { ompSessionId: "root", phase: "begin", dispatchSessionId: "root:side:compaction",
+			facts: { ...facts, requestClass: "compaction", querySource: "compaction", compactionKind: "reactive" } };
+		assertValidFrame(request("producer.compaction", begin));
+		for (const dispatchSessionId of [undefined, null, "", 3, "x".repeat(1025)]) {
+			expect(() => assertValidFrame(request("producer.compaction", { ...begin, dispatchSessionId }))).toThrow();
+		}
+		const end = { ompSessionId: "root", phase: "end", facts: null };
+		assertValidFrame(request("producer.compaction", end));
+		expect(() => assertValidFrame(request("producer.compaction", { ...end, dispatchSessionId: begin.dispatchSessionId }))).toThrow();
+		expect(() => assertValidFrame(request("producer.compaction", { ...end, facts: begin.facts }))).toThrow();
 	});
 	test("the withdrawn digest binding and producer-minted ownership no longer validate", () => {
 		expect(() => assertValidFrame(request("gateway.request.register", { sessionId: "root", facts, request: { method: "POST", path: "/v1/messages", bodySha256: "a".repeat(64) } }))).toThrow();

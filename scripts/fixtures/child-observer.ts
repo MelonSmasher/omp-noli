@@ -1,5 +1,6 @@
 import { createServer, type Server, type Socket } from "node:net";
 import type { AgentRef, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { isAgentViewSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
 
 type HeldGate = { resolve(): void; reject(error: Error): void };
 const stateKey = Symbol.for("omp-noli.child-smoke.held-gates");
@@ -24,6 +25,7 @@ export default function childObserver(pi: ExtensionAPI): void {
 	let unsubscribe: (() => void) | undefined;
 	const snapshot = (ref: AgentRef) => {
 		const session = ref.session;
+		if (session && !isAgentViewSession(session)) throw new Error("Child smoke requires an actual native view session");
 		return {
 			id: ref.id, identity: identity(ref), kind: ref.kind, parentId: ref.parentId ?? null,
 			status: ref.status, live: session !== null, sessionFile: ref.sessionFile,

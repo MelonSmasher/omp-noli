@@ -368,6 +368,7 @@
       "enum": [
         "gateway.bind",
         "gateway.request.register",
+        "gateway.native.provenance",
         "agents.list",
         "host.thread_read",
         "host.thread_open",
@@ -411,7 +412,8 @@
         "main-only-v1",
         "main-only-v2",
         "session-v1",
-        "session-v2"
+        "session-v2",
+        "native-provenance-v3"
       ]
     },
     "CapabilityState": {
@@ -468,6 +470,7 @@
       "required": [
         "gateway.bind",
         "gateway.request.register",
+        "gateway.native.provenance",
         "agents.list",
         "host.thread_read",
         "host.thread_open",
@@ -494,6 +497,24 @@
         },
         "gateway.request.register": {
           "$ref": "#/$defs/CapabilityState"
+        },
+        "gateway.native.provenance": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "native-provenance-v3"
+                }
+              }
+            }
+          ]
         },
         "agents.list": {
           "$ref": "#/$defs/CapabilityState"
@@ -1880,6 +1901,44 @@
               "type": "null"
             }
           ]
+        },
+        "dispatchSessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      },
+      "if": {
+        "required": [
+          "phase"
+        ],
+        "properties": {
+          "phase": {
+            "const": "begin"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "dispatchSessionId"
+        ],
+        "properties": {
+          "facts": {
+            "$ref": "#/$defs/RequestFacts"
+          },
+          "dispatchSessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "facts": {
+            "type": "null"
+          },
+          "dispatchSessionId": false
         }
       }
     },

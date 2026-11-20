@@ -1,16 +1,19 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ContextEvent, ExtensionAPI, ExtensionContext, SessionBeforeCompactEvent, SessionBeforeCompactResult, SessionEntry } from "@oh-my-pi/pi-coding-agent";
+import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { completeSimple } from "@oh-my-pi/pi-ai";
+import { compact } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ProducerChannel } from "./bridge";
-import { EPOCH_ENTRY_TYPE, type EpochData, type FactsIdentity, type ToolTiming, epochEntryId, prevToolDurations, requestFacts, resetEntryIds, wireToolName } from "./claude-facts";
-import { isGatewayClaudeModel } from "./gateway";
-import { type ForkAttempt, NATIVE_COMPACTION_KEY, type NativeCompactionData, ReactiveLadder, TRUNCATION_NOTE, compactionPrompt, foldReminderBeforeSummary, hasSummaryBlock, isPromptTooLong, nativeCompactionData, nativeSummaries, nativeSummaryKey, nativeSummaryText, nativeSummaryTexts, promptTooLongGap, renderNativeSummaries, toolNamesUsed } from "./native-compaction";
-import type { CompactionKind, NoliRequestTag } from "./protocol";
+import { EPOCH_ENTRY_TYPE, type EpochData, type FactsIdentity, type ToolTiming, epochEntryId, prevToolDurations, requestFacts, resetEntryIds } from "./claude-facts";
+import { enrichGatewayModels, isGatewayModel } from "./gateway";
+import type { CapabilityState, CompactionKind, NoliRequestTag } from "./protocol";
 import { SIDE_CHANNEL_REMINDERS, SYSTEM_PREFIXES } from "./system-prefix.generated";
 
 /**
- * Claude Code request correlation on stock OMP (design §3, §5).
+ * Authenticated Gateway request correlation on stock OMP.
  *
  * Every session of the managed launch (the root and each rejoined child) gets its
  * own instance. The `context` event registers the pending main-loop call's facts
@@ -102,28 +105,30 @@ export interface ClaudeHookOptions {
 	toolResults: boolean;
 	/** Tests only: the handler budget; the managed launch resolves the live runner module. */
 	handlerBudget?: Promise<HandlerBudget | undefined>;
+    /** Resolve semantic admission before the root opens its bridge socket. */
+    onPrepared?: (capability: (ctx: ExtensionContext) => CapabilityState) => void;
 }
 
-/** One native compaction in progress: its summarizer fork and the reactive ladder over its history. */
-interface Fork {
-	kind: CompactionKind;
-	prompt: string;
-	gap: number | undefined;
-	controller: AbortController;
-	/** The history before the side-turn reminder, as the first fork attempt saw it. */
-	history?: AgentMessage[];
-	ladder?: ReactiveLadder;
-	attempt?: ForkAttempt;
-	failure?: string;
-}
 
-/** One summarizer fork's result: the trimmed reply text, or the error it threw. */
-interface ForkOutcome { reply: string | undefined; error: string | undefined }
+/** Read only the launched official SDK's marker, never a prompt or a cache key. */
+function sideChannelReminder(version: string): { sha256: string; len: number } | undefined {
+	const sdk = process.env.NOLI_OMP_SDK_ROOT;
+	if (sdk) {
+		try {
+			if (JSON.parse(readFileSync(join(sdk, "package.json"), "utf8")).version !== version) return undefined;
+			const text = readFileSync(join(sdk, "src/prompts/system/side-channel-no-tools.md"), "utf8");
+			if (!text) return undefined;
+			return { sha256: createHash("sha256").update(text).digest("hex"), len: Buffer.byteLength(text) };
+		} catch { return undefined; }
+	}
+	return SIDE_CHANNEL_REMINDERS[version];
+}
 
 export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: ClaudeHookOptions): void {
 	const version: unknown = (pi.pi as { VERSION?: unknown } | undefined)?.VERSION;
 	const ompVersion = typeof version === "string" && version ? version : "unknown";
-	const sideReminder = SIDE_CHANNEL_REMINDERS[ompVersion];
+	const sideReminder = sideChannelReminder(ompVersion);
+    let markerFailureReported = false;
 	/** The reference for this session's pending main-loop call; replaced by each main `context` event. */
 	let pending: { ref: string | null } | undefined;
 	let warmUntil = 0;
@@ -135,19 +140,25 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 	let toolEpoch = 0;
 	/** The reason of the auto compaction OMP announced last; none means a manual `/compact`. */
 	let autoReason: string | undefined;
-	/** The latest assistant error text, for the prompt-too-long gap that seeds the reactive ladder. */
-	let lastError: string | undefined;
-	/** The native compaction in progress in this session. */
-	let fork: Fork | undefined;
-	/**
-	 * CC `NEn`: the kind a session's main thread compacted with, for that session's next main
-	 * request (`T7o`). Consumed once a registration carrying it is accepted.
-	 */
-	let compacted: { ompSessionId: string; kind: CompactionKind } | undefined;
 	let budget: HandlerBudget | undefined;
 	let budgetHeld = false;
 	// Resolved once, ahead of any compaction: a raced `session_before_compact` handler never waits on it.
-	void (options.handlerBudget ?? sdkHandlerBudget(pi)).then(resolved => { budget = resolved; }, () => {});
+    const prepared = (resolved: HandlerBudget | undefined): void => {
+        budget = resolved;
+        options.onPrepared?.(ctx => {
+            const unavailable = (detail: string): CapabilityState => ({ available: false, api: "native-provenance-v3", reason: "hook_changed", detail });
+            if (!sideReminder) return unavailable("Update OMP and omp-noli explicitly: the selected SDK side-channel marker is unavailable");
+            if (!budget) return unavailable("Update OMP and omp-noli explicitly: the selected SDK compaction handler budget is unavailable");
+            let lifted = false;
+            try {
+                lifted = budget.lift(ctx);
+                if (!lifted) return unavailable("Update OMP and omp-noli explicitly: the live compaction runner cannot be verified");
+                return { available: true, api: "native-provenance-v3", detail: "Authenticated producer/session routing for Messages and both Responses APIs; exact dispatch-bound OMP compaction with the verified live runner" };
+            } catch { return unavailable("Update OMP and omp-noli explicitly: the live compaction runner could not be probed"); }
+            finally { if (lifted) budget.restore(); }
+        });
+    };
+    void (options.handlerBudget ?? sdkHandlerBudget(pi)).then(prepared, () => prepared(undefined));
 	const live = () => channel?.dir === dir ? channel : undefined;
 
 	const identity = (ctx: ExtensionContext): Omit<FactsIdentity, "requestClass" | "querySource"> | undefined => {
@@ -207,6 +218,7 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 	};
 
 	const adopt = (ctx: ExtensionContext, writeEpoch: boolean): void => {
+		enrichGatewayModels(ctx);
 		if (writeEpoch) ensureEpoch(ctx);
 		// Noli keeps the recorded branch; the bridge re-sends it after authentication.
 		if (announce(ctx)) sendBranch(ctx, true).catch(() => {});
@@ -239,12 +251,14 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 	});
 
 	/** Facts for one main-loop or subagent request, including the previous tool batch under its wire names. */
-	const factsFor = (messages: readonly AgentMessage[], ctx: ExtensionContext, self: Omit<FactsIdentity, "requestClass" | "querySource">, contextCompacted: CompactionKind | undefined) => {
+	const factsFor = (messages: readonly AgentMessage[], ctx: ExtensionContext, self: Omit<FactsIdentity, "requestClass" | "querySource">) => {
 		const branch = ctx.sessionManager.getBranch();
-		const durations = prevToolDurations(messages, branch, timings, toolEpoch, wireNaming(ctx.model));
+		const compat = ctx.model?.compat;
+		const escape = !!compat && "escapeBuiltinToolNames" in compat && compat.escapeBuiltinToolNames === true;
+		const durations = prevToolDurations(messages, branch, timings, toolEpoch, escape);
 		const main = ctx.agent.kind === "main";
 		const facts = requestFacts(messages, branch, { ...self, requestClass: main ? "main" : "subagent", querySource: main ? "agent" : "task" });
-		return { ...facts, ...(durations ? { prevToolDurations: durations } : {}), ...(contextCompacted ? { contextCompacted } : {}) };
+		return { ...facts, ...(durations ? { prevToolDurations: durations } : {}) };
 	};
 
 	/** Registers one request's facts; the reference lands in `slot` unless a newer request replaced it. */
@@ -254,13 +268,10 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 		const self = identity(ctx);
 		const producer = live()?.producer;
 		if (!self || !producer) return;
-		const marker = ctx.agent.kind === "main" && compacted?.ompSessionId === self.ompSessionId ? compacted : undefined;
-		const facts = factsFor(messages, ctx, self, marker?.kind);
+		const facts = factsFor(messages, ctx, self);
 		pruneTimings();
 		await sendBranch(ctx, false);
 		const ref = await producer.register(self.ompSessionId, facts);
-		// A failed branch delivery or registration keeps the marker for the next main request.
-		if (compacted === marker) compacted = undefined;
 		if (pending === slot) slot.ref = ref;
 	};
 	/** Timings of earlier resets are never emitted again; the cap bounds a session that never resets. */
@@ -268,9 +279,23 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 		for (const [id, timing] of timings) if (timing.epoch !== toolEpoch || timings.size > 1024) timings.delete(id);
 	};
 
+	pi.on("before_agent_start", (_event, ctx) => { enrichGatewayModels(ctx); });
+
 	pi.on("context", async (event, ctx) => {
 		warmUntil = 0;
-		if (!live() || !isGatewayClaudeModel(ctx.model) || isSideTurn(event.messages)) return;
+		enrichGatewayModels(ctx);
+		if (!live() || !isGatewayModel(ctx.model)) return;
+		// Side contexts never register fabricated main facts. Keep the parent's
+		// ownership proof; the actual side dispatch header prevents main admission.
+        if (!sideReminder) {
+            pending = undefined;
+            if (!markerFailureReported) {
+                markerFailureReported = true;
+                pi.logger?.warn("Update OMP and omp-noli explicitly: the selected SDK side-channel marker is unavailable; main request provenance was not registered");
+            }
+            return;
+        }
+		if (isSideTurn(event.messages)) return;
 		const slot: { ref: string | null } = { ref: null };
 		pending = slot;
 		try {
@@ -281,71 +306,17 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 		}
 	});
 
-	/** `sve`'s meta row; developer + user attribution keeps it a user row on the wire and meta for T0. */
-	const truncationRow = (): AgentMessage => ({ role: "developer", content: TRUNCATION_NOTE, attribution: "user", timestamp: Date.now() }) as AgentMessage;
-
-	/**
-	 * One fork attempt: the summarized history plus the side prompt, without OMP's side-turn
-	 * reminder, under a compaction bracket whose facts describe exactly the summarized messages.
-	 * Any inconsistency aborts the side turn before a request is built (fail closed).
-	 */
-	const shapeFork = async (original: readonly AgentMessage[], rendered: readonly AgentMessage[], ctx: ExtensionContext, state: Fork): Promise<AgentMessage[]> => {
-		const fail = (reason: string): AgentMessage[] => {
-			state.failure = reason;
-			state.controller.abort(new Error(`Native compaction: ${reason}`));
-			return [...rendered];
-		};
-		const prompt = original.length - 1;
-		if (prompt < 1 || !isSideTurn([original[prompt - 1]!])) return fail("unexpected side-turn shape");
-		const history = original.slice(0, prompt - 1);
-		if (!state.history || !state.ladder) {
-			state.history = history;
-			state.ladder = new ReactiveLadder(history, state.gap, truncationRow);
-		} else if (state.history.length !== history.length) return fail("history changed during compaction");
-		const step = state.ladder.next();
-		if ("failure" in step) return fail(step.failure);
-		state.attempt = step.attempt;
-		// The ladder holds the first attempt's clones; map them to this call's messages by position.
-		const position = new Map(state.history.map((message, index) => [message, index]));
-		const current = (source: readonly AgentMessage[]) => step.attempt.summarize.map(message => {
-			const index = position.get(message);
-			return index === undefined ? message : source[index]!;
-		});
-		const self = identity(ctx);
-		const producer = live()?.producer;
-		if (!self || !producer) return fail("Noli bridge unavailable");
-		const branch = ctx.sessionManager.getBranch();
-		const facts = requestFacts(current(original), branch, { ...self, requestClass: "compaction", querySource: "compaction" });
-		compacting = self.ompSessionId;
-		try {
-			await producer.compaction({ ompSessionId: self.ompSessionId, phase: "begin", facts: { ...facts, compactionKind: state.kind } });
-		} catch (error) {
-			return fail(`bracket failed to open (${error instanceof Error ? error.message : String(error)})`);
-		}
-		return [...current(rendered), rendered[prompt]!];
-	};
-
-	// Registered after the facts handler, which must still see OMP's `compactionSummary` messages.
-	pi.on("context", async (event, ctx) => {
-		if (!live() || !isGatewayClaudeModel(ctx.model)) return undefined;
-		const rendered = renderNativeSummaries(event.messages, nativeSummaries(ctx.sessionManager.getBranch()));
-		const state = fork;
-		const last = event.messages.at(-1);
-		const forkTurn = state !== undefined && last?.role === "user" && Array.isArray(last.content)
-			&& last.content[0]?.type === "text" && last.content[0].text === state.prompt && isSideTurn(event.messages);
-		const messages = forkTurn ? await shapeFork(event.messages, rendered, ctx, state) : rendered;
-		return messages === event.messages ? undefined : { messages };
-	});
 
 	// Synchronous on purpose: the runner's timeout and fail-open paths cannot drop a value returned without awaiting.
 	pi.on("before_provider_request", (event, ctx) => {
-		if (!live() || !isGatewayClaudeModel(ctx.model)) return undefined;
+		if (!live() || !isGatewayModel(ctx.model)) return undefined;
 		const payload = event.payload;
 		if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
 		const warm = Date.now() < warmUntil;
 		const tag: NoliRequestTag = { session: ctx.sessionManager.getSessionId(), ref: warm ? null : pending?.ref ?? null, warm };
-		const messages = "messages" in payload ? foldReminderBeforeSummary(payload.messages, nativeSummaryTexts(ctx.sessionManager.getBranch())) : undefined;
-		return { ...payload, ...(messages ? { messages } : {}), noli_request: tag };
+		// Retain this proof across retries and side turns. Only the producer's
+		// exact dispatch session can consume its main-request registration.
+		return { ...payload, noli_request: tag };
 	});
 
 	pi.on("cache_warming_decision", event => {
@@ -353,160 +324,79 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 		return undefined;
 	});
 
-	/**
-	 * The committed entry: `summary` is the exact summary row text (`nee()` plus `kcn` when a tail
-	 * is kept), and the kept tail starts at the first kept message's entry. `undefined` when that
-	 * entry cannot be identified (fail closed).
-	 */
-	const nativeResult = (event: SessionBeforeCompactEvent, ctx: ExtensionContext, state: Fork, attempt: ForkAttempt, history: readonly AgentMessage[], reply: string) => {
-		const branch = ctx.sessionManager.getBranch();
-		const first = attempt.keep[0];
-		const firstKeptEntryId = first === undefined ? "" : keptEntryId(branch, first);
-		if (firstKeptEntryId === undefined) return undefined;
-		const natives = nativeSummaries(branch);
-		const earlier = history.flatMap(message => message.role === "compactionSummary"
-			? natives.get(nativeSummaryKey(message.timestamp, message.summary))?.toolNames ?? [] : []);
-		const naming = wireNaming(ctx.model);
-		const toolNames = toolNamesUsed(history, name => wireToolName(name, naming), earlier);
-		// No transcript sentence: the variant native renders when `cve()` yields no path (diskless
-		// `J()`, `Xa()` or `compactTranscriptUnavailable`, 5hada5qy:2567069). OMP's session file
-		// path would be a non-native string, and a CC-shaped path would not exist.
-		const summary = nativeSummaryText({ reply, toolNames, headTruncated: attempt.headTruncated, keptTail: attempt.keep.length > 0 });
-		const data: NativeCompactionData = { v: 1, kind: state.kind, toolNames };
-		return { summary, firstKeptEntryId, tokensBefore: event.preparation.tokensBefore, preserveData: { [NATIVE_COMPACTION_KEY]: data } };
-	};
-
-	/**
-	 * The side-turn runner native compaction forks through, or `undefined` (logged) when it must
-	 * not run. CC 2.1.309 never compacts proactively under the default window source (`Nmr`,
-	 * 5hada5qy:2568633): it sends the request and compacts on prompt-too-long instead.
-	 */
-	const sideTurns = (reason: string | undefined, ctx: ExtensionContext) => {
-		if (reason === "threshold" || reason === "idle") {
-			pi.logger?.debug("Native compaction declined: Claude Code compacts only on prompt-too-long or /compact", { reason, agent: ctx.agent.kind });
-			return undefined;
-		}
-		const run = ctx.runEphemeralTurn;
-		if (budgetHeld && run) return run;
-		pi.logger?.warn("Native compaction unavailable: the handler budget or side turns cannot be used");
-		return undefined;
-	};
-
-	const openFork = (event: SessionBeforeCompactEvent, reason: string | undefined): Fork => {
-		const kind: CompactionKind = reason === undefined ? "manual" : "reactive";
-		// `/compact` trims its arguments before `eve` splices them (fzcbqdwj:16225).
-		const instructions = kind === "manual" ? event.customInstructions?.trim() : undefined;
-		return {
-			kind, prompt: compactionPrompt(instructions), controller: new AbortController(),
-			gap: reason === "overflow" && lastError !== undefined ? promptTooLongGap(lastError) : undefined,
-		};
-	};
-
-	/** One summarizer fork: `YTe`, the first text block of the reply trimmed, or what it threw. */
-	const runFork = async (run: NonNullable<ExtensionContext["runEphemeralTurn"]>, state: Fork, signal: AbortSignal): Promise<ForkOutcome> => {
-		try {
-			const result = await run({ promptText: state.prompt, signal, dedupeReply: false, replyMaxBytes: Number.POSITIVE_INFINITY });
-			const text = result.assistantMessage.content.find(block => block.type === "text");
-			return { reply: text?.type === "text" ? text.text.trim() : undefined, error: undefined };
-		} catch (thrown) {
-			return { reply: undefined, error: thrown instanceof Error ? thrown.message : String(thrown) };
-		}
-	};
-
-	/** The attempt the fork's `context` handler shaped, or `undefined` (logged) once aborted or never shaped. */
-	const shapedAttempt = (state: Fork, signal: AbortSignal, error: string | undefined) => {
-		const { attempt, ladder, history } = state;
-		if (!signal.aborted && attempt && ladder && history) return { attempt, ladder, history };
-		pi.logger?.warn("Native compaction stopped", { reason: state.failure ?? error ?? "aborted" });
-		return undefined;
-	};
-
-	const committed = (event: SessionBeforeCompactEvent, ctx: ExtensionContext, state: Fork, attempt: ForkAttempt, history: readonly AgentMessage[], reply: string): SessionBeforeCompactResult => {
-		const compaction = nativeResult(event, ctx, state, attempt, history, reply);
-		if (compaction) return { compaction };
-		pi.logger?.warn("Native compaction failed: the kept tail has no session entry");
-		return { cancel: true };
-	};
-
-	/** A fork that gave no summary: `true` to retry a prompt-too-long on the ladder's next rung, else logged. */
-	const retryFork = (ladder: ReactiveLadder, error: string | undefined): boolean => {
-		if (error !== undefined && isPromptTooLong(error) && ladder.promptTooLong(promptTooLongGap(error))) return true;
-		pi.logger?.warn("Native compaction failed", { error: error ?? "empty summary" });
-		return false;
-	};
-
-	/** What one fork's outcome means: the committed entry, a cancel, or `undefined` to fork again. */
-	const settleFork = (event: SessionBeforeCompactEvent, ctx: ExtensionContext, state: Fork, signal: AbortSignal, outcome: ForkOutcome): SessionBeforeCompactResult | undefined => {
-		const shaped = shapedAttempt(state, signal, outcome.error);
-		if (!shaped) return { cancel: true };
-		const { reply } = outcome;
-		if (shaped.attempt.openingRoundAlone && !(reply && hasSummaryBlock(reply))) {
-			shaped.ladder.openingRoundFailed();
-			return undefined;
-		}
-		if (reply) return committed(event, ctx, state, shaped.attempt, shaped.history, reply);
-		return retryFork(shaped.ladder, outcome.error) ? undefined : { cancel: true };
-	};
-
-	/**
-	 * One native compaction (CC `Hfr` through `ive`): summarizer forks through OMP's own side-turn
-	 * path until one returns a summary, then the entry OMP commits as-is. Every failure cancels:
-	 * OMP's own summarizer never reaches the Gateway for a Claude model.
-	 */
-	const compactNatively = async (event: SessionBeforeCompactEvent, ctx: ExtensionContext, reason: string | undefined): Promise<SessionBeforeCompactResult> => {
-		const run = sideTurns(reason, ctx);
-		if (!run) return { cancel: true };
-		const state = openFork(event, reason);
-		fork = state;
-		const signal = AbortSignal.any([event.signal, state.controller.signal]);
-		for (;;) {
-			const settled = settleFork(event, ctx, state, signal, await runFork(run, state, signal));
-			if (settled) return settled;
-		}
-	};
-
+	// All native families use OMP's own preparation, prompts and summary result.
+	// Only authenticated producer context is added; native clients never compact.
 	pi.on("session_before_compact", (_event, ctx) => {
-		if (!live() || !isGatewayClaudeModel(ctx.model)) return undefined;
-		// Lifted synchronously here, so the next handler and the context handlers of its forks run
-		// under it, and a lift can never land after that handler has finished and restored.
+		if (!live() || !isGatewayModel(ctx.model)) return undefined;
 		budgetHeld = budget?.lift(ctx) === true;
 		return undefined;
 	});
-	// Registering this also turns stock speculative compaction off (session-maintenance.ts:2232, 2325, 2560).
 	pi.on("session_before_compact", async (event, ctx) => {
+		enrichGatewayModels(ctx);
+		const model = ctx.model;
+		if (!live() || !isGatewayModel(model)) return undefined;
+		const self = identity(ctx), producer = live()?.producer;
+		if (!self || !producer || !model) {
+			if (budgetHeld) { budgetHeld = false; budget?.restore(); }
+			return { cancel: true };
+		}
+		if (!budgetHeld) {
+			pi.logger?.warn("Gateway compaction unavailable: live OMP handler budget cannot be lifted");
+			return { cancel: true };
+		}
 		const reason = autoReason;
 		autoReason = undefined;
-		if (!live() || !isGatewayClaudeModel(ctx.model)) return undefined;
+		const kind: CompactionKind = reason === undefined ? "manual" : reason === "overflow" ? "reactive" : "auto";
+		const messages = [...event.preparation.messagesToSummarize, ...event.preparation.turnPrefixMessages];
+		const facts = requestFacts(messages, ctx.sessionManager.getBranch(), { ...self, requestClass: "compaction", querySource: "compaction" });
+		// Bind the bracket to this exact authenticated dispatch, so a failed
+		// close can never classify an unrelated later side turn as compaction.
+		const producerSession = `${self.ompSessionId}:side:${randomBytes(16).toString("base64url")}`;
 		try {
-			return await compactNatively(event, ctx, reason);
+			await sendBranch(ctx, false);
+			compacting = self.ompSessionId;
+			await producer.compaction({ ompSessionId: self.ompSessionId, phase: "begin", facts: { ...facts, compactionKind: kind }, dispatchSessionId: producerSession });
+			const key = await ctx.modelRegistry.getApiKey(model);
+			if (!key) return { cancel: true };
+			const tag: NoliRequestTag = { session: self.ompSessionId, ref: null, warm: false };
+			// UUID owner (36) + :side: (6) + 128-bit base64url nonce (22) stays
+			// within OMP's 64-character cache-ID limit, preserving exact lineage.
+			const result = await compact({ ...event.preparation, settings: { ...event.preparation.settings, remoteEnabled: false } }, model, key, event.customInstructions, event.signal, {
+				sessionId: producerSession,
+				convertToLlm,
+				completeImpl: (target, context, options) => completeSimple(target, context, {
+					...options,
+					headers: { ...options?.headers, "x-noli-producer-session-id": producerSession },
+					onPayload: payload => {
+						if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Invalid Gateway compaction payload");
+						return { ...payload, noli_request: tag };
+					},
+				}),
+			});
+			return { compaction: result };
+		} catch {
+			pi.logger?.warn("Gateway compaction failed; the OMP summary was not committed");
+			return { cancel: true };
 		} finally {
-			fork = undefined;
-			endCompaction();
-			if (budgetHeld) {
-				budgetHeld = false;
-				budget?.restore();
-			}
+			compacting = undefined;
+			try { await producer.compaction({ ompSessionId: self.ompSessionId, phase: "end", facts: null }); }
+			// Closing is cleanup, not authority to replace a trusted summary
+			// or conceal the original compaction failure.
+			catch { pi.logger?.warn("Gateway compaction bracket could not close; the OMP compaction outcome is unchanged"); }
+			finally { budgetHeld = false; budget?.restore(); }
 		}
 	});
+
 	// The only extension-visible trace of an automatic pass; a manual `/compact` emits none.
 	pi.on("auto_compaction_start", event => {
-		// Claude Code drops the previous batch on a prompt-too-long retry, keeps it for proactive compaction.
+		// A history-rewrite retry starts a new tool timing epoch.
 		if (event.reason === "overflow") toolEpoch++;
 		autoReason = event.reason;
 	});
 	// A shake pass announces itself but never reaches `session_before_compact`.
 	pi.on("auto_compaction_end", () => { autoReason = undefined; });
-	pi.on("message_end", event => {
-		const message = event.message as { role: string; stopReason?: string; errorMessage?: string };
-		if (message.role === "assistant") lastError = message.stopReason === "error" ? message.errorMessage : undefined;
-	});
-	pi.on("session_compact", (event, ctx) => {
-		const data = nativeCompactionData(event.compactionEntry.preserveData);
-		// The one-shot `x-cc-context-compacted` is armed for the main thread only (`vv`, 5hada5qy:2843681).
-		if (data && ctx.agent.kind === "main") compacted = { ompSessionId: ctx.sessionManager.getSessionId(), kind: data.kind };
-	});
 
-	// Claude Code starts a fresh tool-duration list for every new prompt (design spec §1.4).
+	// Each user prompt starts a fresh executed-tool timing epoch.
 	pi.on("before_agent_start", event => {
 		if (event.reason !== "prompt") return undefined;
 		toolEpoch++;
@@ -534,21 +424,3 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 	}
 }
 
-/**
- * The `message` entry persisting the first kept message. A kept tail starts at an API round (an
- * assistant) or at the pending user prompt, so it is always a `message` entry; the context event
- * carries copies, so it is matched by role and timestamp. None or several matches: `undefined`.
- */
-function keptEntryId(branch: readonly SessionEntry[], first: AgentMessage): string | undefined {
-	const matches = branch.filter(entry => entry.type === "message" && entry.message.role === first.role && entry.message.timestamp === first.timestamp);
-	return matches.length === 1 ? matches[0]!.id : undefined;
-}
-
-/** Stock OMP's tool-name encoding inputs for the model a request is built for. */
-function wireNaming(model: ExtensionContext["model"]): { escape: boolean; oauth: boolean } {
-	return {
-		escape: (model?.compat as { escapeBuiltinToolNames?: unknown } | undefined)?.escapeBuiltinToolNames === true,
-		// The Gateway key is a base64url token, never `sk-ant-oat`, so the key-based fallback is false.
-		oauth: (model as { isOAuth?: unknown } | undefined)?.isOAuth === true,
-	};
-}

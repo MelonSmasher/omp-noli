@@ -159,6 +159,28 @@ describe("supplemental public native APIs", () => {
 		await expect(result).rejects.toMatchObject({ body: { code: "stale_session" } });
 		expect(recalled).toHaveLength(0);
 	});
+	test("local Hindsight aliases retain their owner-current check across recall", async () => {
+		const { ctx, session, state } = hindsightFixture();
+		let current: unknown;
+		const alias = { ...state, session: { getHindsightSessionState: () => current } };
+		current = alias;
+		state.aliasOf = alias;
+		expect(await nativeControl("memory.status", {}, ctx, session)).toMatchObject({ searchable: true });
+		const entered = Promise.withResolvers<void>();
+		const gate = Promise.withResolvers<RecallResponse>();
+		Object.assign(state.client, { recall: async () => { entered.resolve(); return gate.promise; } });
+		const result = nativeControl("memory.search", { query: "q" }, ctx, session);
+		await entered.promise;
+		current = { ...alias };
+		gate.resolve({ results: [] });
+		await expect(result).rejects.toMatchObject({ body: { code: "stale_session" } });
+	});
+	test("opaque Hindsight aliases fail closed without an observable owner", async () => {
+		const { ctx, session, state, recalled } = hindsightFixture();
+		state.aliasOf = { client: state.client, bankId: state.bankId, config: state.config, banksSet: state.banksSet };
+		await expect(nativeControl("memory.search", { query: "q" }, ctx, session)).rejects.toMatchObject({ body: { code: "busy" } });
+		expect(recalled).toHaveLength(0);
+	});
 	test("Hindsight replaced state, in-place scope changes and disposal invalidate in-flight recall", async () => {
 		for (const change of ["state", "bank", "tags", "disposed", "session", "cwd", "revision", "config", "types", "stateSession", "alias"]) {
 			const { ctx, session, state, replace } = hindsightFixture();

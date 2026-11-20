@@ -56,7 +56,7 @@ function view(over: Partial<AgentView>): AgentView {
 }
 
 function allAvailable(): Capabilities {
-	return Object.fromEntries(CAPABILITY_NAMES.map(name => [name, available(name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" ? "main-only-v1" : name === "host.forge_watch" ? "main-only-v1" : name === "host.model_roles" ? "session-v1" : name.startsWith("host.forge_") ? "session-v2" : "public", "test")])) as Capabilities; // Every key is filled from CAPABILITY_NAMES.
+	return Object.fromEntries(CAPABILITY_NAMES.map(name => [name, available(name === "gateway.native.provenance" ? "native-provenance-v3" : name === "host.thread_read" ? "main-only-v2" : name === "host.thread_open" ? "main-only-v1" : name === "host.forge_watch" ? "main-only-v1" : name === "host.model_roles" ? "session-v1" : name.startsWith("host.forge_") ? "session-v2" : "public", "test")])) as Capabilities; // Every key is filled from CAPABILITY_NAMES.
 }
 
 interface Harness {

@@ -94,7 +94,7 @@ test("review: bind reply and same-session adoption share one installation and ca
   }
 });
 function host(session: () => string): BridgeHost {
-  const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, available("public", "review")])) as Capabilities;
+  const capabilities = Object.fromEntries(CAPABILITY_NAMES.map(name => [name, available(name === "gateway.native.provenance" ? "native-provenance-v3" : "public", "review")])) as Capabilities;
   return { sessionId: session, capabilities: () => capabilities, refreshCapabilities: () => capabilities,
     subscribe: () => () => {}, onCapabilitiesChanged: () => () => {} } as unknown as BridgeHost;
 }
@@ -633,7 +633,7 @@ test("review: compaction brackets and branch resets wait for Noli's acknowledgem
   const f = await authenticatedGateway();
   try {
     const facts = requestFacts({ requestClass: "compaction", querySource: "compaction", compactionKind: "reactive" });
-    const begin = f.bridge.producer.compaction({ ompSessionId: "private-root", phase: "begin", facts });
+    const begin = f.bridge.producer.compaction({ ompSessionId: "private-root", phase: "begin", facts, dispatchSessionId: "private-root:side:compaction" });
     const opened = await f.client.next();
     expect(opened).toMatchObject({ method: "producer.compaction", params: { ompSessionId: "private-root", phase: "begin", facts } });
     f.client.send({ type: "response", id: opened.id, ok: true, result: {} });

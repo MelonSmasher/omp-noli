@@ -19,6 +19,7 @@ export const PROTOCOL_VERSION = 2;
 export const CAPABILITY_NAMES = [
     "gateway.bind",
 	"gateway.request.register",
+	"gateway.native.provenance",
 	"agents.list",
 	"host.thread_read",
 	"host.thread_open",
@@ -63,8 +64,8 @@ export const CAPABILITY_REASONS = [
 export type CapabilityReason = (typeof CAPABILITY_REASONS)[number];
 
 export type CapabilityState =
-	| { available: true; api: "public" | "internal" | "main-only-v1" | "main-only-v2" | "session-v1" | "session-v2"; detail: string }
-	| { available: false; api: "public" | "internal" | "main-only-v1" | "main-only-v2" | "session-v1" | "session-v2"; reason: CapabilityReason; detail: string };
+	| { available: true; api: "public" | "internal" | "main-only-v1" | "main-only-v2" | "session-v1" | "session-v2" | "native-provenance-v3"; detail: string }
+	| { available: false; api: "public" | "internal" | "main-only-v1" | "main-only-v2" | "session-v1" | "session-v2" | "native-provenance-v3"; reason: CapabilityReason; detail: string };
 
 export type Capabilities = Record<CapabilityName, CapabilityState>;
 
@@ -385,16 +386,16 @@ export interface ProducerSessionParams {
 export interface ProducerBranchParams { ompSessionId: string; leafId: string | null; resetEntryIds: string[] }
 export interface GatewayRequestParams { ompSessionId: string; facts: RequestFacts }
 export interface GatewayRequestResult { requestReference: string }
-/** `facts` is required on `begin` and null on `end`. */
-export interface ProducerCompactionParams { ompSessionId: string; phase: "begin" | "end"; facts: RequestFacts | null }
+/** `begin` requires facts and its exact side dispatch; `end` omits dispatchSessionId. */
+export interface ProducerCompactionParams { ompSessionId: string; phase: "begin" | "end"; facts: RequestFacts | null; dispatchSessionId?: string }
 export interface ProducerResult {}
 export interface GatewayRequest { type: "request"; id: string; method: "gateway.request.register"; params: GatewayRequestParams }
 export interface ProducerSessionRequest { type: "request"; id: string; method: "producer.session"; params: ProducerSessionParams }
 export interface ProducerBranchRequest { type: "request"; id: string; method: "producer.branch"; params: ProducerBranchParams }
 export interface ProducerCompactionRequest { type: "request"; id: string; method: "producer.compaction"; params: ProducerCompactionParams }
 /**
- * Private top-level member of an Anthropic Messages body bound for the Noli
- * gateway. Noli removes it by raw span before shaping. `ref` is the reference
+ * Private top-level member of an Anthropic Messages or OpenAI Responses body
+ * bound for the Noli gateway. Noli removes it before native dispatch. `ref` is
  * registered for the pending main-loop call, `warm` marks a cache-warm replay.
  */
 export interface NoliRequestTag { session: string; ref: string | null; warm: boolean }

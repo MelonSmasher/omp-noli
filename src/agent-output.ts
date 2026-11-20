@@ -479,7 +479,9 @@ export async function renderAgentOutput(ref: AgentRef, params: AgentOutputParams
 		const streamMessage = session.agent.state.streamMessage;
 		if (streamMessage && !messages.includes(streamMessage)) messages.push(streamMessage);
 		// This is an existing in-memory reader only; never instantiate a manager.
-		const branch = typeof session.sessionManager?.getBranch === "function" ? session.sessionManager.getBranch() : [];
+		const manager = session.sessionManager;
+		const branch: unknown = manager && "getBranch" in manager && typeof manager.getBranch === "function" ? manager.getBranch() : [];
+		if (!Array.isArray(branch)) unavailable("The live child sessionManager.getBranch API returned invalid entries");
 		rendered = render(ref.id, messages, messageIdentities(branch));
 	} else {
 		const loadMessages = api.loadSessionMessagesReadOnly;

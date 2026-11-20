@@ -9,6 +9,7 @@ import { bindForgeRoot, installForgeRelay, releaseForgeRoot } from "./forge-rela
 import { consumePrivateFile } from "./windows-native";
 import { registerGateway, rejoinGateway } from "./gateway";
 import { bindProducerChannel, installClaudeHooks, releaseProducerChannel } from "./claude-hooks";
+import type { CapabilityState } from "./protocol";
 
 /** Set by the launcher; a directory and bootstrap input enable Bridge and Gateway setup. */
 export const ENV_DIR = "NOLI_BRIDGE_DIR";
@@ -54,11 +55,20 @@ export default function noli(pi: ExtensionAPI): void {
 	installImagePublisher(pi, sessionId => bridge?.hasAuthenticatedSession(sessionId) ?? false);
     const gateway = registerGateway(pi, dir);
 
-	const omp = createOmpHost(pi, gateway !== undefined);
+	let nativeProvenance: ((ctx: ExtensionContext) => CapabilityState) | undefined;
+	const preparation = gateway ? Promise.withResolvers<void>() : undefined;
+	const omp = createOmpHost(pi, gateway !== undefined, ctx => nativeProvenance?.(ctx));
+	let adoptionRevision = 0;
+	let pendingSession: string | undefined;
 
-	const adopt = (ctx: ExtensionContext): void => {
+	const adopt = async (ctx: ExtensionContext): Promise<void> => {
 		if (ctx.agent.kind !== "main") return;
+		const revision = ++adoptionRevision;
 		const sessionId = ctx.sessionManager.getSessionId();
+		pendingSession = sessionId;
+		if (preparation) await preparation.promise;
+		if (revision !== adoptionRevision) return;
+		pendingSession = undefined;
 		// Tree navigation changes the leaf, not admission identity. Keep its correlated response authenticated.
 		if (boundSession === sessionId) { omp.refreshContext(ctx); return; }
 		boundSession = sessionId;
@@ -80,7 +90,10 @@ export default function noli(pi: ExtensionAPI): void {
 	pi.on("session_branch", (_event, ctx) => adopt(ctx));
 	pi.on("session_tree", (_event, ctx) => adopt(ctx));
 	pi.on("session_shutdown", (_event, ctx) => {
-		if (ctx.agent.kind !== "main" || ctx.sessionManager.getSessionId() !== boundSession) return;
+		if (ctx.agent.kind !== "main") return;
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (sessionId === pendingSession) { adoptionRevision++; pendingSession = undefined; }
+		if (sessionId !== boundSession) return;
 		releaseProducerChannel(dir);
 		bridge?.close();
 		bridge = undefined;
@@ -90,5 +103,8 @@ export default function noli(pi: ExtensionAPI): void {
 	});
 	// After adoption above, so the root announces itself on a started bridge.
 	// The root's thread control already observes `tool_result`, so timing it here changes no stock behavior.
-	if (gateway) installClaudeHooks(pi, dir, { toolResults: true });
+	if (gateway) installClaudeHooks(pi, dir, { toolResults: true, onPrepared(capability) {
+		nativeProvenance = capability;
+		preparation?.resolve();
+	} });
 }
