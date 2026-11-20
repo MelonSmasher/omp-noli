@@ -4,7 +4,7 @@ An OMP extension that gives Noli a private local control channel. It runs next t
 
 ## Runtime and loading
 
-This tree requires published, unmodified **OMP 18.19.0 or newer** (peer dependency `>=18.19.0`), plus **Bun 1.4.2 or newer in the OMP runtime**. Development and qualification use OMP 18.19.0. Managed Gateway launches negotiate the native provenance capability below against the selected SDK; compatible newer releases are not blocked by a certified-version allowlist. Missing required native APIs fail visibly with update guidance. Historical releases below used older OMP versions. Install development dependencies with `bun install`. Load the package root with `omp -e /path/to/omp-noli --mode rpc-ui`, or through the package's `omp.extensions` declaration.
+This tree requires published, unmodified **OMP 18.19.0 or newer** (peer dependency `>=18.19.0`), plus **Bun 1.4.4 or newer in the OMP runtime**. Development and qualification use OMP 18.19.0. Managed Gateway launches negotiate the native provenance capability below against the selected SDK; compatible newer releases are not blocked by a certified-version allowlist. Missing required native APIs fail visibly with update guidance. Historical releases below used older OMP versions. Install development dependencies with `bun install`. Load the package root with `omp -e /path/to/omp-noli --mode rpc-ui`, or through the package's `omp.extensions` declaration.
 
 Plugin v0.9.4 adds frozen reads: `agents.output` with the `revision` of an earlier page serves that retained transcript, so a client can page through one consistent transcript while the child keeps streaming.
 
@@ -61,7 +61,7 @@ Stock OMP's manual `/handoff` and `/btw` use real `:side:` dispatch sessions eve
 - Keeps OMP in control of tools, history and manual/automatic compaction. Removes the former Claude Code compaction emulation; authenticated OMP summaries retain exact producer ownership, cancellation and cleanup semantics.
 - Summary conversion uses OMP's application-aware converter, preserving attached-file content and user shell/Python results in both ordinary history and split-turn prefixes while honoring context exclusions.
 - Uses stock serializers for the managed Anthropic adapter and both Responses APIs. Preserves discovered model compatibility, explicit metadata, cache-retention precedence and request hooks without double-acquiring dispatch concurrency.
-- Updates native session-handle, lifecycle and observer integration for OMP 18.19.0. The minimum OMP version is now 18.19.0; native Gateway use requires a matching Noli server that negotiates `native-provenance-v3`.
+- Updates native session-handle, lifecycle and observer integration for OMP 18.19.0. The minimum versions are now OMP 18.19.0 and Bun 1.4.4, matching OMP's runtime requirement; native Gateway use requires a matching Noli server that negotiates `native-provenance-v3`.
 - Updates the bridge schema and behavior regressions. Publishing this plugin does not install it, migrate accounts or restart Noli; runtime updates remain explicit.
 
 ## v0.10.3 pipeline-success watch admission
