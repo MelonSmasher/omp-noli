@@ -384,14 +384,20 @@ test("Codex continuation preserves the encrypted item's original ID after SDK re
 		for (const sessionId of ["main", "resumed-helper"]) {
 			const source: Context = sessionId === "main" ? context : JSON.parse(original);
 			let dispatches = 0;
+			let responseStatus: number | undefined;
+			const events: Array<string | null> = [];
 			const result = await streamSimple(selected, source, {
 				apiKey: registry.resolver(selected, sessionId), sessionId, maxInFlightRequests: { "noli-codex": 1 },
 				beforeDispatch: async () => { dispatches++; },
 				onPayload: payload => { expect((payload as { input: typeof reasoning[] }).input.find(item => item.type === "reasoning")).toEqual(reasoning); },
+				onResponse: (response, callbackModel) => { if (callbackModel === selected) responseStatus = response.status; },
+				onSseEvent: (event, callbackModel) => { if (callbackModel === selected) events.push(event.event); },
 			}).result();
 			expect(result.stopReason).toBe("stop");
 			expect(result.content).toContainEqual(expect.objectContaining({ type: "text", text: "CONTINUED" }));
 			expect(dispatches).toBe(1);
+			expect(responseStatus).toBe(200);
+			expect(events).toContain("response.completed");
 			expect(received.at(-1)!.headers.get("x-noli-producer-session-id")).toBe(sessionId);
 			expect(JSON.stringify(source)).toBe(original);
 		}
@@ -403,6 +409,15 @@ test("Codex continuation preserves the encrypted item's original ID after SDK re
 		const rejected = await streamSimple(selected, broken, { apiKey: "synthetic-only" }).result();
 		expect(rejected.stopReason).toBe("error");
 		expect(rejected.errorMessage).toContain("original response item ID");
+		expect(received.length).toBe(before);
+		const ambiguous = JSON.parse(original) as Context;
+		const ambiguousHistory = ambiguous.messages[0] as AssistantMessage;
+		delete ambiguousHistory.providerPayload;
+		ambiguousHistory.content.unshift({ type: "thinking", thinking: "Conflicting retained signature",
+			thinkingSignature: JSON.stringify({ ...reasoning, id: "rs_conflicting" }) });
+		const conflict = await streamSimple(selected, ambiguous, { apiKey: "synthetic-only" }).result();
+		expect(conflict.stopReason).toBe("error");
+		expect(conflict.errorMessage).toContain("original response item ID");
 		expect(received.length).toBe(before);
 	} finally {
 		registry.clearSourceRegistrations("codex-replay");

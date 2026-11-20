@@ -41,23 +41,26 @@ export const streamGatewayCodex: NonNullable<ProviderConfig["streamSimple"]> = (
 	let ids: Map<string, string | null> | undefined;
 	return streamSimple(wireModel, context, {
 		...options,
-		onPayload: async payload => {
+		onPayload: async (payload, _wireModel, signal) => {
 			let restored = payload;
 			if (payload && typeof payload === "object" && "input" in payload && Array.isArray(payload.input)) {
 				let input: unknown[] | undefined;
 				for (let index = 0; index < payload.input.length; index++) {
 					const item = payload.input[index];
-					if (item?.type !== "reasoning" || typeof item.encrypted_content !== "string" || item.id != null) continue;
+					if (item?.type !== "reasoning" || typeof item.encrypted_content !== "string") continue;
 					ids ??= originalReasoningIds(context, model.provider);
 					const id = ids.get(item.encrypted_content);
-					if (!id) throw new Error("Codex encrypted reasoning requires its original response item ID; no unambiguous source ID is available.");
+					if (!id || (item.id != null && item.id !== id)) throw new Error("Codex encrypted reasoning requires its original response item ID; no unambiguous source ID is available.");
+					if (item.id === id) continue;
 					input ??= payload.input.slice();
 					input[index] = { ...item, id };
 				}
 				if (input) restored = { ...payload, input };
 			}
-			return (await options?.onPayload?.(restored, model)) ?? restored;
+			return (await options?.onPayload?.(restored, model, signal)) ?? restored;
 		},
+		onResponse: options?.onResponse ? (response, _wireModel, signal) => options.onResponse!(response, model, signal) : undefined,
+		onSseEvent: options?.onSseEvent ? event => options.onSseEvent!(event, model) : undefined,
 		// The outer custom-API dispatcher owns concurrency and dispatch once.
 		maxInFlightRequests: {}, beforeDispatch: undefined, loopGuard: { enabled: false },
 	});
