@@ -14,7 +14,7 @@ import type { SessionStats } from "@oh-my-pi/pi-coding-agent";
 
 type Json = Record<string, unknown>;
 interface NativeBlock { type: string; id?: string; text?: string; name?: string; arguments?: unknown }
-interface NativeMessage { role: string; id?: string; responseId?: string; content: string | NativeBlock[]; timestamp: number; toolName?: string; toolCallId?: string; isError?: boolean; details?: { usage?: { output: number } } }
+interface NativeMessage { role: string; id?: string; responseId?: string; content: string | NativeBlock[]; timestamp: number; toolName?: string; toolCallId?: string; isError?: boolean; errorMessage?: string; stopReason?: string; details?: { usage?: { output: number } } }
 interface NativeEntry { type: string; id?: string; timestamp?: string; message?: NativeMessage }
 interface NativeSession {
 	messages: NativeMessage[]; streamMessage: NativeMessage | null; entries: NativeEntry[];
@@ -28,7 +28,7 @@ interface NativeAgent {
 }
 interface NativeSnapshot { rootId: string; agents: NativeAgent[] }
 interface ProviderRequest { stream: boolean; model: string; reasoning_effort?: string; tools: { function: { name: string } }[] }
-interface WireFrame { id?: string; type?: string; ok?: boolean; success?: boolean; result?: unknown; data?: unknown; error?: string | { code?: string; message?: string }; command?: string; isTerminal?: boolean }
+interface WireFrame { id?: string; type?: string; ok?: boolean; success?: boolean; result?: unknown; data?: unknown; error?: string | { code?: string; message?: string }; command?: string; isTerminal?: boolean; message?: NativeMessage; toolName?: string; isError?: boolean }
 interface Hello { protocol: number; sessionId: string; capabilities: Record<string, { available: boolean }> }
 interface AgentList { agents: AgentView[] }
 const ajv = new Ajv({ strict: false, allowUnionTypes: true });
@@ -75,10 +75,22 @@ let bridge: JsonClient | undefined;
 let observer: JsonClient | undefined;
 let failedProvider: Error | undefined;
 let stderrDiagnostic = "";
+let lastSnapshot: NativeSnapshot | undefined;
 let stop = false;
 const finishChildStream = Promise.withResolvers<void>();
 const clients = new Set<Socket>();
 const deadline = Date.now() + timeoutMs;
+
+function safeDiagnostic(text: string): string {
+	return text.replaceAll(bridgeToken, "[redacted]").replace(/(Bearer\s+)[^\s"']+/gi, "$1[redacted]").replace(/((?:api[_-]?key|token|authorization)\s*[=:]\s*)[^\s,}]+/gi, "$1[redacted]");
+}
+function failedNativeWork(): string | undefined {
+	const messages = [...(rpc?.events.flatMap(event => event.type === "message_end" && event.message ? [event.message] : []) ?? []), ...(lastSnapshot?.agents.flatMap(ref => ref.native?.messages ?? []) ?? [])];
+	const failed = messages.find(message => (message.role === "toolResult" && message.isError === true) || (message.role === "assistant" && message.stopReason === "error"));
+	if (failed) return safeDiagnostic(JSON.stringify({ tool: failed.toolName, error: failed.errorMessage, content: failed.content }).slice(-16_384));
+	const failedTool = rpc?.events.find(event => event.type === "tool_execution_end" && event.isError === true);
+	return failedTool ? safeDiagnostic(JSON.stringify({ tool: failedTool.toolName, result: failedTool.result }).slice(-16_384)) : undefined;
+}
 
 async function bounded<T>(promise: Promise<T>, label: string, ms = 15_000): Promise<T> {
 	const expired = Promise.withResolvers<never>();
@@ -89,6 +101,8 @@ async function bounded<T>(promise: Promise<T>, label: string, ms = 15_000): Prom
 async function until<T>(label: string, sample: () => Promise<T | undefined>): Promise<T> {
 	while (!stop && Date.now() < deadline) {
 		if (failedProvider) throw failedProvider;
+		const nativeFailure = failedNativeWork();
+		if (nativeFailure) throw new Error(`Native execution failed while waiting for ${label}: ${nativeFailure}`);
 		const value = await sample();
 		if (value !== undefined) return value;
 		await Bun.sleep(100);
@@ -254,7 +268,7 @@ try {
 				const isChild = body.model === childModel;
 				const tool = isChild ? ordinal === 0 ? "child_smoke_gate" : "yield" : ordinal === 0 ? "task" : null;
 				if (tool) assert(body.tools.some(entry => entry.function.name === tool), `native tool ${tool} is not registered`);
-				const callArgs = tool === "task" ? { context: "Installed binary smoke; perform the genuine task and required yield.", tasks: [{ name: "SmokeChild", agent: "smoke-child", model: `${expectedChildModel}:high`, task: `CHILD PROMPT ${marker}\nCall child_smoke_gate with marker ${marker}; final assistant and terminal yield required.`, solutionSpace: "One deterministic tool observation and required yield", outputSchema: { type: "object", properties: { marker: { type: "string", const: marker }, observed: { type: "boolean", const: true } }, required: ["marker", "observed"], additionalProperties: false }, schemaMode: "strict" }] } : tool === "child_smoke_gate" ? { marker } : { type: "result", data: { marker, observed: true } };
+				const callArgs = tool === "task" ? { context: "Installed binary smoke; perform the genuine task and required yield.", tasks: [{ name: "SmokeChild", agent: "smoke-child", task: `CHILD PROMPT ${marker}\nCall child_smoke_gate with marker ${marker}; final assistant and terminal yield required.`, solutionSpace: "One deterministic tool observation and required yield", outputSchema: { type: "object", properties: { marker: { type: "string", const: marker }, observed: { type: "boolean", const: true } }, required: ["marker", "observed"], additionalProperties: false }, schemaMode: "strict" }] } : tool === "child_smoke_gate" ? { marker } : { type: "result", data: { marker, observed: true } };
 				const text = isChild ? ordinal === 0 ? `${liveText}\n` : `${finalText}\nsecond final line\n` : ordinal === 0 ? "ROOT SPAWNING CHILD\n" : "ROOT FINAL DONE\n";
 				return new Response(new ReadableStream<Uint8Array>({
 					async start(controller) {
@@ -327,7 +341,7 @@ try {
 		const request = { method, sessionId: hello.sessionId, params };
 		return method === "agents.list" ? bridge!.call(request, validateList) : bridge!.call(request, validateOutput);
 	}
-	const nativeSnapshot = (): Promise<NativeSnapshot> => observer!.call({ op: "snapshot" }, validateSnapshot);
+	const nativeSnapshot = async (): Promise<NativeSnapshot> => lastSnapshot = await observer!.call({ op: "snapshot" }, validateSnapshot);
 	await rpc.call({ type: "prompt", message: "ROOT CHILD SMOKE: spawn the requested native smoke-child with known high effort, await its required terminal yield, and finish." });
 	const child = await until("genuine task child registration", async () => (await nativeSnapshot()).agents.find(agent => agent.kind === "sub"));
 	assert(child.parentId, "child parent identity missing");
@@ -438,8 +452,10 @@ try {
 	console.log("CHILD SMOKE PASSED");
 } catch (error) {
 	console.error(`CHILD SMOKE FAILED: ${error instanceof Error ? error.message : String(error)}`);
+	const nativeDiagnostic = JSON.stringify({ requests, labelRequests, events: rpc?.events.slice(-20), agents: lastSnapshot?.agents.map(ref => ({ id: ref.id, kind: ref.kind, status: ref.status, live: ref.live, held: ref.held, streaming: ref.native?.streaming, messages: ref.native?.messages.slice(-6) })) });
+	console.error(`Native smoke diagnostic (isolated credential-free environment):\n${safeDiagnostic(nativeDiagnostic).slice(-32_768)}`);
 	if (stderrDiagnostic) {
-		const safe = stderrDiagnostic.replaceAll(bridgeToken, "[redacted]").replace(/(Bearer\s+)[^\s"']+/gi, "$1[redacted]").replace(/((?:api[_-]?key|token|authorization)\s*[=:]\s*)[^\s,}]+/gi, "$1[redacted]");
+		const safe = safeDiagnostic(stderrDiagnostic);
 		console.error(`Installed OMP diagnostic (isolated credential-free environment):\n${safe}`);
 	}
 	process.exitCode = 1;
