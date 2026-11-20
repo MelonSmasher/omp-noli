@@ -61,6 +61,8 @@ The scoped Codex adapter preserves original reasoning IDs alongside their encryp
 
 Request hooks observe the restored body under the registered model identity. Discovery compatibility and actual helper session headers are preserved; the outer dispatcher owns concurrency and callbacks once. Regression coverage uses the real SDK serializer and HTTP boundary for main and serialized/resumed helper contexts, checks ciphertext/ID binding, unchanged source history and single-slot dispatch, and rejects unrecoverable history without sending it. A matching Noli server must recognize the scoped API when projecting native metadata. Publishing or installing either component is separate from source verification.
 
+**Local accounting limitation:** OMP 19.0.1 compares the registered API identity when estimating native Responses reasoning. The scoped `noli-codex-responses` adapter therefore gives different local context/reasoning estimates for retained `openai-responses` turns, which can change automatic compaction timing. Provider-reported usage and saved history are unchanged. This release accepts that limitation to preserve replay bindings without modifying the official OMP runtime; it does not claim stock local-accounting equivalence.
+
 ## v0.12.0 OMP 19 run lifecycle
 
 - Requires official, unmodified OMP 19.0.1 or newer; Bun's minimum remains 1.4.4. Development dependencies and executable native/forge/install fixtures now target the OMP 19 API, including `cacheWarming: "off"` instead of the removed boolean option.
