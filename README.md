@@ -59,6 +59,7 @@ Stock OMP's manual `/handoff` and `/btw` use real `:side:` dispatch sessions eve
 
 - Adds `gateway.native.provenance` (`native-provenance-v3`) for Noli's Claude Code and Codex integration. Requests preserve the actual main, child, helper and side-turn dispatch identity without emulating provider identity or patching the official clients.
 - Keeps OMP in control of tools, history and manual/automatic compaction. Removes the former Claude Code compaction emulation; authenticated OMP summaries retain exact producer ownership, cancellation and cleanup semantics.
+- Summary conversion uses OMP's application-aware converter, preserving attached-file content and user shell/Python results in both ordinary history and split-turn prefixes while honoring context exclusions.
 - Uses stock serializers for the managed Anthropic adapter and both Responses APIs. Preserves discovered model compatibility, explicit metadata, cache-retention precedence and request hooks without double-acquiring dispatch concurrency.
 - Updates native session-handle, lifecycle and observer integration for OMP 18.19.0. The minimum OMP version is now 18.19.0; native Gateway use requires a matching Noli server that negotiates `native-provenance-v3`.
 - Updates the bridge schema and behavior regressions. Publishing this plugin does not install it, migrate accounts or restart Noli; runtime updates remain explicit.

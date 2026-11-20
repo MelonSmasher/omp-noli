@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { completeSimple } from "@oh-my-pi/pi-ai";
 import { compact } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ProducerChannel } from "./bridge";
@@ -362,6 +363,7 @@ export function installClaudeHooks(pi: ExtensionAPI, dir: string, options: Claud
 			// within OMP's 64-character cache-ID limit, preserving exact lineage.
 			const result = await compact({ ...event.preparation, settings: { ...event.preparation.settings, remoteEnabled: false } }, model, key, event.customInstructions, event.signal, {
 				sessionId: producerSession,
+				convertToLlm,
 				completeImpl: (target, context, options) => completeSimple(target, context, {
 					...options,
 					headers: { ...options?.headers, "x-noli-producer-session-id": producerSession },

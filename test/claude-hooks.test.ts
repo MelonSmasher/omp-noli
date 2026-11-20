@@ -345,6 +345,33 @@ test.each(["claude", "responses"])("%s stock OMP compaction brackets manual and 
 	}
 });
 
+test.each(["history", "split-turn"])("Gateway %s compaction preserves application messages and context exclusions", async region => {
+	const session = SessionManager.inMemory(dir), channel = recorder();
+	bindProducerChannel(dir, channel.producer, () => session.getSessionId());
+	const boundedHooks: ExtensionFactory = pi => installClaudeHooks(pi, dir, { toolResults: true, handlerBudget: Promise.resolve({ lift: () => true, restore() {} }) });
+	const runner = await runnerFor([boundedHooks], session, undefined, responsesModel);
+	await runner.emit({ type: "session_start" });
+	for (let index = 0; index < 4; index++) session.appendMessage(prompt(`history ${index} ${"detail ".repeat(200)}`, index + 1) as Parameters<SessionManager["appendMessage"]>[0]);
+	const preparation = prepareCompaction(session.getBranch(), { enabled: true, reserveTokens: 128, keepRecentTokens: 1 }, responsesModel)!;
+	const messages: AgentMessage[] = [
+		prompt("Preserve the application context", 1),
+		{ role: "fileMention", files: [{ path: "notes.txt", content: "attached-file-evidence" }], timestamp: 2 },
+		{ role: "bashExecution", command: "printf shell", output: "shell-result-evidence", exitCode: 0, cancelled: false, truncated: false, timestamp: 3 },
+		{ role: "pythonExecution", code: "print('python')", output: "python-result-evidence", exitCode: 0, cancelled: false, truncated: false, timestamp: 4 },
+		{ role: "bashExecution", command: "private command", output: "excluded-shell-evidence", exitCode: 0, cancelled: false, truncated: false, excludeFromContext: true, timestamp: 5 },
+		{ role: "pythonExecution", code: "private_code()", output: "excluded-python-evidence", exitCode: 0, cancelled: false, truncated: false, excludeFromContext: true, timestamp: 6 },
+	];
+	preparation.messagesToSummarize = region === "history" ? messages : [];
+	preparation.turnPrefixMessages = region === "split-turn" ? messages : [];
+	preparation.isSplitTurn = region === "split-turn";
+	received.length = 0;
+	await runner.emit({ type: "session_before_compact", preparation, branchEntries: session.getBranch(), signal: new AbortController().signal } as unknown as RunnerEvent);
+	expect(received).toHaveLength(1);
+	const summaryInput = JSON.stringify(JSON.parse(received[0]!.body).input);
+	for (const content of ["attached-file-evidence", "shell-result-evidence", "python-result-evidence"]) expect(summaryInput).toContain(content);
+	for (const content of ["excluded-shell-evidence", "excluded-python-evidence", "private command", "private_code"]) expect(summaryInput).not.toContain(content);
+});
+
 test("adversarial marker read failure is visible and never registers invented main facts", async () => {
 	const session = SessionManager.inMemory(dir), channel = recorder(), warnings: string[] = [];
 	bindProducerChannel(dir, channel.producer, () => session.getSessionId());
