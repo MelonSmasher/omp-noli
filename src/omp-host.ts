@@ -8,6 +8,7 @@ import { readdirSync, statSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AgentRef, AgentSession, ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { isLocalAgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
 import { type BridgeHost, BridgeError } from "./bridge";
 import { type Probe, available, probeJobCanceller, probeLifecycle, probeRosterReader, probeWork, unavailable } from "./capabilities";
 import { clearSnapshots, releaseSnapshots, renderAgentOutput } from "./agent-output";
@@ -158,10 +159,10 @@ export interface OmpHost {
 }
 
 /** Adapt the owning OMP SDK session into bridge operations and probed capability policy. */
-export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpHost {
+export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false, nativeProvenance?: (ctx: ExtensionContext) => CapabilityState | undefined): OmpHost {
 	const exportsRecord: Record<string, unknown> = pi.pi;
 	const hasExport = (name: string): boolean => exportsRecord[name] !== undefined && exportsRecord[name] !== null;
-	const { AgentRegistry, discoverAgents, finalizeSubagentLifecycle, runSubagentFollowUpTurn, USER_INTERRUPT_LABEL } = pi.pi;
+	const { AgentRegistry, discoverAgents, runSubagentFollowUpTurn, USER_INTERRUPT_LABEL } = pi.pi;
 	const registryOk = hasExport("AgentRegistry") && typeof AgentRegistry.global === "function";
 
 	let current: ExtensionContext | undefined;
@@ -289,6 +290,8 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 			"gateway.request.register": gatewayConfigured
 				? available("public", "Protocol-2 out-of-band producer facts from public extension events; request references travel in the body tag")
 				: unavailable("public", "not_ready", "No Noli gateway catalog configured"),
+			"gateway.native.provenance": gatewayConfigured && current && nativeProvenance?.(current)
+				|| unavailable("native-provenance-v3", "not_ready", "Update OMP and omp-noli explicitly: native producer/session and dispatch-bound OMP compaction capabilities are not prepared"),
 			...nativeCapabilities(current, mainSession() as AgentSession | undefined),
 			// Bootstrap support: Noli must negotiate v2 before registering its SDK host tool.
 			// installThreadControl separately requires authenticated SDK provenance at call time.
@@ -308,9 +311,9 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 				return base;
 			})(),
 			"agents.steer": queuedControlCap("AgentSession.steer + queuedMessageCount"),
-			"agents.followUp": queuedControlCap("AgentSession.followUp + queuedMessageCount"),
+			"agents.followUp": queuedControlCap("Local AgentSession.followUp or cross-thread AgentSessionHandle.prompt with followUp streaming behavior"),
 			"agents.turn": publicCap(["runSubagentFollowUpTurn", "discoverAgents"], "pi.pi.runSubagentFollowUpTurn"),
-			"agents.kill.live": publicCap(["finalizeSubagentLifecycle", "USER_INTERRUPT_LABEL"], "AgentSession.abort + pi.pi.finalizeSubagentLifecycle"),
+			"agents.kill.live": internalCap("agents.kill.live", probeLifecycle),
 			"agents.kill.parked": internalCap("agents.kill.parked", probeLifecycle),
 			"definitions.list": publicCap(["discoverAgents"], "pi.pi.discoverAgents"),
 			"work.get": (() => {
@@ -487,15 +490,15 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 			sessions.delete(ref);
 			if (ref.kind !== "sub" || !ownedChild(ref) || !ref.session || typeof ref.session.subscribe !== "function") return;
 			const session = ref.session;
-			const unsubscribe = session.subscribe(event => {
+			const unsubscribeEvents = session.subscribe(event => {
 				if (closed || scopedRef(ref.id) !== ref || ref.session !== session || !ownedChild(ref)) return;
 				// Snapshot completion boundaries before native parking drops the session.
 				if (event.type === "message_end" || event.type === "agent_end" || event.type === "tool_execution_end") agentTelemetry.sample(ref);
-				if (event.type !== "agent_end") return;
-				void session.waitForIdle().then(() => publish(ref), error => {
-					pi.logger.warn("Noli child idle observation failed", { id: ref.id, error: String(error) });
-				});
 			});
+			const unsubscribeRunState = session.subscribeRunState(state => {
+				if (state === "idle" && !closed && scopedRef(ref.id) === ref && ref.session === session && ownedChild(ref)) publish(ref);
+			});
+			const unsubscribe = () => { unsubscribeEvents(); unsubscribeRunState(); };
 			sessions.set(ref, { session, unsubscribe });
 		};
 		const tick = (): void => {
@@ -697,7 +700,9 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 			if (ref) publishAgent(ref);
 		},
 		followUp: async (id, text) => {
-			await liveSession(id).followUp(text);
+			const session = liveSession(id);
+			if (isLocalAgentSession(session)) await session.followUp(text);
+			else await session.prompt(text, { streamingBehavior: "followUp" });
 			const ref = scopedRef(id);
 			if (ref) publishAgent(ref);
 		},
@@ -721,19 +726,23 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false): OmpH
 			const ref = scopedRef(id);
 			const session = ref?.session;
 			if (!ref || !session) return false;
+			const probe = probeLifecycle(mainSession());
+			if (!probe.ok) {
+				refresh();
+				throw new BridgeError("capability_unavailable", `agents.kill.live is unavailable: ${probe.detail}`, {
+					capability: "agents.kill.live", reason: probe.reason,
+				});
+			}
+			// Match native RPC: publish the tombstone before abort can settle a turn.
+			const release = probe.value.release(id, ref, { tombstone: true });
 			activeTurns.get(ref)?.abort(USER_INTERRUPT_LABEL);
-			await session.abort({ reason: USER_INTERRUPT_LABEL });
-			await finalizeSubagentLifecycle({
-				id,
-				session,
-				aborted: true,
-				abortKind: "terminate",
-				keepAlive: false,
-				isolated: false,
-				agentIdleTtlMs: 0,
-				reviveSession: null,
-			});
-			return true;
+			const [released, aborted] = await Promise.allSettled([
+				release,
+				session.abort({ reason: USER_INTERRUPT_LABEL }),
+			]);
+			if (released.status === "rejected") throw released.reason;
+			if (aborted.status === "rejected") throw aborted.reason;
+			return released.value;
 		},
 		killParked: async id => {
 			const probe = probeLifecycle(mainSession());

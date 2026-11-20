@@ -835,13 +835,14 @@ describe("agent telemetry observer lifetime", () => {
 		omp.adopt(ctx);
 		let input = 11;
 		const listeners = new Set<(event: { type: string }) => void>();
+		const runStates = new Set<(state: "running" | "idle") => void>();
 		const session = {
 			isStreaming: true, queuedMessageCount: 0,
 			servingModel: { modelIdentity: "child/model", thinkingLevel: "high" },
 			getSessionStats: () => ({ assistantMessages: 1, tokens: { input, output: 7 }, cost: 0, contextUsage: { tokens: 50, contextWindow: 100 } }),
 			tokenRate: { rate: () => 3 },
 			subscribe: (listener: (event: { type: string }) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
-			waitForIdle: async () => {},
+			subscribeRunState: (listener: (state: "running" | "idle") => void) => { runStates.add(listener); return () => runStates.delete(listener); },
 		};
 		writeChild("C", complete);
 		const ref: FakeRef = { id: "C", displayName: "C", kind: "sub", parentId: "Main", status: "running", session, sessionFile: join(artifactDir, "C.jsonl"), createdAt: 1, lastActivity: 1 };
@@ -854,12 +855,17 @@ describe("agent telemetry observer lifetime", () => {
 		expect(changed.map(agent => agent.inputTokens)).toContain(25);
 		input = 31;
 		for (const listener of listeners) listener({ type: "message_end" });
+		input = 32;
+		session.isStreaming = false;
+		for (const listener of runStates) listener("idle");
+		expect(changed.map(agent => agent.inputTokens)).toContain(32);
 		ref.session = null;
 		ref.status = "parked";
 		registry.emit("status_changed", ref);
 		const parked = (await listLive()).agents.find(agent => agent.id === "C")!;
-		expect(parked).toMatchObject({ model: "child/model", effort: "high", inputTokens: 31, outputTokens: 7, sessionCost: 0, contextWindow: 100, tokensPerSecond: null });
+		expect(parked).toMatchObject({ model: "child/model", effort: "high", inputTokens: 32, outputTokens: 7, sessionCost: 0, contextWindow: 100, tokensPerSecond: null });
 		expect(listeners.size).toBe(0);
+		expect(runStates.size).toBe(0);
 		omp.release();
 		expect(registry.listeners.size).toBe(0);
 		expect(events.size).toBe(0);
@@ -875,5 +881,41 @@ describe("agent telemetry observer lifetime", () => {
 		const main = (await listLive()).agents.find(agent => agent.id === "Main")!;
 		expect(main.sessionCost).toBeNull();
 		expect(omp.host.work().settled).toBe(true);
+	});
+});
+
+describe("native session handle lifecycle", () => {
+	test("live kill starts terminal release before abort and waits for both", async () => {
+		const calls: string[] = [];
+		const released = Promise.withResolvers<boolean>();
+		const aborted = Promise.withResolvers<void>();
+		const session = { abort: async () => { calls.push("abort"); await aborted.promise; } };
+		writeChild("C", complete);
+		const ref: FakeRef = { id: "C", displayName: "C", kind: "sub", parentId: "Main", status: "running", session, sessionFile: join(artifactDir, "C.jsonl"), createdAt: 1, lastActivity: 1 };
+		registry.refs.set("C", ref);
+		const tools = vi.spyOn(mainSession, "getToolByName").mockImplementation(name => name === "task" ? { session: { agentLifecycle: () => ({ release: async (id: string, expected: unknown, options: unknown) => {
+			expect([id, expected, options]).toEqual(["C", ref, { tombstone: true }]);
+			calls.push("release");
+			return released.promise;
+		} }) } } : undefined);
+		try {
+			expect(omp.host.refreshCapabilities()["agents.kill.live"]).toMatchObject({ available: true, api: "internal" });
+			let settled = false;
+			const killing = omp.host.killLive("C").then(result => { settled = true; return result; });
+			expect(calls).toEqual(["release", "abort"]);
+			released.resolve(true);
+			await Promise.resolve();
+			expect(settled).toBe(false);
+			aborted.resolve();
+			expect(await killing).toBe(true);
+		} finally { tools.mockRestore(); }
+	});
+	test("opaque cross-thread handles use the official prompt follow-up API", async () => {
+		const calls: unknown[] = [];
+		const session = { instanceKey: "remote-thread:synthetic", prompt: async (...args: unknown[]) => { calls.push(args); return true; } };
+		writeChild("C", complete);
+		registry.refs.set("C", { id: "C", displayName: "C", kind: "sub", parentId: "Main", status: "running", session, sessionFile: join(artifactDir, "C.jsonl"), createdAt: 1, lastActivity: 1 });
+		await omp.host.followUp("C", "synthetic follow-up");
+		expect(calls).toEqual([["synthetic follow-up", { streamingBehavior: "followUp" }]]);
 	});
 });

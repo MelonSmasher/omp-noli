@@ -15,7 +15,7 @@ interface MemoryIdentity {
 	sessionId: string | undefined;
 	cwd: string | undefined;
 	state: HindsightSessionState | undefined;
-	aliasOf: HindsightSessionState | undefined;
+	aliasOf: HindsightSessionState["aliasOf"];
 	stateSessionId: string | undefined;
 	scoping: HindsightSessionState["config"]["scoping"] | undefined;
 }
@@ -27,10 +27,18 @@ function memoryIdentity(session: AgentSession): MemoryIdentity {
 	const state = hindsightState(session);
 	return { revision: session.settings?.revision, sessionId: session.sessionManager?.getSessionId(), cwd: session.sessionManager?.getCwd(), state, aliasOf: state?.aliasOf, stateSessionId: state?.sessionId, scoping: state?.config.scoping };
 }
+function currentAlias(alias: HindsightSessionState["aliasOf"]): boolean {
+	if (!alias) return true;
+	// An opaque cross-thread alias cannot prove its owning session is still current.
+	if (!("session" in alias) || !alias.session || typeof alias.session !== "object") return false;
+	const owner = alias.session;
+	return "getHindsightSessionState" in owner && typeof owner.getHindsightSessionState === "function"
+		&& owner.getHindsightSessionState() === alias;
+}
 function sameMemoryIdentity(session: AgentSession, before: MemoryIdentity): boolean {
 	const after = memoryIdentity(session);
 	return !session.isDisposed && !session.isSessionTransitioning && after.revision === before.revision && after.sessionId === before.sessionId && after.cwd === before.cwd && after.state === before.state && after.aliasOf === before.aliasOf && after.stateSessionId === before.stateSessionId && after.scoping === before.scoping
-		&& (!before.aliasOf || before.aliasOf.session.getHindsightSessionState() === before.aliasOf);
+		&& currentAlias(before.aliasOf);
 }
 async function memoryStatus(ctx: ExtensionContext, session: AgentSession): Promise<MemoryBackendStatus> {
 	if (typeof ctx.memory?.status !== "function") throw new BridgeError("capability_unavailable", "No native memory status API");

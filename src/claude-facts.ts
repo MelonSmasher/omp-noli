@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { convertMessageToLlm } from "@oh-my-pi/pi-agent-core/compaction/messages";
 import type { ContextEvent, SessionEntry } from "@oh-my-pi/pi-coding-agent";
-import { type NativeSummaries, nativeSummaries, nativeSummaryKey } from "./native-compaction";
 import type { PrevToolDuration, PromptPosition, RequestFacts } from "./protocol";
 
 /**
@@ -112,25 +111,18 @@ interface MessageLike {
 	toolCallId?: string;
 }
 
-const NO_NATIVE: NativeSummaries = new Map();
 
-/**
- * Claude Code's T0 samples the summary user message's whole content (its `nee()` preamble
- * included), so sample the user text the model receives, never the bare summary body: a native
- * compaction's summary is that text; otherwise OMP's rendered summary context.
- */
-function summarySourceItem(message: MessageLike, timestamp: number, native: NativeSummaries): SourceItem {
+/** Sample OMP's rendered summary context without provider-specific rewriting. */
+function summarySourceItem(message: MessageLike, timestamp: number): SourceItem {
 	const summary = message.summary ?? "";
-	const text = message.role === "compactionSummary" && native.has(nativeSummaryKey(timestamp, summary))
-		? summary
-		: textOf(convertMessageToLlm(message as unknown as Parameters<typeof convertMessageToLlm>[0])?.content as Content).text;
+	const text = textOf(convertMessageToLlm(message as unknown as Parameters<typeof convertMessageToLlm>[0])?.content as Content).text;
 	return { role: message.role, text, textBlockIndex: null, key: identityKey(message.role, timestamp, summary) };
 }
 
-function sourceItem(message: MessageLike, native: NativeSummaries = NO_NATIVE): SourceItem | undefined {
+function sourceItem(message: MessageLike): SourceItem | undefined {
 	if (!Object.hasOwn(SOURCE_ROLES, message.role)) return undefined;
 	const timestamp = message.timestamp ?? 0;
-	if (message.role === "compactionSummary" || message.role === "branchSummary") return summarySourceItem(message, timestamp, native);
+	if (message.role === "compactionSummary" || message.role === "branchSummary") return summarySourceItem(message, timestamp);
 	const { text, textBlockIndex, digestText } = textOf(message.content);
 	// Some stock paths persist custom messages with their append time, not the message's own.
 	const custom = message.role === "custom" || message.role === "hookMessage";
@@ -462,8 +454,7 @@ export function requestFacts(messages: readonly AgentMessage[], branch: readonly
 	const states = walk(branch);
 	const { persisted, byKey } = indexWalk(states);
 	const views = messages as readonly MessageLike[];
-	const native = nativeSummaries(branch);
-	const items = views.map(view => sourceItem(view, native));
+	const items = views.map(view => sourceItem(view));
 	const boundary = persistedBoundary(views, items, persisted);
 	const assigned = assignPersisted(items, boundary, byKey);
 	const tail = states.at(-1) ?? INITIAL;
@@ -509,29 +500,6 @@ export const MAX_PREV_TOOL_DURATIONS = 32;
 /** Stock `AgentSession` persists one of these per started tool (session/exit-diagnostics.ts). */
 const TOOL_START_ENTRY_TYPE = "tool_execution_start";
 
-/** Anthropic server tool names stock never prefixes under OAuth shaping (ai/src/providers/anthropic-identity.ts:117-122). */
-const ANTHROPIC_BUILTIN_TOOL_NAMES: Record<string, true> = { web_search: true, code_execution: true, text_editor: true, computer: true };
-
-/** The inputs stock uses to encode tool names for one request. */
-export interface WireNaming {
-	/** `model.compat.escapeBuiltinToolNames`. */
-	escape: boolean;
-	/** Stock's effective OAuth shaping: `model.isOAuth ?? apiKey.includes("sk-ant-oat")` (ai/src/stream.ts:937, anthropic.ts:4382, catalog/src/utils.ts:43). */
-	oauth: boolean;
-}
-
-/**
- * The tool name as stock OMP advertises it on an Anthropic Messages request. Port of the
- * unexported `encodeAnthropicToolName` (ai/src/providers/anthropic.ts:979-988) and
- * `applyClaudeToolPrefix` (anthropic-identity.ts:125-128) with `claudeToolPrefix = "_"`
- * (claude-code-fingerprint.ts:70). The umans web-search exemption (anthropic.ts:975-977)
- * needs an umans host and cannot apply to the loopback Gateway.
- */
-export function wireToolName(name: string, naming: WireNaming): string {
-	if (naming.escape) return `_${name}`;
-	if (naming.oauth && !Object.hasOwn(ANTHROPIC_BUILTIN_TOOL_NAMES, name.toLowerCase())) return `_${name}`;
-	return name;
-}
 
 type FinishedTiming = ToolTiming & { end: number };
 interface TimedCall { id: string; name: string; index: number; timing: FinishedTiming }
@@ -583,13 +551,13 @@ function persistedStarts(branch: readonly SessionEntry[], wanted: ReadonlySet<st
  * Claude Code `prevToolDurations` for the request whose source view is `messages`:
  * the executed tool calls of the last non-error assistant message, in completion
  * order (ties in tool_use order), first 32. A start persisted on the branch wins over
- * the in-memory delivery time. Names are the wire names (`wireToolName`). Undefined when that
+ * the in-memory delivery time. Names follow the stock serializer's explicit escaping. Undefined when that
  * batch has no executed, timed tool.
  */
-export function prevToolDurations(messages: readonly AgentMessage[], branch: readonly SessionEntry[], timings: ReadonlyMap<string, ToolTiming>, epoch: number, naming: WireNaming = { escape: false, oauth: false }): PrevToolDuration[] | undefined {
+export function prevToolDurations(messages: readonly AgentMessage[], branch: readonly SessionEntry[], timings: ReadonlyMap<string, ToolTiming>, epoch: number, escapeBuiltinToolNames = false): PrevToolDuration[] | undefined {
 	const calls = lastBatch(messages, timings, epoch);
 	if (calls.length === 0) return undefined;
 	const persisted = persistedStarts(branch, new Set(calls.map(call => call.id)));
 	const ordered = calls.sort((left, right) => left.timing.end - right.timing.end || left.index - right.index).slice(0, MAX_PREV_TOOL_DURATIONS);
-	return ordered.map(call => ({ toolName: wireToolName(call.name, naming), durationMs: Math.max(0, Math.round(call.timing.end - (persisted.get(call.id) ?? call.timing.start))) }));
+	return ordered.map(call => ({ toolName: escapeBuiltinToolNames ? `_${call.name}` : call.name, durationMs: Math.max(0, Math.round(call.timing.end - (persisted.get(call.id) ?? call.timing.start))) }));
 }

@@ -1,6 +1,6 @@
 {
   "name": "omp-noli",
-  "version": "0.10.3",
+  "version": "0.11.0",
   "private": true,
   "type": "module",
   "description": "Session-scoped Noli control and guarded native forge tools for Oh My Pi",
@@ -27,14 +27,14 @@
     "smoke:install": "bun scripts/smoke-install.ts --local"
   },
   "devDependencies": {
-    "@oh-my-pi/omptype": "18.13.3",
-    "@oh-my-pi/pi-coding-agent": "18.13.3",
+    "@oh-my-pi/omptype": "18.19.0",
+    "@oh-my-pi/pi-coding-agent": "18.19.0",
     "@types/bun": "latest",
     "ajv": "^8",
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
-    "@oh-my-pi/pi-coding-agent": ">=18.13.3"
+    "@oh-my-pi/pi-coding-agent": ">=18.19.0"
   },
   "omp": {
     "extensions": ["./src/index.ts"]
