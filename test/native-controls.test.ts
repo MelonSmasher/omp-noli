@@ -7,7 +7,7 @@ import { CAPABILITY_NAMES } from "../src/protocol";
 
 function fixture() {
 	const calls: unknown[] = [];
-	const session = { isBusyForSnapshot: false, isSessionTransitioning: false, hasAdmittedSubmission: false, isDisposed: false, queuedMessageCount: 0, hasPendingAsyncWork: () => false, navigateTree: async (...args: unknown[]) => { calls.push(args); return { cancelled: true }; }, getGoalModeState: () => ({ goal: { id: "goal" } }), goalRuntime: { onBudgetMutated: async (budget: unknown) => { calls.push(budget); return { goal: { id: "goal", tokenBudget: budget } }; } } } as unknown as AgentSession;
+	const session = { isBusyForSnapshot: false, isSessionTransitioning: false, isRunActive: false, wakeSources: undefined, hasAdmittedSubmission: false, isDisposed: false, queuedMessageCount: 0, navigateTree: async (...args: unknown[]) => { calls.push(args); return { cancelled: true }; }, getGoalModeState: () => ({ goal: { id: "goal" } }), goalRuntime: { onBudgetMutated: async (budget: unknown) => { calls.push(budget); return { goal: { id: "goal", tokenBudget: budget } }; } } } as unknown as AgentSession;
 	const ctx = { memory: { status: async () => ({ backend: "off", active: false, searchable: false, writable: false }), search: async (...args: unknown[]) => { calls.push(args); return { backend: "mnemopi", query: args[0], count: 0, items: [] }; }, save: async (input: unknown) => { calls.push(input); return { stored: 0 }; } } } as unknown as ExtensionContext;
 	return { ctx, session, calls };
 }
@@ -46,10 +46,36 @@ describe("supplemental public native APIs", () => {
 		expect(calls).toHaveLength(1);
 	});
 	test("native admission refuses transitions, admitted prompts, queues and background work", async () => {
-		for (const flag of ["isSessionTransitioning", "hasAdmittedSubmission", "isDisposed", "queuedMessageCount"]) {
+		for (const flag of ["isBusyForSnapshot", "isSessionTransitioning", "isRunActive", "hasAdmittedSubmission", "isDisposed", "queuedMessageCount"]) {
 			const { ctx, session, calls } = fixture();
 			Object.defineProperty(session, flag, { value: flag === "queuedMessageCount" ? 1 : true });
 			for (const method of ["tree.navigate", "goal.budget"] as const) await expect(nativeControl(method, method === "tree.navigate" ? { targetId: "e" } : { tokenBudget: 10 }, ctx, session)).rejects.toThrow("active work");
+			expect(calls).toHaveLength(0);
+		}
+	});
+	test("paused runs and every native wake source block mutations until the whole run ends", async () => {
+		const { ctx, session, calls } = fixture();
+		for (const method of ["tree.navigate", "goal.budget"] as const) expect(nativeCapabilities(ctx, session)[method].available).toBe(true);
+		for (const isRunActive of [true, false]) {
+			for (const wakeSources of [{ jobs: ["bg_1"], agents: [], queued: false }, { jobs: [], agents: ["Child"], queued: false }, { jobs: [], agents: [], queued: true }, ...(isRunActive ? [undefined] : [])]) {
+				Object.assign(session, { isRunActive, wakeSources });
+				for (const method of ["tree.navigate", "goal.budget"] as const) await expect(nativeControl(method, method === "tree.navigate" ? { targetId: "e" } : { tokenBudget: 10 }, ctx, session)).rejects.toMatchObject({ body: { code: "busy" } });
+			}
+		}
+		expect(calls).toHaveLength(0);
+		Object.assign(session, { isRunActive: false, wakeSources: undefined });
+		await nativeControl("tree.navigate", { targetId: "e" }, ctx, session);
+		await nativeControl("goal.budget", { tokenBudget: 10 }, ctx, session);
+		expect(calls).toEqual([["e", { summarize: undefined }], 10]);
+	});
+	test("missing current run API fails closed rather than treating the session as idle", async () => {
+		for (const key of ["isRunActive", "wakeSources"]) {
+			const { ctx, session, calls } = fixture();
+			Reflect.deleteProperty(session, key);
+			for (const method of ["tree.navigate", "goal.budget"] as const) {
+				expect(nativeCapabilities(ctx, session)[method].available).toBe(false);
+				await expect(nativeControl(method, method === "tree.navigate" ? { targetId: "e" } : { tokenBudget: 10 }, ctx, session)).rejects.toMatchObject({ body: { code: "capability_unavailable" } });
+			}
 			expect(calls).toHaveLength(0);
 		}
 	});

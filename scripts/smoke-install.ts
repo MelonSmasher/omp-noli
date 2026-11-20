@@ -87,7 +87,7 @@ if (selection === "--verify") {
 	} else {
 		assert(!schema.$defs.CapabilityApi.enum.includes("main-only-v2"), "Older native-control releases do not require the reference-read v2 contract");
 	}
-	const created = await createAgentSession({ cwd: dir, agentDir: join(dir, "runtime-agent"), sessionManager: SessionManager.create(dir, join(dir, "sessions")), settings: Settings.isolated({ "memory.backend": "off" }), toolNames: [], enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: false, preloadedExtensionPaths: entries });
+	const created = await createAgentSession({ cwd: dir, agentDir: join(dir, "runtime-agent"), sessionManager: SessionManager.create(dir, join(dir, "sessions")), settings: Settings.isolated({ "memory.backend": "off" }), toolNames: [], enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: "off", preloadedExtensionPaths: entries });
 	let client: ForgeClient | undefined;
 	try {
 		const runtime = created.session.extensionRunner;
@@ -106,6 +106,12 @@ if (selection === "--verify") {
 		const hello = versionedForge ? await verifyInstalledForgeRuntime(created.session, plugin.path, client) : await client.connect();
 		assert(hello.type === "response" && hello.ok);
 		const advertised = hello.result as { capabilities?: Record<string, { api: string; available: boolean }> };
+		if (major! > 0 || minor! >= 12) {
+			for (const method of ["work.get", "tree.navigate", "goal.budget"]) assert.equal(advertised.capabilities?.[method]?.available, true, `Installed v0.12+ must negotiate ${method} on official OMP 19`);
+			const work = await client.request("work.get");
+			assert(work.type === "response" && work.ok);
+			assert.equal(type({ settled: "boolean" }).assert(work.result).settled, true, "Installed extension reports the new session settled");
+		}
 		if (referenceReads) {
 			assert.equal(advertised.capabilities?.["host.thread_read"]?.api, "main-only-v2");
 			assert.equal(advertised.capabilities?.["host.thread_read"]?.available, true, "Bootstrap support must not depend on tools registered only after negotiation");

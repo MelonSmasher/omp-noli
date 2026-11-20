@@ -6,9 +6,10 @@ import { basename, join } from "node:path";
 import { createAgentSession, SessionManager, Settings, VERSION } from "@oh-my-pi/pi-coding-agent";
 import type { AgentSession, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { Server } from "bun";
-import { nativeControl } from "../src/native-controls";
+import { nativeCapabilities, nativeControl } from "../src/native-controls";
+import { probeWork } from "../src/capabilities";
 
-assert.equal(VERSION, "18.8.2");
+assert.equal(VERSION, "19.0.1", "Qualification uses the pinned official SDK");
 const dir = mkdtempSync(join(tmpdir(), "noli-native-smoke-"));
 let session: AgentSession | undefined;
 let server: Server<undefined> | undefined;
@@ -17,11 +18,16 @@ const hindsightEnv = Object.entries(process.env).filter(([key]) => key.startsWit
 for (const [key] of hindsightEnv) delete process.env[key];
 try {
 	const manager = SessionManager.create(dir, join(dir, "sessions"));
-	const created = await createAgentSession({ cwd: dir, agentDir: join(dir, "agent"), sessionManager: manager, settings: Settings.isolated({ "memory.backend": "off" }), toolNames: [], restrictToolNames: true, enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: false });
+	const created = await createAgentSession({ cwd: dir, agentDir: join(dir, "agent"), sessionManager: manager, settings: Settings.isolated({ "memory.backend": "off" }), toolNames: [], restrictToolNames: true, enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: "off" });
 	session = created.session;
 	const runtime = session.extensionRunner;
 	assert(runtime, "official session extension runner");
 	const ctx = runtime.createContext() as ExtensionContext;
+	for (const method of ["tree.navigate", "goal.budget"] as const) assert.equal(nativeCapabilities(ctx, session)[method].available, true, `${method} negotiates on official OMP`);
+	const work = probeWork(session);
+	assert(work.ok, "work.get lifecycle API negotiates on official OMP");
+	assert.equal(session.isRunActive, false, "new native session has no open run");
+	assert.equal(session.wakeSources, undefined, "new native session has no wake source");
 	manager.appendMessage({ role: "user", content: "first", timestamp: Date.now() });
 	const target = manager.getLeafId()!;
 	manager.appendMessage({ role: "user", content: "second", timestamp: Date.now() });
@@ -44,7 +50,7 @@ try {
 	await assert.rejects(nativeControl("memory.search", { query: "native smoke", limit: 1 }, ctx, session), /does not support search/);
 	await assert.rejects(nativeControl("memory.save", { content: "native smoke" }, ctx, session), /does not support save/);
 	await session.dispose();
-	const local = await createAgentSession({ cwd: dir, agentDir: join(dir, "local-agent"), sessionManager: SessionManager.create(dir, join(dir, "local-sessions")), settings: Settings.isolated({ "memory.backend": "local" }), toolNames: [], restrictToolNames: true, enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: false });
+	const local = await createAgentSession({ cwd: dir, agentDir: join(dir, "local-agent"), sessionManager: SessionManager.create(dir, join(dir, "local-sessions")), settings: Settings.isolated({ "memory.backend": "local" }), toolNames: [], restrictToolNames: true, enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: "off" });
 	session = local.session;
 	assert(session.extensionRunner);
 	const localCtx = session.extensionRunner.createContext();
@@ -81,7 +87,7 @@ try {
 		"hindsight.bankId": "auth-bank", "hindsight.bankIdPrefix": "noli-native", "hindsight.scoping": "per-project-tagged",
 		"hindsight.recallBudget": "high", "hindsight.recallMaxTokens": 731, "hindsight.recallTypes": ["experience"],
 		"hindsight.autoRecall": false, "hindsight.autoRetain": false, "hindsight.mentalModelsEnabled": false,
-	}), toolNames: [], enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: false });
+	}), toolNames: [], enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: "off" });
 	session = hindsight.session;
 	assert(session.extensionRunner);
 	const hindsightCtx = session.extensionRunner.createContext();

@@ -153,7 +153,7 @@ test("root: warm replays carry no reference and other providers are untouched", 
 	const runner = await runnerFor([hooks], sessionManager);
 	await runner.emit({ type: "session_start" });
 	await runner.emitContext([prompt("main", 1)]);
-	expect(await runner.emitCacheWarmingDecision({ type: "cache_warming_decision", warmCost: 0, missCost: 1, continuationProbability: 1, action: "warm" })).toBe("warm");
+	expect(await runner.emitCacheWarmingDecision({ type: "cache_warming_decision", warmCost: 0, missCost: 1, spentCost: 0, continuationProbability: 1, action: "warm" })).toBe("warm");
 	expect(await runner.emitBeforeProviderRequest(payload(), gatewayModel)).toMatchObject({ noli_request: { ref: null, warm: true } });
 	await runner.emitContext([prompt("main", 1), prompt("next", 4)]);
 	expect(await runner.emitBeforeProviderRequest(payload(), gatewayModel)).toMatchObject({ noli_request: { ref: reference("r"), warm: false } });

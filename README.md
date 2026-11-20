@@ -4,7 +4,7 @@ An OMP extension that gives Noli a private local control channel. It runs next t
 
 ## Runtime and loading
 
-This tree requires published, unmodified **OMP 18.19.0 or newer** (peer dependency `>=18.19.0`), plus **Bun 1.4.4 or newer in the OMP runtime**. Development and qualification use OMP 18.19.0. Managed Gateway launches negotiate the native provenance capability below against the selected SDK; compatible newer releases are not blocked by a certified-version allowlist. Missing required native APIs fail visibly with update guidance. Historical releases below used older OMP versions. Install development dependencies with `bun install`. Load the package root with `omp -e /path/to/omp-noli --mode rpc-ui`, or through the package's `omp.extensions` declaration.
+This tree requires published, unmodified **OMP 19.0.1 or newer** (peer dependency `>=19.0.1`), plus **Bun 1.4.4 or newer in the OMP runtime**. Development and qualification target OMP 19.0.1. Managed Gateway launches negotiate the native provenance capability below against the selected SDK; compatible newer releases are not blocked by a certified-version allowlist. Missing required native APIs fail visibly with update guidance. Historical releases below used older OMP versions. Install development dependencies with `bun install`. Load the package root with `omp -e /path/to/omp-noli --mode rpc-ui`, or through the package's `omp.extensions` declaration.
 
 Plugin v0.9.4 adds frozen reads: `agents.output` with the `revision` of an earlier page serves that retained transcript, so a client can page through one consistent transcript while the child keeps streaming.
 
@@ -49,11 +49,20 @@ Producer facts (`src/claude-facts.ts`, the existing RequestFacts v2 wire schema)
 
 Optional `facts.prevToolDurations` describes actually executed tools for Noli's private control channel. Each session keeps its own timings; root sessions observe `tool_result`, while children observe `tool_execution_end` without adding handlers that would change OMP speculative execution. Timings reset for new prompts and overflow retries. No provider identity headers are synthesized.
 
-`src/system-prefix.generated.ts` (`bun run system-prefix`) is generated from the matching official SDK, currently 18.19.0. Managed launches read the exact side-turn marker from their selected SDK source when its package version matches the running SDK; compatible newer releases are not blocked merely by version. Missing semantic marker or handler-budget capability fails closed.
+`src/system-prefix.generated.ts` (`bun run system-prefix`) is generated from the matching official SDK, currently 19.0.1. Managed launches read the exact side-turn marker from their selected SDK source when its package version matches the running SDK; compatible newer releases are not blocked merely by version. Missing semantic marker or handler-budget capability fails closed.
 
 SDK 18.19.0 drops raw compatibility overrides for optional fields absent from its default resolved record, including `sessionHeader`. For generic Responses, the managed lifecycle enriches actual resolved models before dispatch; each owned registry has one instance-local adapter around its public `resolver`, preserving receiver and arguments. This reaches advisors and fallback models retained across catalog refreshes without credential substitution. Anthropic instead uses the scoped adapter described above. Both retain each helper's actual dispatch session without substituting root/main facts. Regressions exercise retained models across credential changes, the actual standalone task-label helper, explicit metadata and concurrent dispatch with a single provider slot.
 
 Stock OMP's manual `/handoff` and `/btw` use real `:side:` dispatch sessions even when no producer `context` event is emitted; the stock routing header supplies their auxiliary lineage without fabricated main facts. Any `context` handler makes the stock runner clone request messages and defeats the identity-keyed conversion memo for that call; the produced bytes are unchanged. `assistant_message` cannot change non-text blocks.
+
+## v0.12.0 OMP 19 run lifecycle
+
+- Requires official, unmodified OMP 19.0.1 or newer; Bun's minimum remains 1.4.4. Development dependencies and executable native/forge/install fixtures now target the OMP 19 API, including `cacheWarming: "off"` instead of the removed boolean option.
+- The compiled child smoke also targets OMP 19.0.1. Its existing required-yield scenario explicitly enables structured task output and supplies an output schema: current OMP gives schema-free children no `yield` tool. RPC/extension loop-end flags remain unchanged; only native session events distinguish `agent_pause` from final `agent_end`.
+- Restores `work.get`, `tree.navigate` and `goal.budget` negotiation using OMP's public `isRunActive` and `wakeSources` APIs. An open run remains unsettled across pauses and scheduled continuations; native wake sources include owned job deliveries, resumable child runs and queued peer/result messages, not merely currently running job rows.
+- Keeps tree/goal mutations blocked during active or paused runs, native wake sources, existing busy/admission/transition/disposal/queue guards and owned cancellation cleanup. Cancelling one root-owned job still awaits that exact job's body/cleanup completion; it never waits for unrelated jobs or cancels another owner.
+- Roster state retains active paused runs through the shared session handle's native run identity. Telemetry samples both `agent_pause` and final `agent_end` without treating a per-loop pause as settlement. No obsolete lifecycle fallback, fabricated idle state or upstream SDK patch is used.
+- Adds consumer regressions for pending job/child/peer transitions, continuation-only run pauses, missing current APIs and real authenticated socket admission/cancellation drain; native and installed-package smokes assert all three capabilities are available. Publishing remains separate from installing or restarting Noli.
 
 ## v0.11.0 official-client Gateway integration
 
@@ -347,7 +356,7 @@ Every feature maps to a named capability. Each capability has a source:
 | `agents.kill.live` | internal | The built-in `task` tool's lifecycle `release(id, ref, { tombstone: true })` plus `AgentSessionHandle.abort`, started together with terminal release first, as in native RPC cancellation. |
 | `agents.kill.parked` | internal | The built-in `task` tool's `session.agentLifecycle()` returns OMP's `AgentLifecycleManager`; the bridge calls `release(id, ref, { tombstone: true })`. |
 | `definitions.list` | public | `pi.pi.discoverAgents` |
-| `work.get` | public | `AgentSession` settlement state (`isStreaming`, `hasAdmittedSubmission`, `queuedMessageCount`, `hasPendingAsyncWork()`), `agent.peekSteeringQueue()` / `peekFollowUpQueue()` and `getAsyncJobSnapshot()` |
+| `work.get` | public | `AgentSession` settlement state (`isRunActive`, `isStreaming`, `hasAdmittedSubmission`, `queuedMessageCount`, `wakeSources`), `agent.peekSteeringQueue()` / `peekFollowUpQueue()` and `getAsyncJobSnapshot()`; owned cancellation body/cleanup remains pending until its completion barrier drains |
 | `work.cancel` | internal | `AgentSession.asyncJobManager.cancel(id, { ownerId })`, scoped to the root session's agent id, followed by the exact owned `getJob(id).promise` completion barrier. Off (`hook_changed`) if owner identity or completion observation is missing; never cancels unscoped. |
 | `history.entries` | main-only-v1 | The root session's `sessionManager.getEntries()` / `getLeafId()`, the list behind OMP's `get_entries` RPC. Off (`not_ready`) before a root session is adopted. |
 
@@ -549,7 +558,7 @@ This shows the harness and protocol lifecycle works. It says nothing about the q
 
 ### v0.3.2 child transcript and telemetry verification
 
-Run `bun run smoke:child` with compiled official **OMP 18.5.1** on `PATH`. To verify an installed release, run `bun scripts/smoke-child.ts /path/to/installed/omp-noli`. The runner uses disposable HOME/profile/config/workdir, an environment allowlist and a loopback scripted provider; it needs no external credentials and removes its process, sockets and temporary files.
+Run `bun run smoke:child` with compiled official **OMP 19.0.1** on `PATH`. To verify an installed release, run `bun scripts/smoke-child.ts /path/to/installed/omp-noli`. The runner uses disposable HOME/profile/config/workdir, an environment allowlist and a loopback scripted provider; it needs no external credentials and removes its process, sockets and temporary files. Its required native `yield` uses an explicit output schema with `task.structured: true`, rather than relying on the former schema-free yield behavior.
 
 The exercised flow spawns a native child with `child-smoke/child-model:high`, independently configures the root with low effort and a different context capacity, observes the child's prompt/live text/tool call, releases a real held extension tool, and completes through native `yield`. A short disposable `task.agentIdleTtlMs` parks the child. Bridge output and telemetry are compared with independent registry/session APIs and the native persisted transcript. UTF-16 spans, native roles/IDs/timestamps/tool names, pagination, changing telemetry, positive live throughput and valid zero spend are checked. Five repeated parked reads assert no revival, model requests or child/root transcript hash/stat mutation. Root task-result usage is included without inflating root assistant requests.
 

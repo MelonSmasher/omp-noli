@@ -62,12 +62,16 @@ test.each([false, true])("bridge cancellation drains owned cleanup (already canc
 	}, { ownerId: "foreign" });
 	const session = {
 		isStreaming: false,
+		isRunActive: false,
 		hasAdmittedSubmission: false,
 		queuedMessageCount: 0,
 		agent: { peekSteeringQueue: () => [], peekFollowUpQueue: () => [] },
 		asyncJobManager: manager,
 		getAgentId: () => "root",
-		hasPendingAsyncWork: () => manager.getRunningJobs({ ownerId: "root" }).length > 0,
+		get wakeSources() {
+			const jobs = manager.getRunningJobs({ ownerId: "root" }).map(job => job.id);
+			return jobs.length ? { jobs, agents: [], queued: false } : undefined;
+		},
 		getAsyncJobSnapshot: () => ({ running: manager.getRunningJobs({ ownerId: "root" }), delivery: { queued: 0 } }),
 	};
 	const omp = createOmpHost({
@@ -83,7 +87,7 @@ test.each([false, true])("bridge cancellation drains owned cleanup (already canc
 		const cancellation = omp.host.cancelJob(own).then(result => { acknowledged = true; return result; });
 		await cleanupEntered.promise;
 		expect(manager.getJob(own).status).toBe("cancelled");
-		expect(session.hasPendingAsyncWork()).toBe(false); // Native status alone loses the cleanup.
+		expect(session.wakeSources).toBeUndefined(); // Native status alone loses the cleanup.
 		expect(acknowledged).toBe(false);
 		expect(omp.host.work()).toMatchObject({ settled: false, pendingAsyncWork: true, jobs: [{ id: own, label: "owned cleanup" }] });
 		const duplicate = omp.host.cancelJob(own);

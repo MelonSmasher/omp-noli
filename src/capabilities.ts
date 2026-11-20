@@ -78,9 +78,10 @@ export function probeLifecycle(session: unknown): Probe<LifecycleHandle> {
 /** Session members the settlement view reads; all are public AgentSession API. */
 export interface WorkSession {
 	isStreaming: boolean;
+	isRunActive: boolean;
 	hasAdmittedSubmission: boolean;
 	queuedMessageCount: number;
-	hasPendingAsyncWork(): boolean;
+	wakeSources: { readonly jobs: readonly string[]; readonly agents: readonly string[]; readonly queued: boolean } | undefined;
 	agent: {
 		peekSteeringQueue(): readonly QueuedMessage[];
 		peekFollowUpQueue(): readonly QueuedMessage[];
@@ -107,18 +108,21 @@ export interface JobCanceller {
 export function probeWork(session: unknown): Probe<WorkSession> {
 	if (!session || typeof session !== "object") return { ok: false, reason: "not_ready", detail: "main session not established" };
 	const s = session as Record<string, unknown>;
-	for (const key of ["isStreaming", "hasAdmittedSubmission"]) {
+	for (const key of ["isStreaming", "isRunActive", "hasAdmittedSubmission"]) {
 		if (typeof s[key] !== "boolean") return { ok: false, reason: "hook_changed", detail: `AgentSession.${key} is missing` };
 	}
 	if (typeof s.queuedMessageCount !== "number") return { ok: false, reason: "hook_changed", detail: "AgentSession.queuedMessageCount is missing" };
-	for (const key of ["hasPendingAsyncWork", "getAsyncJobSnapshot"]) {
-		if (typeof s[key] !== "function") return { ok: false, reason: "hook_changed", detail: `AgentSession.${key}() is missing` };
+	if (!("wakeSources" in s)) return { ok: false, reason: "hook_changed", detail: "AgentSession.wakeSources is missing" };
+	const sources = s.wakeSources;
+	if (sources !== undefined && (!sources || typeof sources !== "object" || !("jobs" in sources) || !Array.isArray(sources.jobs) || !("agents" in sources) || !Array.isArray(sources.agents) || !("queued" in sources) || typeof sources.queued !== "boolean")) {
+		return { ok: false, reason: "hook_changed", detail: "AgentSession.wakeSources has an unsupported shape" };
 	}
+	if (typeof s.getAsyncJobSnapshot !== "function") return { ok: false, reason: "hook_changed", detail: "AgentSession.getAsyncJobSnapshot() is missing" };
 	const agent = s.agent;
 	if (!agent || typeof agent !== "object" || !("peekSteeringQueue" in agent) || typeof agent.peekSteeringQueue !== "function" || !("peekFollowUpQueue" in agent) || typeof agent.peekFollowUpQueue !== "function") {
 		return { ok: false, reason: "hook_changed", detail: "AgentSession.agent queued-only peek APIs are missing" };
 	}
-	return { ok: true, value: session as WorkSession, detail: "AgentSession settlement + agent queued-only peeks (OMP 18.4.5 user-authored visibility) + getAsyncJobSnapshot" };
+	return { ok: true, value: session as WorkSession, detail: "AgentSession.isRunActive + wakeSources + agent queued-only peeks + getAsyncJobSnapshot" };
 }
 
 /**

@@ -8,7 +8,7 @@ import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-in
 import { ForgeClient } from "./fixtures/forge-client";
 import { verifyForgeRuntime } from "./fixtures/forge-runtime";
 
-assert.equal(VERSION, "18.8.2", "Qualification uses the pinned official SDK");
+assert.equal(VERSION, "19.0.1", "Qualification uses the pinned official SDK");
 const root = resolve(import.meta.dir, "..");
 if (process.argv[2] !== "--verify") {
 	const dir = mkdtempSync(join(tmpdir(), "noli-forge-runtime-"));
@@ -27,7 +27,7 @@ if (process.argv[2] !== "--verify") {
 	for (const nonSdk of [false, true]) {
 		const token = randomUUID(); writeFileSync(tokenFile, token, { mode: 0o600 });
 		process.env.NOLI_BRIDGE_DIR = bridgeDir; process.env.NOLI_BRIDGE_TOKEN_FILE = tokenFile;
-		const created = await createAgentSession({ cwd: dir, agentDir: join(dir, nonSdk ? "lookalike-agent" : "runtime-agent"), sessionManager: SessionManager.create(dir, join(dir, nonSdk ? "lookalike-sessions" : "sessions")), settings: Settings.isolated({ "memory.backend": "off" }), toolNames: [], enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: false, preloadedExtensionPaths: [join(root, "src/index.ts"), ...(nonSdk ? [join(root, "scripts/fixtures/non-sdk-forge.ts")] : [])] });
+		const created = await createAgentSession({ cwd: dir, agentDir: join(dir, nonSdk ? "lookalike-agent" : "runtime-agent"), sessionManager: SessionManager.create(dir, join(dir, nonSdk ? "lookalike-sessions" : "sessions")), settings: Settings.isolated({ "memory.backend": "off" }), toolNames: [], enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: "off", preloadedExtensionPaths: [join(root, "src/index.ts"), ...(nonSdk ? [join(root, "scripts/fixtures/non-sdk-forge.ts")] : [])] });
 		const session = created.session;
 		const client = new ForgeClient(join(bridgeDir, `omp-${process.pid}.sock`), token, () => session.sessionId);
 		try {
@@ -40,7 +40,7 @@ if (process.argv[2] !== "--verify") {
 				assert(!session.hasRpcHostTool("noli_forge_resource"));
 				const tool = session.getToolByName("noli_forge_resource"); assert(tool);
 				await assert.rejects(tool.execute("non-sdk-forge", call.input), /Authenticated Noli thread control is unavailable/);
-				console.log("OFFICIAL FORGE PROVENANCE OK: real extension-owned lookalike is denied despite authenticated owning-main context; SDK 18.8.2, disposable HOME/profile, no model requests");
+				console.log("OFFICIAL FORGE PROVENANCE OK: real extension-owned lookalike is denied despite authenticated owning-main context; SDK 19.0.1, disposable HOME/profile, no model requests");
 			} else await verifyForgeRuntime(session, (method, params) => client.request(method, params), () => client.reconnect(), async () => {
 				const secondary = new ForgeClient(join(bridgeDir, `omp-${process.pid}.sock`), token, () => session.sessionId);
 				await secondary.connect(); return secondary;

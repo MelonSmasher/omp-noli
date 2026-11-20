@@ -20,7 +20,7 @@ assert(agentDir, "Runtime must supply the isolated native agent directory");
 const settings = sdk.Settings.isolated({"memory.backend":"off","advisor.enabled":false,"autolearn.enabled":false,"providers.cacheWarming":"off"});
 const {session, subagentEventBus, extensionsResult} = await sdk.createAgentSession({cwd:process.cwd(),agentDir,
 	sessionManager:sdk.SessionManager.create(process.cwd(),join(agentDir,"sessions")),settings,toolNames:[],
-	enableMCP:false,enableLsp:false,enableIrc:false,disableExtensionDiscovery:true,cacheWarming:false,preloadedExtensionPaths:[producer]});
+	enableMCP:false,enableLsp:false,enableIrc:false,disableExtensionDiscovery:true,cacheWarming:"off",preloadedExtensionPaths:[producer]});
 assert.equal(extensionsResult.errors.length,0,"The real producer must load without extension errors");
 const nativeTools: unknown = JSON.parse(process.env.NOLI_FORGE_SMOKE_TOOLS ?? '["noli_forge_read_v1"]');
 assert(Array.isArray(nativeTools) && nativeTools.length > 0 && nativeTools.length <= 3

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { probeLifecycle, probeRosterReader } from "../src/capabilities";
+import { probeLifecycle, probeRosterReader, probeWork } from "../src/capabilities";
 
 const manager = { release: async () => true };
 const sessionWith = (tools: Record<string, unknown>) => ({ getToolByName: (name: string) => tools[name] });
@@ -41,5 +41,27 @@ describe("probeRosterReader", () => {
 		const result = probeRosterReader(session);
 		expect(result.ok).toBe(false);
 		expect(result.detail).toMatch(detail);
+	});
+});
+
+describe("probeWork current run lifecycle", () => {
+	const workSession = () => ({ isStreaming: false, isRunActive: false, hasAdmittedSubmission: false, queuedMessageCount: 0, wakeSources: undefined as unknown, agent: { peekSteeringQueue: () => [], peekFollowUpQueue: () => [] }, getAsyncJobSnapshot: () => null });
+	test("accepts current APIs with no wake source and with job, child or peer wakes", () => {
+		const session = workSession();
+		for (const wakeSources of [undefined, { jobs: ["bg_1"], agents: [], queued: false }, { jobs: [], agents: ["Child"], queued: false }, { jobs: [], agents: [], queued: true }]) {
+			session.wakeSources = wakeSources;
+			expect(probeWork(session).ok).toBe(true);
+		}
+	});
+	test("does not mistake missing or malformed run APIs for a settled session", () => {
+		for (const key of ["isRunActive", "wakeSources"]) {
+			const session = workSession();
+			Reflect.deleteProperty(session, key);
+			expect(probeWork(session)).toMatchObject({ ok: false, reason: "hook_changed" });
+		}
+		for (const wakeSources of [null, false, {}, { jobs: [], agents: [] }, { jobs: "bg_1", agents: [], queued: false }]) {
+			const session = { ...workSession(), wakeSources };
+			expect(probeWork(session)).toMatchObject({ ok: false, reason: "hook_changed" });
+		}
 	});
 });

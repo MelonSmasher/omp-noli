@@ -188,7 +188,7 @@ export async function verifyInstalledForgeProvenance(entries: string[], dir: str
 	let session: AgentSession | undefined;
 	let client: ForgeClient | undefined;
 	try {
-		const created = await createAgentSession({ cwd: dir, agentDir: join(fixtureDir, "agent"), sessionManager: SessionManager.create(dir, join(fixtureDir, "sessions")), settings: Settings.isolated({ "memory.backend": "off" }), toolNames: [], enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: false, preloadedExtensionPaths: [...entries, fixture] });
+		const created = await createAgentSession({ cwd: dir, agentDir: join(fixtureDir, "agent"), sessionManager: SessionManager.create(dir, join(fixtureDir, "sessions")), settings: Settings.isolated({ "memory.backend": "off" }), toolNames: [], enableMCP: false, enableLsp: false, disableExtensionDiscovery: true, cacheWarming: "off", preloadedExtensionPaths: [...entries, fixture] });
 		session = created.session;
 		assert.deepEqual(created.extensionsResult.errors, []);
 		await initializeExtensions(session, { reportSendError: (_action, error) => { throw error; }, reportRuntimeError: error => { throw new Error(error.error); } });

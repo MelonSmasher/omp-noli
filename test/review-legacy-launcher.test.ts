@@ -29,7 +29,7 @@ test("review: non-gateway Noli launcher still starts the bridge using its existi
       sessionManager: SessionManager.create(dir, join(dir, "sessions")),
       settings: Settings.isolated({ "memory.backend": "off" }), toolNames: [],
       enableMCP: false, enableLsp: false, disableExtensionDiscovery: true,
-      additionalExtensionPaths: [join(import.meta.dir, "../src/index.ts")], cacheWarming: false });
+      additionalExtensionPaths: [join(import.meta.dir, "../src/index.ts")], cacheWarming: "off" });
     session = created.session;
     expect(process.env.NOLI_BRIDGE_TOKEN).toBeUndefined();
     await initializeExtensions(session, { reportSendError: (_action, error) => { throw error; }, reportRuntimeError: error => { throw new Error(error.error); } });
