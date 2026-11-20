@@ -95,11 +95,13 @@ function restartProcess() {
 /** Mirrors the AgentSession members the work view and queued-control capabilities read. */
 const work = {
 	streaming: false,
+	runActive: false,
+	wakeSources: undefined as { jobs: string[]; agents: string[]; queued: boolean } | undefined,
 	admitted: false,
 	queued: 0,
 	visible: { steering: [] as unknown[], followUp: [] as unknown[] },
 	queues: { steering: [] as Array<{ role: string; attribution?: string; display?: boolean }>, followUp: [] as Array<{ role: string; attribution?: string; display?: boolean }> },
-	pending: false,
+	// Job metadata and wake sources are independent: either can outlive the other.
 	jobs: [] as Array<{ id: string; type: string; label: string; startTime: number; agentId?: string }>,
 	undelivered: 0,
 	cancelled: [] as Array<{ id: string; filter: unknown }>,
@@ -116,7 +118,9 @@ const mainSession = {
 	get queuedMessageCount() {
 		return work.queued;
 	},
-	hasPendingAsyncWork: () => work.pending,
+	get isRunActive() { return work.runActive; },
+	get runStartedAt() { return work.runActive ? 1 : undefined; },
+	get wakeSources() { return work.wakeSources; },
 	getQueuedMessages: () => work.visible,
 	agent: {
 		peekSteeringQueue: () => work.queues.steering,
@@ -209,7 +213,7 @@ beforeEach(() => {
 	writeFileSync(rootFile, header);
 	registry = new FakeRegistry();
 	registry.refs.set("Main", { id: "Main", displayName: "main", kind: "main", status: "running", session: mainSession, sessionFile: rootFile, createdAt: 1, lastActivity: 1 });
-	Object.assign(work, { streaming: false, admitted: false, queued: 0, visible: { steering: [], followUp: [] }, queues: { steering: [], followUp: [] }, pending: false, jobs: [], undelivered: 0, cancelled: [] });
+	Object.assign(work, { streaming: false, runActive: false, wakeSources: undefined, admitted: false, queued: 0, visible: { steering: [], followUp: [] }, queues: { steering: [], followUp: [] }, jobs: [], undelivered: 0, cancelled: [] });
 	statuses = {};
 	readCalls = 0;
 	scanBehavior = "real";
@@ -517,7 +521,7 @@ describe("work", () => {
 		work.queued = 2;
 		work.visible = { steering: ["visible"], followUp: [] };
 		work.queues.steering = [{ role: "user" }];
-		work.pending = true;
+		work.wakeSources = { jobs: ["bg_1"], agents: [], queued: true };
 		work.undelivered = 1;
 		work.jobs = [{ id: "bg_1", type: "bash", label: "cargo test", startTime: 5 }, { id: "T", type: "vibe", label: "x", startTime: 6, agentId: "Child" }];
 		expect(omp.host.work()).toEqual({
@@ -553,6 +557,32 @@ describe("work", () => {
 		expect(omp.host.work().settled).toBe(false);
 	});
 
+	test("a run stays unsettled through job, child, peer and continuation pauses until native run end", async () => {
+		expect(omp.host.refreshCapabilities()["work.get"].available).toBe(true);
+		work.runActive = true;
+		work.streaming = true;
+		expect(omp.host.work()).toMatchObject({ settled: false, streaming: true });
+		work.streaming = false;
+		for (const sources of [{ jobs: ["bg_1"], agents: [], queued: false }, { jobs: [], agents: ["Child"], queued: false }, { jobs: [], agents: [], queued: true }]) {
+			work.wakeSources = sources;
+			expect(omp.host.work()).toMatchObject({ settled: false, streaming: false, pendingAsyncWork: true, jobs: [] });
+			expect((await listLive()).agents.find(agent => agent.id === "Main")?.state).toBe("running");
+		}
+		// The native run can still owe its own continuation after outside wakes drain.
+		work.wakeSources = undefined;
+		expect(omp.host.work()).toMatchObject({ settled: false, pendingAsyncWork: false });
+		work.runActive = false;
+		expect(omp.host.work()).toMatchObject({ settled: true, pendingAsyncWork: false });
+		expect((await listLive()).agents.find(agent => agent.id === "Main")?.state).toBe("idle");
+	});
+
+	test("a native wake source before run start is pending even without running job metadata", () => {
+		work.wakeSources = { jobs: [], agents: [], queued: true };
+		expect(omp.host.work()).toMatchObject({ settled: false, pendingAsyncWork: true, jobs: [], undeliveredResults: 0 });
+		work.wakeSources = undefined;
+		expect(omp.host.work().settled).toBe(true);
+	});
+
 	test("cancelJob is scoped to the root session's agent id", async () => {
 		work.jobs = [{ id: "bg_1", type: "bash", label: "x", startTime: 1 }];
 		expect(await omp.host.cancelJob("bg_1")).toBe(true);
@@ -567,7 +597,7 @@ describe("work", () => {
 		mainSession.asyncJobManager.getJob = () => ({ ownerId: "Main", status: "running", promise: gate.promise, type: "bash", label: "cleanup", startTime: 1 });
 		const cancellation = omp.host.cancelJob("bg_1");
 		try {
-			expect(work.pending).toBe(false);
+			expect(work.wakeSources).toBeUndefined();
 			for (const method of ["tree.navigate", "goal.budget"] as const) await expect(omp.host.nativeControl!(method, method === "tree.navigate" ? { targetId: "e" } : { tokenBudget: 10 })).rejects.toThrow("cleanup is still draining");
 			gate.resolve();
 			await cancellation;

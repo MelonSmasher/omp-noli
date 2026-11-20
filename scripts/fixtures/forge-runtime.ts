@@ -17,6 +17,11 @@ export async function verifyForgeRuntime(session: AgentSession, request: (method
 	const capabilities = advertised.capabilities;
 	assert.equal(capabilities["host.forge_resource"]?.api, "session-v2");
 	assert.equal(capabilities["host.forge_resource"]?.available, true, "Bootstrap guard support precedes registration");
+	const native = type({ capabilities: { "work.get": { available: "boolean" }, "tree.navigate": { available: "boolean" }, "goal.budget": { available: "boolean" } } }).assert(negotiated.result);
+	for (const method of ["work.get", "tree.navigate", "goal.budget"] as const) assert.equal(native.capabilities[method].available, true, `${method} negotiates through the real extension on official OMP`);
+	const work = await request("work.get");
+	assert(work.type === "response" && work.ok);
+	assert.equal(type({ settled: "boolean" }).assert(work.result).settled, true, "real extension reports the new session settled");
 	const input = { action: "resolve_review", number: "9007199254740993" };
 	const call = { type: "tool_call" as const, toolName: "noli_forge_resource", toolCallId: "unregistered-forge", input };
 	assert.equal((await runtime.emitToolCall(call))?.block, true, "Authentication cannot authorize an absent SDK tool");

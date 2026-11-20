@@ -324,7 +324,7 @@ test("review: real SDK factory, switch and branch rebind without environment or 
       modelRegistry: f.registry, model: f.registry.find("noli-openai", model.id),
       settings: Settings.isolated({ "memory.backend": "off", enabledModels: ["noli-*/*"] }),
       toolNames: [], enableMCP: false, enableLsp: false, disableExtensionDiscovery: true,
-      additionalExtensionPaths: [join(import.meta.dir, "../src/index.ts")], cacheWarming: false });
+      additionalExtensionPaths: [join(import.meta.dir, "../src/index.ts")], cacheWarming: "off" });
     session = created.session;
     expect(process.env.NOLI_BRIDGE_TOKEN_FILE).toBeUndefined();
     expect(existsSync(tokenFile)).toBe(false);

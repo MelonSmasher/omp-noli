@@ -64,11 +64,12 @@ function memoryCapability(method: "memory.search" | "memory.save", ctx: Extensio
 		: unavailable("public", "not_ready", `Configured native memory backend does not support ${method}`);
 }
 function hasAdmissionApi(session: AgentSession): boolean {
-	return [session.isBusyForSnapshot, session.isSessionTransitioning, session.hasAdmittedSubmission, session.isDisposed].every(value => typeof value === "boolean")
-		&& typeof session.queuedMessageCount === "number" && typeof session.hasPendingAsyncWork === "function";
+	return [session.isBusyForSnapshot, session.isSessionTransitioning, session.isRunActive, session.hasAdmittedSubmission, session.isDisposed].every(value => typeof value === "boolean")
+		&& typeof session.queuedMessageCount === "number" && "wakeSources" in session;
 }
 function requireIdle(session: AgentSession): void {
-	if (session.isBusyForSnapshot || session.isSessionTransitioning || session.hasAdmittedSubmission || session.isDisposed || session.queuedMessageCount > 0 || session.hasPendingAsyncWork()) throw new BridgeError("busy", "Native session has active work or a transition");
+	if (!hasAdmissionApi(session)) throw new BridgeError("capability_unavailable", "Native session run lifecycle API is unavailable; update OMP to 19.0.1 or newer");
+	if (session.isBusyForSnapshot || session.isSessionTransitioning || session.isRunActive || session.hasAdmittedSubmission || session.isDisposed || session.queuedMessageCount > 0 || session.wakeSources !== undefined) throw new BridgeError("busy", "Native session has active work or a transition");
 }
 function present(method: NativeMethod, ctx: ExtensionContext, session: AgentSession): boolean {
 	switch (method) {

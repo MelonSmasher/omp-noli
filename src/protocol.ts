@@ -250,9 +250,9 @@ export interface JobView {
 
 /**
  * Why the root session is or isn't settled. The host is settled only when it
- * is not streaming, has no admitted submission, nothing queued (`queued`
- * includes hidden next-turn messages the visible queues omit) and no pending
- * background work. Every field is observed, never inferred.
+ * has no open run (including pauses), is not streaming, has no admitted submission,
+ * nothing queued (`queued` includes hidden next-turn messages the visible queues
+ * omit) and no native wake sources or cancellation drain. Every field is observed.
  */
 export interface WorkResult {
 	settled: boolean;
@@ -262,7 +262,7 @@ export interface WorkResult {
 	queued: number;
 	/** Of `queued`, messages hidden from queued-only user steering/follow-up chips; excludes live-steered chips. */
 	hiddenQueued: number;
-	/** Background work is pending: running jobs, undelivered results, or cancellation body/cleanup drain. */
+	/** Native wake sources (jobs, child runs, queued results/peer messages), or cancellation body/cleanup drain. */
 	pendingAsyncWork: boolean;
 	/** Running or cancellation-draining background jobs owned by the root session. */
 	jobs: JobView[];

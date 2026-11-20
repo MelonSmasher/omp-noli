@@ -48,17 +48,17 @@ const SOURCE_BY_OMP_SOURCE: Record<string, DefinitionSource> = { bundled: "bundl
 const JOB_KIND_BY_OMP_TYPE: Record<string, JobKind> = { bash: "bash", task: "task", eval: "eval" };
 
 /**
- * A live session with queued messages (including hidden next-turn messages) is
- * still running work even between turns; otherwise OMP's registry status wins.
- * A main ref is never reported `running` from a stale registry status alone:
- * without streaming or queued input it is idle.
+ * A live session's run spans every loop and pause. The handle's runStartedAt
+ * remains set until that run ends, including cross-thread sessions. Queued
+ * messages keep it running before a run opens; otherwise registry status wins.
+ * A main ref is never reported running from a stale registry status alone.
  */
 function stateOf(ref: AgentRef): AgentState {
 	if (ref.status === "aborted") return "terminated";
 	const session = ref.session;
 	if (session) {
 		const queued = "queuedMessageCount" in session && typeof session.queuedMessageCount === "number" ? session.queuedMessageCount : 0;
-		if (session.isStreaming || queued > 0) return "running";
+		if (session.runStartedAt !== undefined || session.isStreaming || queued > 0) return "running";
 		if (ref.kind === "main" && ref.status === "running") return "idle";
 	}
 	return STATE_BY_OMP_STATUS[ref.status] ?? "unknown";
@@ -493,7 +493,7 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false, nativ
 			const unsubscribeEvents = session.subscribe(event => {
 				if (closed || scopedRef(ref.id) !== ref || ref.session !== session || !ownedChild(ref)) return;
 				// Snapshot completion boundaries before native parking drops the session.
-				if (event.type === "message_end" || event.type === "agent_end" || event.type === "tool_execution_end") agentTelemetry.sample(ref);
+				if (event.type === "message_end" || event.type === "agent_pause" || event.type === "agent_end" || event.type === "tool_execution_end") agentTelemetry.sample(ref);
 			});
 			const unsubscribeRunState = session.subscribeRunState(state => {
 				if (state === "idle" && !closed && scopedRef(ref.id) === ref && ref.session === session && ownedChild(ref)) publish(ref);
@@ -788,10 +788,11 @@ export function createOmpHost(pi: ExtensionAPI, gatewayConfigured = false, nativ
 			const admittedSubmission = session.hasAdmittedSubmission;
 			const queued = session.queuedMessageCount;
 			const draining = [...cancellingJobs.values()].filter(entry => entry.session === session);
-			const pendingAsyncWork = session.hasPendingAsyncWork() || draining.length > 0;
+			const pendingAsyncWork = session.wakeSources !== undefined || draining.length > 0;
 			const result: WorkResult = {
-				// OMP's own predicate, extended through native cancelled-job body/cleanup completion.
-				settled: !streaming && !admittedSubmission && queued === 0 && !pendingAsyncWork,
+				// A paused run or scheduled continuation is not settled, even without a wake source.
+				// Keep native cancellation body/cleanup observable until its exact promise drains.
+				settled: !session.isRunActive && !streaming && !admittedSubmission && queued === 0 && !pendingAsyncWork,
 				streaming,
 				admittedSubmission,
 				queued,

@@ -1,4 +1,4 @@
-/** Installed-binary integration smoke. Prerequisites: POSIX, Bun >=1.4.2, omp/18.5.1 on PATH.
+/** Installed-binary integration smoke. Prerequisites: POSIX, Bun >=1.4.4, omp/19.0.1 on PATH.
  * Usage: bun scripts/smoke-child.ts [package-root]. No external credentials/network required.
  */
 import assert from "node:assert/strict";
@@ -227,7 +227,7 @@ try {
 	} finally {
 		if (versionProcess.exitCode === null) { versionProcess.kill("SIGKILL"); await versionProcess.exited; }
 	}
-	assert(/(?:omp[/ v])18\.5\.1\b/.test(version), `Requires installed omp 18.5.1, received ${version}`);
+	assert(/(?:omp[/ v])19\.0\.1\b/.test(version), `Requires installed omp 19.0.1, received ${version}`);
 	for (const dir of [home, workdir, bridgeDir, agentDir]) mkdirSync(dir, { recursive: true, mode: 0o700 });
 	mkdirSync(join(agentDir, "agents"));
 	writeFileSync(join(agentDir, "agents", "smoke-child.md"), "---\nname: smoke-child\ndescription: Native installed-binary smoke child\nmodel: child-smoke/child-model:high\nthinking: high\nspawns: \"\"\n---\nComplete the deterministic child assignment. Call child_smoke_gate, then report your final assistant text and submit a required terminal yield.\n");
@@ -254,7 +254,7 @@ try {
 				const isChild = body.model === childModel;
 				const tool = isChild ? ordinal === 0 ? "child_smoke_gate" : "yield" : ordinal === 0 ? "task" : null;
 				if (tool) assert(body.tools.some(entry => entry.function.name === tool), `native tool ${tool} is not registered`);
-				const callArgs = tool === "task" ? { context: "Installed binary smoke; perform the genuine task and required yield.", tasks: [{ name: "SmokeChild", agent: "smoke-child", model: `${expectedChildModel}:high`, task: `CHILD PROMPT ${marker}\nCall child_smoke_gate with marker ${marker}; final assistant and terminal yield required.`, solutionSpace: "One deterministic tool observation and required yield" }] } : tool === "child_smoke_gate" ? { marker } : { type: "result", data: { marker, observed: true } };
+				const callArgs = tool === "task" ? { context: "Installed binary smoke; perform the genuine task and required yield.", tasks: [{ name: "SmokeChild", agent: "smoke-child", model: `${expectedChildModel}:high`, task: `CHILD PROMPT ${marker}\nCall child_smoke_gate with marker ${marker}; final assistant and terminal yield required.`, solutionSpace: "One deterministic tool observation and required yield", outputSchema: { type: "object", properties: { marker: { type: "string", const: marker }, observed: { type: "boolean", const: true } }, required: ["marker", "observed"], additionalProperties: false }, schemaMode: "strict" }] } : tool === "child_smoke_gate" ? { marker } : { type: "result", data: { marker, observed: true } };
 				const text = isChild ? ordinal === 0 ? `${liveText}\n` : `${finalText}\nsecond final line\n` : ordinal === 0 ? "ROOT SPAWNING CHILD\n" : "ROOT FINAL DONE\n";
 				return new Response(new ReadableStream<Uint8Array>({
 					async start(controller) {
@@ -290,7 +290,7 @@ try {
 		},
 	});
 	writeFileSync(join(agentDir, "models.yml"), JSON.stringify({ providers: { [provider]: { api: "openai-completions", baseUrl: `http://127.0.0.1:${endpoint.port}/v1`, apiKey: "CHILD_SMOKE_LOCAL_KEY", models: [rootModel, childModel].map(id => ({ id, name: id, reasoning: true, thinking: { mode: "effort", efforts: ["low", "medium", "high"] }, input: ["text"], contextWindow: id === rootModel ? 32768 : 65536, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, compat: { supportsReasoningEffort: true, supportsStrictMode: false, supportsDeveloperRole: false, supportsStore: false } })) } } }));
-	writeFileSync(join(agentDir, "config.yml"), JSON.stringify({ modelRoles: { default: `${provider}/${rootModel}:low`, smol: `${provider}/${rootModel}:low` }, task: { agentIdleTtlMs: 1800, batch: true, prewalk: false, isolation: { enabled: false } }, async: { enabled: false }, providers: { cacheWarming: "off" }, advisor: { enabled: false }, memory: { backend: "off" }, compaction: { enabled: false }, browser: { enabled: false }, mcp: { enabled: false }, telemetry: { enabled: false } }));
+	writeFileSync(join(agentDir, "config.yml"), JSON.stringify({ modelRoles: { default: `${provider}/${rootModel}:low`, smol: `${provider}/${rootModel}:low` }, task: { agentIdleTtlMs: 1800, batch: true, structured: true, prewalk: false, isolation: { enabled: false } }, async: { enabled: false }, providers: { cacheWarming: "off" }, advisor: { enabled: false }, memory: { backend: "off" }, compaction: { enabled: false }, browser: { enabled: false }, mcp: { enabled: false }, telemetry: { enabled: false } }));
 	const tokenFile = join(bridgeDir, "bootstrap-token");
 	writeFileSync(tokenFile, bridgeToken, { mode: 0o600 });
 	// Explicit allowlist: inherited credentials, gateway/profile/overlay variables cannot escape.
@@ -320,6 +320,7 @@ try {
 	const hello = await bridge.call({ method: "hello", params: { token: bridgeToken } }, validateHello);
 	assert.equal(hello.protocol, 2);
 	assert(hello.capabilities["agents.output"]?.available, "installed extension does not advertise agents.output");
+	for (const method of ["work.get", "tree.navigate", "goal.budget"]) assert(hello.capabilities[method]?.available, `installed extension does not advertise ${method} on OMP 19`);
 	function bridgeCall(method: "agents.list", params?: Json): Promise<AgentList>;
 	function bridgeCall(method: "agents.output", params: Json): Promise<AgentOutputResult>;
 	function bridgeCall(method: "agents.list" | "agents.output", params: Json = {}): Promise<AgentList | AgentOutputResult> {
