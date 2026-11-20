@@ -7,7 +7,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionAPI, ProviderConfig } from "@oh-my-pi/pi-coding-agent";
 import { generateTaskLabel } from "@oh-my-pi/pi-coding-agent/task/label";
-import { streamSimple } from "@oh-my-pi/pi-ai";
+import { streamSimple, type AssistantMessage, type Context } from "@oh-my-pi/pi-ai";
 import { enrichGatewayModels, registerGateway, rejoinGateway } from "../src/gateway";
 
 const model = { id: "gateway-test", name: "Gateway fixture", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 512 };
@@ -343,6 +343,84 @@ test("scoped Anthropic authentication preserves cache retention and caller prece
 		if (previousRetention === undefined) delete process.env.PI_CACHE_RETENTION;
 		else process.env.PI_CACHE_RETENTION = previousRetention;
 		registry.clearSourceRegistrations("cache-controls");
+		server.stop(true); auth.close(); rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("Codex continuation preserves the encrypted item's original ID after SDK replay and resume", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "noli-codex-replay-"));
+	const reasoning = { type: "reasoning", id: "rs_original", summary: [{ type: "summary_text", text: "Synthetic summary" }], encrypted_content: "synthetic-bound-to-rs_original" };
+	const text = { type: "message", id: "msg_original", role: "assistant", content: [{ type: "output_text", text: "Synthetic progress", annotations: [] }] };
+	const received: Array<{ input: typeof reasoning[]; headers: Headers }> = [];
+	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+		const body = await request.json();
+		received.push({ input: body.input, headers: request.headers });
+		const item = body.input.find((item: typeof reasoning) => item.type === "reasoning");
+		if (item?.id !== reasoning.id || item?.encrypted_content !== reasoning.encrypted_content) {
+			return Response.json({ error: { code: "invalid_encrypted_content", message: "Synthetic encrypted item binding mismatch" } }, { status: 400 });
+		}
+		const output = { ...text, id: "msg_reply", content: [{ type: "output_text", text: "CONTINUED", annotations: [] }] };
+		const events = [{ type: "response.output_item.added", output_index: 0, item: { ...output, content: [] } },
+			{ type: "response.output_item.done", output_index: 0, item: output },
+			{ type: "response.completed", response: { id: "resp_done", status: "completed", output: [output], usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } } }];
+		return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+	} });
+	const auth = await AuthStorage.create(join(dir, "agent.db"));
+	const registry = new ModelRegistry(auth, join(dir, "models.yml"), { settings: Settings.isolated({ enabledModels: ["noli-*/*"] }) });
+	try {
+		writeFileSync(join(dir, "gateway-providers.json"), JSON.stringify({ providers: {
+			"noli-codex": { baseUrl: `http://127.0.0.1:${server.port}`, api: "openai-responses", models: [{ ...model, reasoning: true }] },
+		} }));
+		const pi = { registerProvider: (name: string, config: ProviderConfig) => registry.registerProvider(name, config, "codex-replay") } as ExtensionAPI;
+		registerGateway(pi, dir)!.bind({ token: "a".repeat(43), expires_ms: Date.now() + 60_000 });
+		const selected = registry.find("noli-codex", model.id)!;
+		enrichGatewayModels({ modelRegistry: registry, model: selected });
+		const assistant: AssistantMessage = { role: "assistant", api: "openai-responses", provider: "noli-codex", model: model.id,
+			content: [{ type: "thinking", thinking: "Synthetic summary", thinkingSignature: JSON.stringify(reasoning) }, { type: "text", text: "Synthetic progress" }],
+			providerPayload: { type: "openaiResponsesHistory", provider: "noli-codex", dt: true, items: [reasoning, text] },
+			stopReason: "stop", timestamp: 1, usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+		const context: Context = { messages: [assistant, { role: "user", content: "Continue", timestamp: 2 }] };
+		const original = JSON.stringify(context);
+		for (const sessionId of ["main", "resumed-helper"]) {
+			const source: Context = sessionId === "main" ? context : JSON.parse(original);
+			let dispatches = 0;
+			let responseStatus: number | undefined;
+			const events: Array<string | null> = [];
+			const result = await streamSimple(selected, source, {
+				apiKey: registry.resolver(selected, sessionId), sessionId, maxInFlightRequests: { "noli-codex": 1 },
+				beforeDispatch: async () => { dispatches++; },
+				onPayload: payload => { expect((payload as { input: typeof reasoning[] }).input.find(item => item.type === "reasoning")).toEqual(reasoning); },
+				onResponse: (response, callbackModel) => { if (callbackModel === selected) responseStatus = response.status; },
+				onSseEvent: (event, callbackModel) => { if (callbackModel === selected) events.push(event.event); },
+			}).result();
+			expect(result.stopReason).toBe("stop");
+			expect(result.content).toContainEqual(expect.objectContaining({ type: "text", text: "CONTINUED" }));
+			expect(dispatches).toBe(1);
+			expect(responseStatus).toBe(200);
+			expect(events).toContain("response.completed");
+			expect(received.at(-1)!.headers.get("x-noli-producer-session-id")).toBe(sessionId);
+			expect(JSON.stringify(source)).toBe(original);
+		}
+		const broken = JSON.parse(original) as Context;
+		const history = broken.messages[0] as AssistantMessage;
+		history.content = [{ type: "text", text: "Synthetic progress" }];
+		delete (history.providerPayload as { items: Array<{ id?: string }> }).items[0]!.id;
+		const before = received.length;
+		const rejected = await streamSimple(selected, broken, { apiKey: "synthetic-only" }).result();
+		expect(rejected.stopReason).toBe("error");
+		expect(rejected.errorMessage).toContain("original response item ID");
+		expect(received.length).toBe(before);
+		const ambiguous = JSON.parse(original) as Context;
+		const ambiguousHistory = ambiguous.messages[0] as AssistantMessage;
+		delete ambiguousHistory.providerPayload;
+		ambiguousHistory.content.unshift({ type: "thinking", thinking: "Conflicting retained signature",
+			thinkingSignature: JSON.stringify({ ...reasoning, id: "rs_conflicting" }) });
+		const conflict = await streamSimple(selected, ambiguous, { apiKey: "synthetic-only" }).result();
+		expect(conflict.stopReason).toBe("error");
+		expect(conflict.errorMessage).toContain("original response item ID");
+		expect(received.length).toBe(before);
+	} finally {
+		registry.clearSourceRegistrations("codex-replay");
 		server.stop(true); auth.close(); rmSync(dir, { recursive: true, force: true });
 	}
 });

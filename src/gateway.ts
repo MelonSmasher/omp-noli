@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ProviderConfig } from "@oh-my-pi/pi-coding-agent";
 import { resolveCacheRetention, streamSimple, type Model, type ResolvedAnthropicCompat } from "@oh-my-pi/pi-ai";
 import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
+import { GATEWAY_CODEX_API, gatewayCodexCompat, streamGatewayCodex } from "./gateway-codex";
 
 export interface GatewayCredential { token: string; expires_ms: number }
 export interface GatewayProviders {
@@ -67,7 +68,7 @@ function install(pi: ExtensionAPI, dir: string): void {
 
 /** Only transports registered by this launch can attach authenticated producer context. */
 export function isGatewayModel(model: { provider: string; api: string } | undefined): boolean {
-	return !!model && [GATEWAY_ANTHROPIC_API, "openai-responses", "openai-codex-responses"].includes(model.api)
+	return !!model && [GATEWAY_ANTHROPIC_API, GATEWAY_CODEX_API, "openai-responses", "openai-codex-responses"].includes(model.api)
 		&& !!current?.providers.some(([name, config]) => name === model.provider && config.api === model.api);
 }
 
@@ -81,6 +82,10 @@ export function enrichGatewayModels(ctx: Pick<ExtensionContext, "modelRegistry" 
 			// Main-loop facts and helpers must observe the same tool/cache policy
 			// as the serializer, including retained models after registry refresh.
 			model.compat ??= gatewayAnthropicCompat(model);
+			return;
+		}
+		if (model.api === GATEWAY_CODEX_API) {
+			model.compat ??= gatewayCodexCompat(model);
 			return;
 		}
 		if (model.api !== "openai-responses") return;
@@ -105,7 +110,7 @@ export function enrichGatewayModels(ctx: Pick<ExtensionContext, "modelRegistry" 
 		enrichedRegistries.add(registry);
 	}
 	for (const [name, config] of current?.providers ?? []) {
-		if (config.api !== "openai-responses" && config.api !== GATEWAY_ANTHROPIC_API) continue;
+		if (!["openai-responses", GATEWAY_ANTHROPIC_API, GATEWAY_CODEX_API].includes(config.api ?? "")) continue;
 		for (const model of ctx.modelRegistry.getProviderModels(name)) enrich(model);
 	}
 	// The selected model may predate a registry refresh; side turns use it too.
@@ -145,8 +150,11 @@ export function registerGateway(pi: ExtensionAPI, dir: string): GatewayProviders
 		}
 		// Native transports append different paths. Keep the manifest origin-only.
         const suffix = config.api === "google-generative-ai" ? "/v1beta" : ["anthropic-messages", "openai-codex-responses"].includes(config.api) ? "" : "/v1";
-		return [name, { baseUrl: config.baseUrl + suffix, api: config.api === "anthropic-messages" ? GATEWAY_ANTHROPIC_API : config.api,
-			models: config.models, ...(config.api === "anthropic-messages" && { streamSimple: streamGatewayAnthropic }) }];
+		const codex = name === "noli-codex" && config.api === "openai-responses";
+		return [name, { baseUrl: config.baseUrl + suffix,
+			api: codex ? GATEWAY_CODEX_API : config.api === "anthropic-messages" ? GATEWAY_ANTHROPIC_API : config.api,
+			models: config.models, ...(codex ? { streamSimple: streamGatewayCodex }
+				: config.api === "anthropic-messages" ? { streamSimple: streamGatewayAnthropic } : {}) }];
 	});
 	const register = (apiKey: string): void => {
 		current = { dir, providers, apiKey };
