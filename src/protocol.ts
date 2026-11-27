@@ -1,0 +1,444 @@
+/**
+ * Noli bridge wire protocol, version 1.
+ *
+ * This module is the contract Noli consumes. It has no transport code or runtime
+ * OMP imports: every value here is Noli-facing vocabulary, and the OMP adapter
+ * maps host data onto it. `protocol/noli-bridge.schema.json` is the
+ * language-neutral form of the same contract; tests validate every frame the
+ * bridge emits against it.
+ *
+ * Every enum is closed. A host value the adapter doesn't recognize is mapped to
+ * `unknown` instead of being passed through, so a new OMP state can't reach
+ * Noli as an unexpected string.
+ */
+
+export const PROTOCOL_VERSION = 1;
+
+// ---------------------------------------------------------------- capabilities
+
+export const CAPABILITY_NAMES = [
+    "gateway.bind",
+	"gateway.request.register",
+	"gateway.native.provenance",
+	"agents.list",
+	"host.thread_read",
+	"host.thread_open",
+	"agents.list.persisted",
+	"agents.output",
+	"agents.steer",
+	"agents.followUp",
+	"agents.turn",
+	"agents.kill.live",
+	"agents.kill.parked",
+	"definitions.list",
+	"work.get",
+	"work.cancel",
+	"host.attach_file",
+	"host.forge_resource",
+	"host.forge_read",
+	"host.forge_write",
+	"host.forge_watch",
+	"host.model_roles",
+	"tree.navigate",
+	"goal.budget",
+	"memory.status",
+	"memory.search",
+	"memory.save",
+	"history.entries",
+] as const;
+export type CapabilityName = (typeof CAPABILITY_NAMES)[number];
+
+/** Why a capability is unavailable. Stable codes; `detail` is human-readable only. */
+export const CAPABILITY_REASONS = [
+	/** A required host export is missing. */
+	"export_missing",
+	/** A required built-in tool isn't registered (e.g. OMP started with `--no-tools`). */
+	"tool_missing",
+	/** A host object no longer has the shape the internal hook expects. */
+	"hook_changed",
+	/** The hook passed its shape check but misbehaved when used. */
+	"runtime_failure",
+	/** Required session or launcher configuration is not established. */
+	"not_ready",
+] as const;
+export type CapabilityReason = (typeof CAPABILITY_REASONS)[number];
+
+export type CapabilityState =
+	| { available: true; api: "public" | "internal" | "main-only-v1" | "session-v1" | "native-provenance-v1"; detail: string }
+	| { available: false; api: "public" | "internal" | "main-only-v1" | "session-v1" | "native-provenance-v1"; reason: CapabilityReason; detail: string };
+
+export type Capabilities = Record<CapabilityName, CapabilityState>;
+
+/** Supplemental methods are negotiated individually; unsupported upstream APIs are not capabilities. */
+export const NATIVE_METHODS = ["tree.navigate", "goal.budget", "memory.status", "memory.search", "memory.save"] as const;
+export type NativeMethod = (typeof NATIVE_METHODS)[number];
+export const UNAVAILABLE_NATIVE_METHODS = ["memory.clear", "memory.enqueue", "memory.stats", "memory.diagnose", "memory.queue", "plan.propose", "plan.approve", "mcp.control", "lsp.control", "dap.control", "input.secret"] as const;
+export interface NavigateTreeParams { targetId: string; summarize?: boolean }
+export interface GoalBudgetParams { tokenBudget: number | null }
+export interface MemorySearchParams { query: string; limit?: number }
+export interface MemorySaveParams { content: string; context?: string; source?: string; importance?: number }
+/** Lossless official SDK result, including cancellation and backend-specific metadata. */
+export interface NativeControlResult { cancelled?: boolean; backend?: string; goal?: unknown }
+
+
+// ---------------------------------------------------------------------- agents
+
+export const AGENT_KINDS = ["main", "sub", "advisor", "unknown"] as const;
+export type AgentKind = (typeof AGENT_KINDS)[number];
+
+/**
+ * Agent lifecycle, independent of the host's own status names.
+ * - `running`: executing a turn.
+ * - `idle`: live, waiting for input.
+ * - `parked`: not in memory; revivable with `agents.turn`.
+ * - `terminated`: killed; cannot be revived.
+ * - `unknown`: the host reported a state this bridge doesn't recognize.
+ */
+export const AGENT_STATES = ["running", "idle", "parked", "terminated", "unknown"] as const;
+export type AgentState = (typeof AGENT_STATES)[number];
+
+export interface AgentView {
+	id: string;
+	name: string;
+	kind: AgentKind;
+	parentId: string | null;
+	state: AgentState;
+	/** A live in-memory session is attached. */
+	live: boolean;
+	/** The live session is producing output right now. */
+	streaming: boolean;
+	/** Short display-only summary of current work. */
+	activity: string | null;
+	/** Name of the agent definition this agent runs, when the host recorded it (see `definitions.list`). */
+	definition: string | null;
+	/** Independently observed session telemetry; unavailable values stay null. */
+	model: string | null;
+	effort: string | null;
+	requests: number | null;
+	contextTokens: number | null;
+	contextWindow: number | null;
+	inputTokens: number | null;
+	outputTokens: number | null;
+	sessionCost: number | null;
+	tokensPerSecond: number | null;
+	/** Milliseconds since the Unix epoch. */
+	createdAt: number;
+	/** Milliseconds since the Unix epoch. */
+	lastActivity: number;
+}
+
+// ------------------------------------------------------------------- discovery
+
+export const DISCOVERY_STATUSES = ["complete", "skipped", "inconclusive", "unavailable", "none", "not_requested"] as const;
+export type DiscoveryStatus = (typeof DISCOVERY_STATUSES)[number];
+
+/** Why some persisted children are still unregistered, when the status explains it. */
+export const DISCOVERY_REASONS = [
+	/** The host scanned and declined some transcripts (stub, released, vibe-owned, or scanned before they completed). */
+	"host_declined",
+	/** Same as `host_declined`, from an earlier call; looked up again only when the transcript changes. */
+	"previously_declined",
+	/** No evidence the host scan ran. */
+	"no_scan_evidence",
+	/** The lookup call threw. */
+	"lookup_failed",
+	/** `agents.list.persisted` is unavailable; see `capabilities`. */
+	"capability_unavailable",
+	/** The session has no persisted root yet. */
+	"no_root",
+] as const;
+export type DiscoveryReason = (typeof DISCOVERY_REASONS)[number];
+
+export interface DiscoveryReport {
+	status: DiscoveryStatus;
+	reason: DiscoveryReason | null;
+	detail: string;
+	/** Children registered by this call. */
+	restored: string[];
+	/** Child transcripts found on disk that are still unregistered. */
+	pending: string[];
+}
+
+export interface ListResult {
+	agents: AgentView[];
+	discovery: DiscoveryReport;
+}
+
+// ----------------------------------------------------------------- definitions
+
+export const DEFINITION_SOURCES = ["bundled", "user", "project", "unknown"] as const;
+export type DefinitionSource = (typeof DEFINITION_SOURCES)[number];
+
+export interface DefinitionView {
+	/** Pass as `agents.turn` `params.agent`. */
+	name: string;
+	description: string;
+	source: DefinitionSource;
+}
+
+// ------------------------------------------------------------- method results
+
+export interface AgentOutputParams {
+	agentId: string;
+	/** Exclusive upper line bound; omitted selects the newest page. */
+	offset?: number;
+	limit?: number;
+	/**
+	 * Serve the page from the retained transcript with this revision (as
+	 * returned by an earlier page), even if the child has produced more
+	 * output since. Fails with `snapshot_expired` once no longer retained.
+	 */
+	revision?: string;
+}
+
+export interface AgentOutputResult {
+	agentId: string;
+	text: string;
+	/** Offsets into text are UTF-16 code units, not UTF-8 bytes. */
+	spans: {
+		id: string;
+		role: string;
+		tool: string | null;
+		created_ms: number;
+		start: number;
+		end: number;
+	}[];
+	nextOffset: number | null;
+	/**
+	 * Opaque identity of the whole transcript this page was cut from.
+	 * Equal on every page of one unchanged transcript; changes when any
+	 * visible line or span identity changes anywhere. Compare for equality only.
+	 */
+	revision: string;
+}
+
+export type AgentTelemetryView = Pick<AgentView,
+	"model" | "effort" | "requests" | "contextTokens" | "contextWindow" |
+	"inputTokens" | "outputTokens" | "sessionCost" | "tokensPerSecond">;
+
+export interface TurnResult {
+	output: string;
+	exitCode: number | null;
+	aborted: boolean;
+}
+
+export interface KillResult {
+	killed: boolean;
+	mode: "live" | "parked";
+}
+
+// ------------------------------------------------------------------------ work
+
+/** Kind of background job, independent of the host's own names. */
+export const JOB_KINDS = ["bash", "task", "eval", "unknown"] as const;
+export type JobKind = (typeof JOB_KINDS)[number];
+
+export interface JobView {
+	id: string;
+	kind: JobKind;
+	/** Short display-only description of the job. */
+	label: string;
+	/** Milliseconds since the Unix epoch. */
+	startedAt: number;
+	/** The child agent the job runs, when it runs one. */
+	agentId: string | null;
+}
+
+/**
+ * Why the root session is or isn't settled. The host is settled only when it
+ * has no open run (including pauses), is not streaming, has no admitted submission,
+ * nothing queued (`queued` includes hidden next-turn messages the visible queues
+ * omit) and no native wake sources or cancellation drain. Every field is observed.
+ */
+export interface WorkResult {
+	settled: boolean;
+	streaming: boolean;
+	admittedSubmission: boolean;
+	/** Queued messages, including hidden next-turn messages. */
+	queued: number;
+	/** Of `queued`, messages hidden from queued-only user steering/follow-up chips; excludes live-steered chips. */
+	hiddenQueued: number;
+	/** Native wake sources (jobs, child runs, queued results/peer messages), or cancellation body/cleanup drain. */
+	pendingAsyncWork: boolean;
+	/** Running or cancellation-draining background jobs owned by the root session. */
+	jobs: JobView[];
+	/** Finished job results waiting to be delivered into the conversation. */
+	undeliveredResults: number;
+}
+
+export interface CancelWorkResult {
+	/** True only after an owned job was cancelled and its body/cleanup finished; false if finished or not owned. */
+	cancelled: boolean;
+}
+
+// --------------------------------------------------------------------- history
+
+/**
+ * `history.entries`: one bounded page of the root session's append history,
+ * the same entries OMP's `get_entries` returns, strictly after `since`.
+ * Page budgets are UTF-8 bytes; the bridge client reads frames of at most 1 MiB.
+ */
+export const HISTORY_MIN_BYTES = 4096;
+export const HISTORY_MAX_BYTES = 768 * 1024;
+export const HISTORY_DEFAULT_BYTES = 512 * 1024;
+
+export interface HistoryEntriesParams {
+	/** Entry id; the page starts after it. Omitted: from the first entry. Unknown: `unknown_since`. */
+	since?: string;
+	/** UTF-16 offset into the JSON text of the first entry after `since`; continues a `partial`. */
+	offset?: number;
+	/** UTF-8 budget for the page's entry payload (4096..786432, default 524288). */
+	maxBytes?: number;
+}
+
+export interface HistoryEntriesResult {
+	sessionId: string;
+	leafId: string | null;
+	/** Whole entries in append order; never mixed with `partial`. */
+	entries: Record<string, unknown>[];
+	/**
+	 * A slice of `JSON.stringify(entry)` for an entry larger than one page.
+	 * Offsets are UTF-16 code units; slices never split a surrogate pair.
+	 */
+	partial?: { id: string; offset: number; total: number; text: string };
+	/** Anything remains after this page: more entries or the rest of `partial`. */
+	more: boolean;
+}
+
+export interface HelloResult {
+	protocol: typeof PROTOCOL_VERSION;
+	sessionId: string;
+	pid: number;
+	capabilities: Capabilities;
+}
+export interface GatewayBindParams { sessionId: string }
+export interface GatewayBindResult { token: string; expires_ms: number }
+export interface GatewayReadyResult { bound: boolean; /** Safe diagnostic while a working key is retained and renewal retries. */ renewalError?: string }
+export interface GatewayBindRequest { type: "request"; id: string; method: "gateway.bind"; params: GatewayBindParams }
+
+// ------------------------------------------------- out-of-band producer facts
+
+/** Absolute Claude Code prompt/turn counters, recomputed from the OMP session branch. */
+export interface PromptPosition { promptIndex: number; turnIndex: number }
+/**
+ * The first non-meta source input of the request (T0). `sample` holds the UTF-16
+ * code units at indices 4, 7 and 20 of its first text, "0" for each missing index,
+ * with any lone surrogate replaced by U+FFFD. Noli derives the fingerprint with its
+ * own Claude Code version.
+ */
+export interface FirstEligibleInput { messageId: string | null; textBlockIndex: number | null; sample: string }
+export interface RequestPrompt { id: string | null; origin: string | null; position: PromptPosition | null }
+/** One tool the previous batch executed: resolved wire tool name and max(0, round(end - start)) in ms. */
+export interface PrevToolDuration { toolName: string; durationMs: number }
+/** Claude Code `compactionRequestKind`: the `x-cc-compaction-request` / `x-cc-context-compacted` value. */
+export type CompactionKind = "auto" | "manual" | "reactive";
+/**
+ * Producer facts for one main, subagent or compaction request. Noli mints ownership.
+ * The current contract includes native compaction kinds.
+ */
+export interface RequestFacts {
+	version: 1;
+	/** Always the registering `ompSessionId`. */
+	producerSessionId: string;
+	/** Active leaf entry id when the facts were computed. */
+	branchAnchor: string | null;
+	/** Length of the active branch path. */
+	historyRevision: number;
+	producerAgentId: string;
+	parentProducerSessionId: string | null;
+	requestClass: "main" | "subagent" | "compaction";
+	querySource: string;
+	/** The last non-error assistant response id (`msg_…`) in the request's source view. */
+	previousMessageId?: string;
+	/** null when T0 lies in history recorded before the session's facts epoch. */
+	firstEligible: FirstEligibleInput | null;
+	prompt: RequestPrompt;
+	/**
+	 * Claude Code `prevToolDurations`: the tools executed in the batch this main or subagent
+	 * request directly follows, in completion order, first 32. Absent when there is none;
+	 * never null or empty, and never on compaction.
+	 */
+	prevToolDurations?: PrevToolDuration[];
+	/** Required on compaction (the fork's `x-cc-compaction-request`), absent otherwise. */
+	compactionKind?: CompactionKind;
+	/**
+	 * The kind of the native compaction the main thread committed since its previous main
+	 * request (CC `NEn`/`T7o`: `x-cc-context-compacted`, consumed once). Main only.
+	 */
+	contextCompacted?: CompactionKind;
+}
+/** UTF-8 SHA-256 and byte length of OMP's bundled system-prompt static prefix. */
+export interface SystemPrefix { sha256: string; len: number }
+export interface ProducerSessionParams {
+	ompSessionId: string;
+	parentOmpSessionId: string | null;
+	agentKind: "main" | "sub";
+	agentId: string;
+	/** The session's facts-epoch entry; null while it is not on the active branch. */
+	epochEntryId: string | null;
+	ompVersion: string;
+	systemPrefix: SystemPrefix | null;
+}
+export interface ProducerBranchParams { ompSessionId: string; leafId: string | null; resetEntryIds: string[] }
+export interface GatewayRequestParams { ompSessionId: string; facts: RequestFacts }
+export interface GatewayRequestResult { requestReference: string }
+/** `begin` requires facts and its exact side dispatch; `end` omits dispatchSessionId. */
+export interface ProducerCompactionParams { ompSessionId: string; phase: "begin" | "end"; facts: RequestFacts | null; dispatchSessionId?: string }
+export interface ProducerResult {}
+export interface GatewayRequest { type: "request"; id: string; method: "gateway.request.register"; params: GatewayRequestParams }
+export interface ProducerSessionRequest { type: "request"; id: string; method: "producer.session"; params: ProducerSessionParams }
+export interface ProducerBranchRequest { type: "request"; id: string; method: "producer.branch"; params: ProducerBranchParams }
+export interface ProducerCompactionRequest { type: "request"; id: string; method: "producer.compaction"; params: ProducerCompactionParams }
+/**
+ * Private top-level member of an Anthropic Messages or OpenAI Responses body
+ * bound for the Noli gateway. Noli removes it before native dispatch. `ref` is
+ * registered for the pending main-loop call, `warm` marks a cache-warm replay.
+ */
+export interface NoliRequestTag { session: string; ref: string | null; warm: boolean }
+
+// ---------------------------------------------------------------------- errors
+
+export const ERROR_CODES = [
+	"unauthorized",
+	"stale_session",
+	"unknown_agent",
+	"agent_absent",
+	"snapshot_expired",
+	"unknown_definition",
+	"definition_required",
+	"forbidden_kind",
+	"parked",
+	"already_terminal",
+	"busy",
+	"capability_unavailable",
+	"bad_request",
+	"bad_frame",
+	"frame_too_large",
+	"unknown_method",
+	"not_ready",
+	"internal",
+	"unknown_since",
+] as const;
+export type ErrorCode = (typeof ERROR_CODES)[number];
+
+export interface ErrorBody {
+	code: ErrorCode;
+	message: string;
+	/** Present with `capability_unavailable`: which capability, and why. */
+	capability?: CapabilityName;
+	reason?: CapabilityReason;
+}
+
+// ---------------------------------------------------------------------- frames
+
+export type RequestId = string | number;
+
+export type ResponseFrame =
+	| { type: "response"; id: RequestId | null; ok: true; result: unknown }
+	| { type: "response"; id: RequestId | null; ok: false; error: ErrorBody };
+
+export type EventFrame =
+	| { type: "event"; event: "agent.changed"; sessionId: string; agent: AgentView }
+	| { type: "event"; event: "capabilities.changed"; sessionId: string; capabilities: Capabilities };
+
+export type ServerFrame = ResponseFrame | EventFrame | GatewayBindRequest | GatewayRequest | ProducerSessionRequest | ProducerBranchRequest | ProducerCompactionRequest;

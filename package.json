@@ -1,0 +1,42 @@
+{
+  "name": "omp-noli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Session-scoped Noli control and guarded native forge tools for Oh My Pi",
+  "license": "MIT",
+  "author": "Alex Markessinis <alex@markessinis.me>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MelonSmasher/omp-noli.git"
+  },
+  "engines": {
+    "bun": ">=1.4.4"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "schema": "bun scripts/generate-schema.ts",
+    "schema:check": "bun scripts/generate-schema.ts --check",
+    "system-prefix": "bun scripts/system-prefix.ts",
+    "system-prefix:check": "bun scripts/system-prefix.ts --check",
+    "extension:check": "bun scripts/check-extension.ts",
+    "smoke:child": "bun scripts/smoke-child.ts",
+    "smoke:native": "bun scripts/smoke-native.ts",
+    "smoke:forge": "bun scripts/smoke-forge.ts",
+    "smoke:install": "bun scripts/smoke-install.ts --local"
+  },
+  "devDependencies": {
+    "@oh-my-pi/omptype": "19.0.1",
+    "@oh-my-pi/pi-coding-agent": "19.0.1",
+    "@types/bun": "latest",
+    "ajv": "^8",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": ">=19.0.1"
+  },
+  "omp": {
+    "extensions": ["./src/index.ts"]
+  }
+}

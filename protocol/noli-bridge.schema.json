@@ -1,0 +1,2203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MelonSmasher/omp-noli/protocol/noli-bridge.schema.json",
+  "title": "Noli bridge protocol, version 1",
+  "description": "Every frame the bridge sends. Enumerations are closed: a client may treat an unlisted value as a protocol violation. Keep in sync with src/protocol.ts; tests check that the enumerations match and that every emitted frame validates.",
+  "$ref": "#/$defs/ServerFrame",
+  "$defs": {
+    "ServerFrame": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ResponseFrame"
+        },
+        {
+          "$ref": "#/$defs/EventFrame"
+        },
+        {
+          "$ref": "#/$defs/GatewayBindRequest"
+        },
+        {
+          "$ref": "#/$defs/GatewayRequest"
+        },
+        {
+          "$ref": "#/$defs/ProducerSessionRequest"
+        },
+        {
+          "$ref": "#/$defs/ProducerBranchRequest"
+        },
+        {
+          "$ref": "#/$defs/ProducerCompactionRequest"
+        }
+      ]
+    },
+    "RequestId": {
+      "type": [
+        "string",
+        "number",
+        "null"
+      ]
+    },
+    "ResponseFrame": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "ok",
+            "result"
+          ],
+          "properties": {
+            "type": {
+              "const": "response"
+            },
+            "id": {
+              "$ref": "#/$defs/RequestId"
+            },
+            "ok": {
+              "const": true
+            },
+            "result": {
+              "$ref": "#/$defs/Result"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "ok",
+            "error"
+          ],
+          "properties": {
+            "type": {
+              "const": "response"
+            },
+            "id": {
+              "$ref": "#/$defs/RequestId"
+            },
+            "ok": {
+              "const": false
+            },
+            "error": {
+              "$ref": "#/$defs/ErrorBody"
+            }
+          }
+        }
+      ]
+    },
+    "Result": {
+      "description": "Result of one method. Which variant applies follows from the request's method.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HelloResult"
+        },
+        {
+          "$ref": "#/$defs/CapabilitiesResult"
+        },
+        {
+          "$ref": "#/$defs/DefinitionsResult"
+        },
+        {
+          "$ref": "#/$defs/ListResult"
+        },
+        {
+          "$ref": "#/$defs/QueuedResult"
+        },
+        {
+          "$ref": "#/$defs/TurnResult"
+        },
+        {
+          "$ref": "#/$defs/KillResult"
+        },
+        {
+          "$ref": "#/$defs/WorkResult"
+        },
+        {
+          "$ref": "#/$defs/CancelWorkResult"
+        },
+        {
+          "$ref": "#/$defs/AgentOutputResult"
+        },
+        {
+          "$ref": "#/$defs/NativeControlResult"
+        },
+        {
+          "$ref": "#/$defs/GatewayBindResult"
+        },
+        {
+          "$ref": "#/$defs/GatewayReadyResult"
+        },
+        {
+          "$ref": "#/$defs/GatewayRequestResult"
+        },
+        {
+          "$ref": "#/$defs/HistoryEntriesResult"
+        }
+      ]
+    },
+    "HelloResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "sessionId",
+        "pid",
+        "capabilities"
+      ],
+      "properties": {
+        "protocol": {
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pid": {
+          "type": "integer"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/Capabilities"
+        }
+      }
+    },
+    "CapabilitiesResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capabilities"
+      ],
+      "properties": {
+        "capabilities": {
+          "$ref": "#/$defs/Capabilities"
+        }
+      }
+    },
+    "DefinitionsResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "definitions"
+      ],
+      "properties": {
+        "definitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DefinitionView"
+          }
+        }
+      }
+    },
+    "ListResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agents",
+        "discovery"
+      ],
+      "properties": {
+        "agents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentView"
+          }
+        },
+        "discovery": {
+          "$ref": "#/$defs/DiscoveryReport"
+        }
+      }
+    },
+    "QueuedResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "queued"
+      ],
+      "properties": {
+        "queued": {
+          "const": true
+        }
+      }
+    },
+    "TurnResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "output",
+        "exitCode",
+        "aborted"
+      ],
+      "properties": {
+        "output": {
+          "type": "string"
+        },
+        "exitCode": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "aborted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "KillResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "killed",
+        "mode"
+      ],
+      "properties": {
+        "killed": {
+          "type": "boolean"
+        },
+        "mode": {
+          "enum": [
+            "live",
+            "parked"
+          ]
+        }
+      }
+    },
+    "WorkResult": {
+      "description": "Observed settlement state of the root session. Cancellation-draining job bodies remain pending until completion.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "settled",
+        "streaming",
+        "admittedSubmission",
+        "queued",
+        "hiddenQueued",
+        "pendingAsyncWork",
+        "jobs",
+        "undeliveredResults"
+      ],
+      "properties": {
+        "settled": {
+          "type": "boolean"
+        },
+        "streaming": {
+          "type": "boolean"
+        },
+        "admittedSubmission": {
+          "type": "boolean"
+        },
+        "queued": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hiddenQueued": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pendingAsyncWork": {
+          "type": "boolean"
+        },
+        "jobs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JobView"
+          }
+        },
+        "undeliveredResults": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "CancelWorkResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cancelled"
+      ],
+      "properties": {
+        "cancelled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "JobKind": {
+      "enum": [
+        "bash",
+        "task",
+        "eval",
+        "unknown"
+      ]
+    },
+    "JobView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "label",
+        "startedAt",
+        "agentId"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "$ref": "#/$defs/JobKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "number",
+          "description": "Milliseconds since the Unix epoch."
+        },
+        "agentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "CapabilityName": {
+      "enum": [
+        "gateway.bind",
+        "gateway.request.register",
+        "gateway.native.provenance",
+        "agents.list",
+        "host.thread_read",
+        "host.thread_open",
+        "agents.list.persisted",
+        "agents.output",
+        "agents.steer",
+        "agents.followUp",
+        "agents.turn",
+        "agents.kill.live",
+        "agents.kill.parked",
+        "definitions.list",
+        "work.get",
+        "work.cancel",
+        "host.attach_file",
+        "host.forge_resource",
+        "host.forge_read",
+        "host.forge_write",
+        "host.forge_watch",
+        "host.model_roles",
+        "tree.navigate",
+        "goal.budget",
+        "memory.status",
+        "memory.search",
+        "memory.save",
+        "history.entries"
+      ]
+    },
+    "CapabilityReason": {
+      "enum": [
+        "export_missing",
+        "tool_missing",
+        "hook_changed",
+        "runtime_failure",
+        "not_ready"
+      ]
+    },
+    "CapabilityApi": {
+      "enum": [
+        "public",
+        "internal",
+        "main-only-v1",
+        "session-v1",
+        "native-provenance-v1"
+      ]
+    },
+    "CapabilityState": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "available",
+            "api",
+            "detail"
+          ],
+          "properties": {
+            "available": {
+              "const": true
+            },
+            "api": {
+              "$ref": "#/$defs/CapabilityApi"
+            },
+            "detail": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "available",
+            "api",
+            "reason",
+            "detail"
+          ],
+          "properties": {
+            "available": {
+              "const": false
+            },
+            "api": {
+              "$ref": "#/$defs/CapabilityApi"
+            },
+            "reason": {
+              "$ref": "#/$defs/CapabilityReason"
+            },
+            "detail": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "Capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gateway.bind",
+        "gateway.request.register",
+        "gateway.native.provenance",
+        "agents.list",
+        "host.thread_read",
+        "host.thread_open",
+        "agents.list.persisted",
+        "agents.output",
+        "agents.steer",
+        "agents.followUp",
+        "agents.turn",
+        "agents.kill.live",
+        "agents.kill.parked",
+        "definitions.list",
+        "work.get",
+        "work.cancel",
+        "tree.navigate",
+        "goal.budget",
+        "memory.status",
+        "memory.search",
+        "memory.save",
+        "history.entries"
+      ],
+      "properties": {
+        "gateway.bind": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "public"
+                }
+              }
+            }
+          ]
+        },
+        "gateway.request.register": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "public"
+                }
+              }
+            }
+          ]
+        },
+        "gateway.native.provenance": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "native-provenance-v1"
+                }
+              }
+            }
+          ]
+        },
+        "agents.list": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "host.thread_read": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "api": {
+                  "const": "main-only-v1"
+                }
+              }
+            }
+          ]
+        },
+        "host.thread_open": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "main-only-v1"
+                }
+              }
+            }
+          ]
+        },
+        "agents.list.persisted": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "agents.output": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "agents.steer": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "agents.followUp": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "agents.turn": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "agents.kill.live": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "agents.kill.parked": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "definitions.list": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "work.get": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "work.cancel": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "host.attach_file": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "main-only-v1"
+                }
+              }
+            }
+          ]
+        },
+        "host.forge_resource": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "session-v1"
+                }
+              }
+            }
+          ]
+        },
+        "host.forge_read": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "session-v1"
+                }
+              }
+            }
+          ]
+        },
+        "host.forge_write": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "session-v1"
+                }
+              }
+            }
+          ]
+        },
+        "host.forge_watch": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "main-only-v1"
+                }
+              }
+            }
+          ]
+        },
+        "host.model_roles": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/CapabilityState"
+            },
+            {
+              "type": "object",
+              "required": [
+                "api"
+              ],
+              "properties": {
+                "api": {
+                  "const": "session-v1"
+                }
+              }
+            }
+          ]
+        },
+        "tree.navigate": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "goal.budget": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "memory.status": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "memory.search": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "memory.save": {
+          "$ref": "#/$defs/CapabilityState"
+        },
+        "history.entries": {
+          "$ref": "#/$defs/CapabilityState"
+        }
+      }
+    },
+    "AgentKind": {
+      "enum": [
+        "main",
+        "sub",
+        "advisor",
+        "unknown"
+      ]
+    },
+    "AgentState": {
+      "enum": [
+        "running",
+        "idle",
+        "parked",
+        "terminated",
+        "unknown"
+      ]
+    },
+    "AgentView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "parentId",
+        "state",
+        "live",
+        "streaming",
+        "activity",
+        "definition",
+        "model",
+        "effort",
+        "requests",
+        "contextTokens",
+        "contextWindow",
+        "inputTokens",
+        "outputTokens",
+        "sessionCost",
+        "tokensPerSecond",
+        "createdAt",
+        "lastActivity"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "const": "main"
+            },
+            {
+              "const": "sub"
+            },
+            {
+              "const": "advisor"
+            },
+            {
+              "const": "unknown"
+            }
+          ]
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "const": "unknown"
+            },
+            {
+              "const": "running"
+            },
+            {
+              "const": "idle"
+            },
+            {
+              "const": "parked"
+            },
+            {
+              "const": "terminated"
+            }
+          ]
+        },
+        "live": {
+          "type": "boolean"
+        },
+        "streaming": {
+          "type": "boolean"
+        },
+        "activity": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "definition": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "requests": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "contextTokens": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "contextWindow": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "inputTokens": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "outputTokens": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "sessionCost": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "tokensPerSecond": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "number"
+        },
+        "lastActivity": {
+          "type": "number"
+        }
+      }
+    },
+    "DiscoveryStatus": {
+      "enum": [
+        "complete",
+        "skipped",
+        "inconclusive",
+        "unavailable",
+        "none",
+        "not_requested"
+      ]
+    },
+    "DiscoveryReason": {
+      "enum": [
+        "host_declined",
+        "previously_declined",
+        "no_scan_evidence",
+        "lookup_failed",
+        "capability_unavailable",
+        "no_root"
+      ]
+    },
+    "DiscoveryReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reason",
+        "detail",
+        "restored",
+        "pending"
+      ],
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/DiscoveryStatus"
+        },
+        "reason": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/DiscoveryReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detail": {
+          "type": "string"
+        },
+        "restored": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pending": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "DefinitionSource": {
+      "enum": [
+        "bundled",
+        "user",
+        "project",
+        "unknown"
+      ]
+    },
+    "DefinitionView": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "description",
+        "source"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/DefinitionSource"
+        }
+      }
+    },
+    "ErrorCode": {
+      "enum": [
+        "unauthorized",
+        "stale_session",
+        "unknown_agent",
+        "agent_absent",
+        "snapshot_expired",
+        "unknown_definition",
+        "definition_required",
+        "forbidden_kind",
+        "parked",
+        "already_terminal",
+        "busy",
+        "capability_unavailable",
+        "bad_request",
+        "bad_frame",
+        "frame_too_large",
+        "unknown_method",
+        "not_ready",
+        "internal",
+        "unknown_since"
+      ]
+    },
+    "ErrorBody": {
+      "description": "Unavailable advertised capabilities carry capability/reason; unsupported native controllers carry code/message only.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "message",
+            "capability",
+            "reason"
+          ],
+          "properties": {
+            "code": {
+              "const": "capability_unavailable"
+            },
+            "message": {
+              "type": "string"
+            },
+            "capability": {
+              "$ref": "#/$defs/CapabilityName"
+            },
+            "reason": {
+              "$ref": "#/$defs/CapabilityReason"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/ErrorCode"
+                },
+                {
+                  "not": {
+                    "const": "capability_unavailable"
+                  }
+                }
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "code",
+            "message"
+          ],
+          "properties": {
+            "code": {
+              "const": "capability_unavailable"
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "EventFrame": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "event",
+            "sessionId",
+            "agent"
+          ],
+          "properties": {
+            "type": {
+              "const": "event"
+            },
+            "event": {
+              "const": "agent.changed"
+            },
+            "sessionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "agent": {
+              "$ref": "#/$defs/AgentView"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "event",
+            "sessionId",
+            "capabilities"
+          ],
+          "properties": {
+            "type": {
+              "const": "event"
+            },
+            "event": {
+              "const": "capabilities.changed"
+            },
+            "sessionId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "capabilities": {
+              "$ref": "#/$defs/Capabilities"
+            }
+          }
+        }
+      ]
+    },
+    "AgentOutputParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agentId"
+      ],
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "AgentOutputResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agentId",
+        "text",
+        "spans",
+        "nextOffset",
+        "revision"
+      ],
+      "properties": {
+        "agentId": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "spans": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "role",
+              "tool",
+              "created_ms",
+              "start",
+              "end"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "tool": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              },
+              "created_ms": {
+                "type": "number"
+              },
+              "start": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "nextOffset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "revision": {
+          "type": "string"
+        }
+      }
+    },
+    "NavigateTreeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "targetId"
+      ],
+      "properties": {
+        "targetId": {
+          "type": "string"
+        },
+        "summarize": {
+          "type": "boolean"
+        }
+      }
+    },
+    "GoalBudgetParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokenBudget"
+      ],
+      "properties": {
+        "tokenBudget": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "MemorySearchParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      }
+    },
+    "MemorySaveParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "content"
+      ],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "context": {
+          "anyOf": [
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "importance": {
+          "anyOf": [
+            {
+              "type": "number"
+            }
+          ]
+        }
+      }
+    },
+    "NativeControlResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [],
+      "properties": {
+        "cancelled": {
+          "type": "boolean"
+        },
+        "backend": {
+          "anyOf": [
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "goal": {}
+      },
+      "anyOf": [
+        {
+          "required": [
+            "cancelled"
+          ],
+          "properties": {
+            "cancelled": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "required": [
+            "backend"
+          ],
+          "properties": {
+            "backend": {
+              "anyOf": [
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "required": [
+            "goal"
+          ],
+          "properties": {
+            "goal": {}
+          }
+        }
+      ]
+    },
+    "GatewayBindParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId"
+      ],
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        }
+      }
+    },
+    "GatewayBindResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "token",
+        "expires_ms"
+      ],
+      "properties": {
+        "token": {
+          "type": "string"
+        },
+        "expires_ms": {
+          "type": "number"
+        }
+      }
+    },
+    "GatewayReadyResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bound"
+      ],
+      "properties": {
+        "bound": {
+          "type": "boolean"
+        },
+        "renewalError": {
+          "anyOf": [
+            {
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "GatewayBindRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "type": {
+          "const": "request"
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "const": "gateway.bind"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sessionId"
+          ],
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "GatewayRequestParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ompSessionId",
+        "facts"
+      ],
+      "properties": {
+        "ompSessionId": {
+          "type": "string"
+        },
+        "facts": {
+          "$ref": "#/$defs/RequestFacts"
+        }
+      }
+    },
+    "GatewayRequestResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestReference"
+      ],
+      "properties": {
+        "requestReference": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        }
+      }
+    },
+    "GatewayRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "type": {
+          "const": "request"
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "const": "gateway.request.register"
+        },
+        "params": {
+          "$ref": "#/$defs/GatewayRequestParams"
+        }
+      }
+    },
+    "PromptPosition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "promptIndex",
+        "turnIndex"
+      ],
+      "properties": {
+        "promptIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000000
+        },
+        "turnIndex": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        }
+      }
+    },
+    "FirstEligibleInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "messageId",
+        "textBlockIndex",
+        "sample"
+      ],
+      "properties": {
+        "messageId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "textBlockIndex": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sample": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 3
+        }
+      }
+    },
+    "RequestPrompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "origin",
+        "position"
+      ],
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PromptPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "RequestFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "producerSessionId",
+        "branchAnchor",
+        "historyRevision",
+        "producerAgentId",
+        "parentProducerSessionId",
+        "requestClass",
+        "querySource",
+        "firstEligible",
+        "prompt"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "producerSessionId": {
+          "type": "string"
+        },
+        "branchAnchor": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "historyRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "producerAgentId": {
+          "type": "string"
+        },
+        "parentProducerSessionId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "requestClass": {
+          "anyOf": [
+            {
+              "const": "main"
+            },
+            {
+              "const": "subagent"
+            },
+            {
+              "const": "compaction"
+            }
+          ]
+        },
+        "querySource": {
+          "type": "string"
+        },
+        "previousMessageId": {
+          "type": "string",
+          "pattern": "^msg_[A-Za-z0-9_-]{1,508}$"
+        },
+        "firstEligible": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FirstEligibleInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prompt": {
+          "$ref": "#/$defs/RequestPrompt"
+        },
+        "prevToolDurations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/PrevToolDuration"
+          }
+        },
+        "compactionKind": {
+          "anyOf": [
+            {
+              "const": "auto"
+            },
+            {
+              "const": "manual"
+            },
+            {
+              "const": "reactive"
+            }
+          ]
+        },
+        "contextCompacted": {
+          "anyOf": [
+            {
+              "const": "auto"
+            },
+            {
+              "const": "manual"
+            },
+            {
+              "const": "reactive"
+            }
+          ]
+        }
+      },
+      "if": {
+        "required": [
+          "requestClass"
+        ],
+        "properties": {
+          "requestClass": {
+            "const": "compaction"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "prevToolDurations": false
+        }
+      }
+    },
+    "SystemPrefix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "len"
+      ],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "len": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "ProducerSessionParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ompSessionId",
+        "parentOmpSessionId",
+        "agentKind",
+        "agentId",
+        "epochEntryId",
+        "ompVersion",
+        "systemPrefix"
+      ],
+      "properties": {
+        "ompSessionId": {
+          "type": "string"
+        },
+        "parentOmpSessionId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "agentKind": {
+          "anyOf": [
+            {
+              "const": "main"
+            },
+            {
+              "const": "sub"
+            }
+          ]
+        },
+        "agentId": {
+          "type": "string"
+        },
+        "epochEntryId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "ompVersion": {
+          "type": "string"
+        },
+        "systemPrefix": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SystemPrefix"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "ProducerBranchParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ompSessionId",
+        "leafId",
+        "resetEntryIds"
+      ],
+      "properties": {
+        "ompSessionId": {
+          "type": "string"
+        },
+        "leafId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "resetEntryIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ProducerCompactionParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ompSessionId",
+        "phase",
+        "facts"
+      ],
+      "properties": {
+        "ompSessionId": {
+          "type": "string"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "const": "begin"
+            },
+            {
+              "const": "end"
+            }
+          ]
+        },
+        "facts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestFacts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dispatchSessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      },
+      "if": {
+        "required": [
+          "phase"
+        ],
+        "properties": {
+          "phase": {
+            "const": "begin"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "dispatchSessionId"
+        ],
+        "properties": {
+          "facts": {
+            "$ref": "#/$defs/RequestFacts"
+          },
+          "dispatchSessionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "facts": {
+            "type": "null"
+          },
+          "dispatchSessionId": false
+        }
+      }
+    },
+    "ProducerResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {}
+    },
+    "ProducerSessionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "type": {
+          "const": "request"
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "const": "producer.session"
+        },
+        "params": {
+          "$ref": "#/$defs/ProducerSessionParams"
+        }
+      }
+    },
+    "ProducerBranchRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "type": {
+          "const": "request"
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "const": "producer.branch"
+        },
+        "params": {
+          "$ref": "#/$defs/ProducerBranchParams"
+        }
+      }
+    },
+    "ProducerCompactionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "type": {
+          "const": "request"
+        },
+        "id": {
+          "type": "string"
+        },
+        "method": {
+          "const": "producer.compaction"
+        },
+        "params": {
+          "$ref": "#/$defs/ProducerCompactionParams"
+        }
+      }
+    },
+    "NoliRequestTag": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session",
+        "ref",
+        "warm"
+      ],
+      "properties": {
+        "session": {
+          "type": "string"
+        },
+        "ref": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "warm": {
+          "type": "boolean"
+        }
+      },
+      "description": "Private top-level body member on Gateway-bound Anthropic Messages requests; Noli strips it before shaping."
+    },
+    "PrevToolDuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "toolName",
+        "durationMs"
+      ],
+      "properties": {
+        "toolName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "HistoryEntriesParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "since": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 4096,
+          "maximum": 786432
+        }
+      }
+    },
+    "HistoryEntriesResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionId",
+        "leafId",
+        "entries",
+        "more"
+      ],
+      "properties": {
+        "sessionId": {
+          "type": "string"
+        },
+        "leafId": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "partial": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "offset",
+            "total",
+            "text"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "offset": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "more": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

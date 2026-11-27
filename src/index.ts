@@ -1,0 +1,107 @@
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { closeSync, constants, fstatSync, openSync, readFileSync, unlinkSync } from "node:fs";
+import { type Bridge, startBridge } from "./bridge";
+import { installImagePublisher } from "./images";
+import { createOmpHost } from "./omp-host";
+import { installThreadControl } from "./thread-control";
+import { bindForgeRoot, installForgeRelay, releaseForgeRoot } from "./forge-relay";
+import { consumePrivateFile } from "./windows-native";
+import { registerGateway, rejoinGateway } from "./gateway";
+import { bindProducerChannel, installClaudeHooks, releaseProducerChannel } from "./claude-hooks";
+import type { CapabilityState } from "./protocol";
+import { installSubagentModelGuard } from "./subagent-model";
+
+/** Set by the launcher; a directory and bootstrap input enable Bridge and Gateway setup. */
+export const ENV_DIR = "NOLI_BRIDGE_DIR";
+export const ENV_TOKEN_FILE = "NOLI_BRIDGE_TOKEN_FILE";
+
+/** The launch environment contains only a path; Bun children cannot inherit secret bytes. */
+function consumeBootstrap(path: string): string {
+	// Windows reports mode 0666 for every file; there the owner and DACL decide, checked through the opened handle.
+	if (process.platform === "win32") return consumePrivateFile(path);
+	const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+	try {
+		const stat = fstatSync(fd);
+		if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600
+			|| (typeof process.getuid === "function" && stat.uid !== process.getuid())
+			|| stat.size < 1 || stat.size > 4096) throw new Error("Invalid Noli bootstrap file");
+		try { return readFileSync(fd, "utf8"); }
+		finally { unlinkSync(path); }
+	} finally { closeSync(fd); }
+}
+
+export default function noli(pi: ExtensionAPI): void {
+	let bridge: Bridge | undefined;
+	let boundSession: string | undefined;
+	const dir = process.env[ENV_DIR];
+	const tokenFile = process.env[ENV_TOKEN_FILE];
+	delete process.env[ENV_TOKEN_FILE];
+	delete process.env.NOLI_BRIDGE_TOKEN;
+	// A subagent of the bound root re-runs this factory after the bootstrap was consumed; it needs the
+	// Gateway models and its own request correlation, reported through the root's bridge.
+	// It also reaches its root's Noli forge tools through the relay, under the root's authority.
+	if (!dir || !tokenFile) {
+		if (rejoinGateway(pi, dir)) { installClaudeHooks(pi, dir!, { toolResults: false }); installSubagentModelGuard(pi); }
+		installForgeRelay(pi, dir);
+		return;
+	}
+	// Root sessions only: subagents use the relay's own guard, never these host-tool hooks.
+	installThreadControl(pi, sessionId => bridge?.authenticatedGeneration(sessionId), dir);
+	const token = consumeBootstrap(tokenFile);
+	installImagePublisher(pi, sessionId => bridge?.hasAuthenticatedSession(sessionId) ?? false);
+    const gateway = registerGateway(pi, dir);
+	if (gateway) installSubagentModelGuard(pi);
+
+	let nativeProvenance: ((ctx: ExtensionContext) => CapabilityState) | undefined;
+	const preparation = gateway ? Promise.withResolvers<void>() : undefined;
+	const omp = createOmpHost(pi, gateway !== undefined, ctx => nativeProvenance?.(ctx));
+	let adoptionRevision = 0;
+	let pendingSession: string | undefined;
+
+	const adopt = async (ctx: ExtensionContext): Promise<void> => {
+		if (ctx.agent.kind !== "main") return;
+		const revision = ++adoptionRevision;
+		const sessionId = ctx.sessionManager.getSessionId();
+		pendingSession = sessionId;
+		if (preparation) await preparation.promise;
+		if (revision !== adoptionRevision) return;
+		pendingSession = undefined;
+		// Tree navigation changes the leaf, not admission identity. Keep its correlated response authenticated.
+		if (boundSession === sessionId) { omp.refreshContext(ctx); return; }
+		boundSession = sessionId;
+		bridge?.invalidateAuthentication();
+		omp.adopt(ctx);
+        bridge ??= startBridge({ dir, token, host: omp.host, gateway });
+		if (gateway) bindProducerChannel(dir, bridge.producer, () => boundSession);
+		// Subagents reach only this session's genuine RPC host tools; a new session replaces the root.
+		const registry = (pi as unknown as { pi?: { AgentRegistry?: { global(): { get(id: string): { session?: unknown } | undefined } } } }).pi?.AgentRegistry;
+		const agentId = ctx.agent.id;
+		bindForgeRoot({ dir, sessionId, generation: id => bridge?.authenticatedGeneration(id), tool(name) {
+			const session = registry?.global().get(agentId)?.session as { hasRpcHostTool?(name: string): boolean; getToolByName?(name: string): unknown } | undefined;
+			return session?.hasRpcHostTool?.(name) ? session.getToolByName?.(name) as never : undefined;
+		} });
+	};
+
+	pi.on("session_start", (_event, ctx) => adopt(ctx));
+	pi.on("session_switch", (_event, ctx) => adopt(ctx));
+	pi.on("session_branch", (_event, ctx) => adopt(ctx));
+	pi.on("session_tree", (_event, ctx) => adopt(ctx));
+	pi.on("session_shutdown", (_event, ctx) => {
+		if (ctx.agent.kind !== "main") return;
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (sessionId === pendingSession) { adoptionRevision++; pendingSession = undefined; }
+		if (sessionId !== boundSession) return;
+		releaseProducerChannel(dir);
+		bridge?.close();
+		bridge = undefined;
+		releaseForgeRoot(dir);
+		boundSession = undefined;
+		omp.release();
+	});
+	// After adoption above, so the root announces itself on a started bridge.
+	// The root's thread control already observes `tool_result`, so timing it here changes no stock behavior.
+	if (gateway) installClaudeHooks(pi, dir, { toolResults: true, onPrepared(capability) {
+		nativeProvenance = capability;
+		preparation?.resolve();
+	} });
+}

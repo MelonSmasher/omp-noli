@@ -1,0 +1,7822 @@
+{
+  "$defs": {
+    "ForgeAccountId": {
+      "description": "Opaque durable account identity, never inferred from a login name.",
+      "type": "string"
+    },
+    "ForgeBoardList": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/ForgeBoardListScope"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "ForgeBoardListScope": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "label",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "milestone",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "assignee",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "iteration",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeBoardMutation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "project_field",
+              "type": "string"
+            },
+            "expected": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeProjectValue"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "field": {
+              "$ref": "#/$defs/ForgeProjectField"
+            },
+            "project_id": {
+              "type": "string"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeProjectValue"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "project_id",
+            "field"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "move",
+              "type": "string"
+            },
+            "board_id": {
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/ForgeBoardList"
+            },
+            "target": {
+              "$ref": "#/$defs/ForgeBoardList"
+            }
+          },
+          "required": [
+            "action",
+            "board_id",
+            "source",
+            "target"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeBoardOption": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "ForgeCiAction": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "trigger_workflow",
+              "type": "string"
+            },
+            "declaration_sha": {
+              "type": "string"
+            },
+            "git_ref": {
+              "type": "string"
+            },
+            "inputs": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "sha": {
+              "type": "string"
+            },
+            "workflow_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "workflow_id",
+            "git_ref",
+            "sha",
+            "declaration_sha",
+            "inputs"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "trigger_pipeline",
+              "type": "string"
+            },
+            "git_ref": {
+              "type": "string"
+            },
+            "inputs": {
+              "additionalProperties": {
+                "$ref": "#/$defs/ForgeCiInputValue"
+              },
+              "type": "object"
+            },
+            "sha": {
+              "type": "string"
+            },
+            "trigger": {
+              "$ref": "#/$defs/ForgeCiPipelineTrigger"
+            },
+            "variables": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "action",
+            "git_ref",
+            "sha",
+            "variables"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "set_workflow_enabled",
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "workflow": {
+              "$ref": "#/$defs/ForgeCiWorkflowChoice"
+            }
+          },
+          "required": [
+            "action",
+            "workflow",
+            "enabled"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_run",
+              "type": "string"
+            },
+            "run": {
+              "$ref": "#/$defs/ForgeCiRun"
+            }
+          },
+          "required": [
+            "action",
+            "run"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "force_cancel_run",
+              "type": "string"
+            },
+            "run": {
+              "$ref": "#/$defs/ForgeCiRun"
+            }
+          },
+          "required": [
+            "action",
+            "run"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "force_cancel_job",
+              "type": "string"
+            },
+            "job": {
+              "$ref": "#/$defs/ForgeCiJob"
+            },
+            "run": {
+              "$ref": "#/$defs/ForgeCiRun"
+            }
+          },
+          "required": [
+            "action",
+            "run",
+            "job"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "retry_run_debug",
+              "type": "string"
+            },
+            "failed_only": {
+              "type": "boolean"
+            },
+            "run": {
+              "$ref": "#/$defs/ForgeCiRun"
+            }
+          },
+          "required": [
+            "action",
+            "run",
+            "failed_only"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "retry_job_debug",
+              "type": "string"
+            },
+            "job": {
+              "$ref": "#/$defs/ForgeCiJob"
+            },
+            "run": {
+              "$ref": "#/$defs/ForgeCiRun"
+            }
+          },
+          "required": [
+            "action",
+            "run",
+            "job"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "cancel_run",
+              "type": "string"
+            },
+            "run": {
+              "$ref": "#/$defs/ForgeCiRun"
+            }
+          },
+          "required": [
+            "action",
+            "run"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "cancel_job",
+              "type": "string"
+            },
+            "job": {
+              "$ref": "#/$defs/ForgeCiJob"
+            },
+            "run": {
+              "$ref": "#/$defs/ForgeCiRun"
+            }
+          },
+          "required": [
+            "action",
+            "run",
+            "job"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "retry_run",
+              "type": "string"
+            },
+            "failed_only": {
+              "type": "boolean"
+            },
+            "run": {
+              "$ref": "#/$defs/ForgeCiRun"
+            }
+          },
+          "required": [
+            "action",
+            "run",
+            "failed_only"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "retry_job",
+              "type": "string"
+            },
+            "job": {
+              "$ref": "#/$defs/ForgeCiJob"
+            },
+            "run": {
+              "$ref": "#/$defs/ForgeCiRun"
+            }
+          },
+          "required": [
+            "action",
+            "run",
+            "job"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "play_job",
+              "type": "string"
+            },
+            "job": {
+              "$ref": "#/$defs/ForgeCiJob"
+            },
+            "run": {
+              "$ref": "#/$defs/ForgeCiRun"
+            }
+          },
+          "required": [
+            "action",
+            "run",
+            "job"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "approve_environment",
+              "type": "string"
+            },
+            "deployment_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "environment_id": {
+              "type": "string"
+            },
+            "run": {
+              "$ref": "#/$defs/ForgeCiRun"
+            }
+          },
+          "required": [
+            "action",
+            "run",
+            "environment_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_cache",
+              "type": "string"
+            },
+            "cache": {
+              "$ref": "#/$defs/ForgeCiCache"
+            }
+          },
+          "required": [
+            "action",
+            "cache"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeCiCache": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "type": "string"
+        },
+        "git_ref": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "repository": {
+          "$ref": "#/$defs/ForgeResourceHandle"
+        },
+        "size_in_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "id",
+        "key",
+        "git_ref",
+        "version",
+        "created_at",
+        "size_in_bytes"
+      ],
+      "type": "object"
+    },
+    "ForgeCiCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "app_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ci_job": {
+          "description": "None means the provider has not identified whether this is a CI job.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "conclusion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ForgeCiCheckKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "required": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "sha": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "suite_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "web_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "sha",
+        "status"
+      ],
+      "type": "object"
+    },
+    "ForgeCiCheckKind": {
+      "enum": [
+        "check_run",
+        "commit_status",
+        "external_status"
+      ],
+      "type": "string"
+    },
+    "ForgeCiInputValue": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "items": true,
+          "type": "array"
+        }
+      ],
+      "description": "Native JSON input types. Array items retain their native JSON structure."
+    },
+    "ForgeCiJob": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_failure": {
+          "type": "boolean"
+        },
+        "attempt": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "conclusion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failure_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "handle": {
+          "$ref": "#/$defs/ForgeResourceHandle"
+        },
+        "name": {
+          "type": "string"
+        },
+        "retried": {
+          "type": "boolean"
+        },
+        "run": {
+          "$ref": "#/$defs/ForgeResourceHandle"
+        },
+        "stage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/ForgeCiStep"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "handle",
+        "run",
+        "name",
+        "status",
+        "allow_failure",
+        "retried",
+        "steps"
+      ],
+      "type": "object"
+    },
+    "ForgeCiPipelineTrigger": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "api",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Opaque human-created selection. This never contains token material.",
+          "properties": {
+            "kind": {
+              "const": "private_token",
+              "type": "string"
+            },
+            "selection_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "selection_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeCiRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "app_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForgeCiCheckKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "ForgeCiRequirements": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/ForgeCiRequirement"
+          },
+          "type": "array"
+        },
+        "complete": {
+          "description": "False includes denied, unsupported, unknown and truncated rule evidence.",
+          "type": "boolean"
+        },
+        "pipeline_required": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "complete",
+        "checks"
+      ],
+      "type": "object"
+    },
+    "ForgeCiRun": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "conclusion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_ms": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "event": {
+          "type": "string"
+        },
+        "git_ref": {
+          "type": "string"
+        },
+        "handle": {
+          "$ref": "#/$defs/ForgeResourceHandle"
+        },
+        "latest_attempt": {
+          "description": "Observed by a separate current-run read, never inferred from a selected attempt.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "referenced_workflows": {
+          "items": {
+            "$ref": "#/$defs/ForgeCiWorkflowReference"
+          },
+          "type": "array"
+        },
+        "sha": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "suite_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated_ms": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "handle",
+        "name",
+        "sha",
+        "git_ref",
+        "event",
+        "status",
+        "referenced_workflows"
+      ],
+      "type": "object"
+    },
+    "ForgeCiStep": {
+      "additionalProperties": false,
+      "properties": {
+        "conclusion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "number": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "number",
+        "name",
+        "status"
+      ],
+      "type": "object"
+    },
+    "ForgeCiWorkflowChoice": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "state": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "path"
+      ],
+      "type": "object"
+    },
+    "ForgeCiWorkflowReference": {
+      "additionalProperties": false,
+      "properties": {
+        "git_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha"
+      ],
+      "type": "object"
+    },
+    "ForgeDecomposition": {
+      "additionalProperties": false,
+      "description": "The parent is the proposal target. No item can choose another repository,\naccount, operation class, arbitrary child handle or approval policy.",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/ForgeDecompositionItem"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "ForgeDecompositionItem": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "item_id": {
+          "description": "Stable within the approved list, not an upstream ID or idempotency key.",
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "title",
+        "body"
+      ],
+      "type": "object"
+    },
+    "ForgeDistributionFile": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "file_id": {
+              "type": "string"
+            },
+            "filename": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "package_id": {
+              "type": "string"
+            },
+            "resource": {
+              "const": "package",
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource",
+            "package_id",
+            "file_id",
+            "name",
+            "version",
+            "filename",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "digest": {
+              "type": "string"
+            },
+            "repository_id": {
+              "type": "string"
+            },
+            "resource": {
+              "const": "container_blob",
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource",
+            "repository_id",
+            "digest"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "resource": {
+              "const": "secure_file",
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "resource",
+            "id",
+            "name",
+            "sha256"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeDistributionWrite": {
+      "description": "All writes require an operation-bound approval. A deletion names its observed revision.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "upload_package",
+              "type": "string"
+            },
+            "file": {
+              "$ref": "#/$defs/ForgeSelectedReleaseAsset"
+            },
+            "kind": {
+              "$ref": "#/$defs/ForgePackageKind"
+            },
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "kind",
+            "name",
+            "version",
+            "file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_package",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "expected_digest": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/ForgePackageKind"
+            },
+            "name": {
+              "type": "string"
+            },
+            "package_id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "kind",
+            "package_id",
+            "name",
+            "version",
+            "expected_digest",
+            "confirmed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_package_file",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "file": {
+              "$ref": "#/$defs/ForgeDistributionFile"
+            }
+          },
+          "required": [
+            "action",
+            "file",
+            "confirmed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "upload_container",
+              "type": "string"
+            },
+            "blobs": {
+              "items": {
+                "$ref": "#/$defs/ForgeSelectedReleaseAsset"
+              },
+              "type": "array"
+            },
+            "manifest": {
+              "$ref": "#/$defs/ForgeSelectedReleaseAsset"
+            },
+            "repository_id": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "repository_id",
+            "tag",
+            "manifest",
+            "blobs"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_container",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "expected_digest": {
+              "type": "string"
+            },
+            "repository_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "repository_id",
+            "expected_digest",
+            "confirmed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_container_tag",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "digest": {
+              "type": "string"
+            },
+            "repository_id": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "repository_id",
+            "tag",
+            "digest",
+            "confirmed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "create_secure_file",
+              "type": "string"
+            },
+            "file": {
+              "$ref": "#/$defs/ForgeSelectedReleaseAsset"
+            }
+          },
+          "required": [
+            "action",
+            "file"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native retrieval of one exact npm archive. No executable, argv, environment or registry URL.",
+          "properties": {
+            "action": {
+              "const": "fetch_package",
+              "type": "string"
+            },
+            "manager": {
+              "$ref": "#/$defs/ForgePackageManager"
+            },
+            "package": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "manager",
+            "package",
+            "version"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Uses a newly exchanged Artifact Registry audience token, never the account token.",
+          "properties": {
+            "action": {
+              "const": "fetch_artifact_package",
+              "type": "string"
+            },
+            "manager": {
+              "$ref": "#/$defs/ForgePackageManager"
+            },
+            "package": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "manager",
+            "package",
+            "version"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_secure_file",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "id",
+            "name",
+            "sha256",
+            "confirmed"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeGithubDependencyDirection": {
+      "enum": [
+        "blocked_by",
+        "blocking"
+      ],
+      "type": "string"
+    },
+    "ForgeGithubIssueMutation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "issue_type",
+              "type": "string"
+            },
+            "expected_type": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "issue_type": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "parent",
+              "type": "string"
+            },
+            "expected_parent": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeResourceHandle"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "parent": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeResourceHandle"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "sub_issue",
+              "type": "string"
+            },
+            "child": {
+              "$ref": "#/$defs/ForgeResourceHandle"
+            },
+            "expected_present": {
+              "type": "boolean"
+            },
+            "present": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "child",
+            "present",
+            "expected_present"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "dependency",
+              "type": "string"
+            },
+            "direction": {
+              "$ref": "#/$defs/ForgeGithubDependencyDirection"
+            },
+            "expected_present": {
+              "type": "boolean"
+            },
+            "issue": {
+              "$ref": "#/$defs/ForgeResourceHandle"
+            },
+            "present": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "issue",
+            "direction",
+            "present",
+            "expected_present"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "project",
+              "type": "string"
+            },
+            "expected_present": {
+              "type": "boolean"
+            },
+            "present": {
+              "type": "boolean"
+            },
+            "project_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "project_id",
+            "present",
+            "expected_present"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeGitlabBoardScope": {
+      "additionalProperties": false,
+      "properties": {
+        "assignee_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "iteration_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "milestone_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "weight": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "labels"
+      ],
+      "type": "object"
+    },
+    "ForgeGitlabIssueFields": {
+      "additionalProperties": false,
+      "properties": {
+        "assignee_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "confidential": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "due_date": {
+          "description": "Empty clears the due date; otherwise a canonical YYYY-MM-DD calendar day.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "epic_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "merge_request_to_resolve_discussions_of": {
+          "description": "Create only: resolve discussions of this merge request's project IID.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "milestone_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "weight": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ForgeGitlabIssueLinkType": {
+      "enum": [
+        "relates_to",
+        "blocks",
+        "is_blocked_by"
+      ],
+      "type": "string"
+    },
+    "ForgeGitlabIssueMutation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "create",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "fields": {
+              "$ref": "#/$defs/ForgeGitlabIssueFields"
+            },
+            "issue_type": {
+              "$ref": "#/$defs/ForgeGitlabIssueType"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "issue_type",
+            "title",
+            "body",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "update",
+              "type": "string"
+            },
+            "body": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fields": {
+              "$ref": "#/$defs/ForgeGitlabIssueFields"
+            },
+            "issue_type": {
+              "$ref": "#/$defs/ForgeGitlabIssueType"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "issue_type",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_incident",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "confirmed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "time_tracking",
+              "type": "string"
+            },
+            "change": {
+              "$ref": "#/$defs/ForgeIssueTimeChange"
+            },
+            "expected_estimate": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "expected_spent": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "issue_type": {
+              "$ref": "#/$defs/ForgeGitlabIssueType"
+            }
+          },
+          "required": [
+            "action",
+            "issue_type",
+            "change",
+            "expected_estimate",
+            "expected_spent"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "link",
+              "type": "string"
+            },
+            "link_type": {
+              "$ref": "#/$defs/ForgeGitlabIssueLinkType"
+            },
+            "target": {
+              "$ref": "#/$defs/ForgeResourceHandle"
+            }
+          },
+          "required": [
+            "action",
+            "target",
+            "link_type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeGitlabIssueType": {
+      "enum": [
+        "issue",
+        "incident"
+      ],
+      "type": "string"
+    },
+    "ForgeIssueBoardLimitMetric": {
+      "enum": [
+        "issue_count",
+        "issue_weights"
+      ],
+      "type": "string"
+    },
+    "ForgeIssueBoardListKind": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "label",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "assignee",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "milestone",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "iteration",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeIssueBoardListSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "limit_metric": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForgeIssueBoardLimitMetric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_issue_count": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_issue_weight": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "position": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "position",
+        "max_issue_count",
+        "max_issue_weight"
+      ],
+      "type": "object"
+    },
+    "ForgeIssueBoardListSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ForgeIssueBoardListKind"
+        },
+        "settings": {
+          "$ref": "#/$defs/ForgeIssueBoardListSettings"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "settings"
+      ],
+      "type": "object"
+    },
+    "ForgeIssueBoardSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "hide_backlog_list": {
+          "type": "boolean"
+        },
+        "hide_closed_list": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/ForgeGitlabBoardScope"
+        }
+      },
+      "required": [
+        "name",
+        "scope",
+        "hide_backlog_list",
+        "hide_closed_list"
+      ],
+      "type": "object"
+    },
+    "ForgeIssueBoardSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "settings": {
+          "$ref": "#/$defs/ForgeIssueBoardSettings"
+        }
+      },
+      "required": [
+        "id",
+        "settings"
+      ],
+      "type": "object"
+    },
+    "ForgeIssueCloseReason": {
+      "enum": [
+        "completed",
+        "not_planned",
+        "duplicate"
+      ],
+      "type": "string"
+    },
+    "ForgeIssueLifecycleMutation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "confirmed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitHub only. GitLab has no native pinned-issue operation.",
+          "properties": {
+            "action": {
+              "const": "pin",
+              "type": "string"
+            },
+            "pinned": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "pinned"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "transfer",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "repository": {
+              "$ref": "#/$defs/StableRepositoryId"
+            }
+          },
+          "required": [
+            "action",
+            "repository",
+            "confirmed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Creates a new branch at an exact commit. GitLab requires the issue IID prefix.",
+          "properties": {
+            "action": {
+              "const": "create_development_branch",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "oid": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "name",
+            "oid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitHub's native duplicate relationship, not a generic related-issue link.",
+          "properties": {
+            "action": {
+              "const": "duplicate",
+              "type": "string"
+            },
+            "canonical": {
+              "$ref": "#/$defs/ForgeResourceHandle"
+            },
+            "marked": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "canonical",
+            "marked"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeIssueLockReason": {
+      "enum": [
+        "off_topic",
+        "too_heated",
+        "resolved",
+        "spam"
+      ],
+      "type": "string"
+    },
+    "ForgeIssueMutation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "gitlab",
+              "type": "string"
+            },
+            "mutation": {
+              "$ref": "#/$defs/ForgeGitlabIssueMutation"
+            }
+          },
+          "required": [
+            "action",
+            "mutation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "upload_attachment",
+              "type": "string"
+            },
+            "asset": {
+              "$ref": "#/$defs/ForgeSelectedReleaseAsset"
+            }
+          },
+          "required": [
+            "action",
+            "asset"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_own_attachment",
+              "type": "string"
+            },
+            "attachment_id": {
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "expected_sha256": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "attachment_id",
+            "expected_sha256",
+            "confirmed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "create",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "title",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "edit",
+              "type": "string"
+            },
+            "body": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "comment",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "edit_own_comment",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "comment": {
+              "$ref": "#/$defs/ForgeResourceHandle"
+            },
+            "expected_body": {
+              "type": "string"
+            },
+            "expected_updated_at": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "comment",
+            "body",
+            "expected_body",
+            "expected_updated_at"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_own_comment",
+              "type": "string"
+            },
+            "comment": {
+              "$ref": "#/$defs/ForgeResourceHandle"
+            },
+            "expected_body": {
+              "type": "string"
+            },
+            "expected_updated_at": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "comment",
+            "expected_body",
+            "expected_updated_at"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "lock",
+              "type": "string"
+            },
+            "expected_locked": {
+              "type": "boolean"
+            },
+            "locked": {
+              "type": "boolean"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeIssueLockReason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "locked",
+            "expected_locked"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "subscription",
+              "type": "string"
+            },
+            "expected_subscribed": {
+              "type": "boolean"
+            },
+            "subscribed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "subscribed",
+            "expected_subscribed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "close",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/ForgeIssueCloseReason"
+            }
+          },
+          "required": [
+            "action",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "github",
+              "type": "string"
+            },
+            "mutation": {
+              "$ref": "#/$defs/ForgeGithubIssueMutation"
+            }
+          },
+          "required": [
+            "action",
+            "mutation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "add_labels",
+              "type": "string"
+            },
+            "labels": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "action",
+            "labels"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "remove_label",
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "label"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "assignees",
+              "type": "string"
+            },
+            "users": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "action",
+            "users"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Set at most one of `milestone`, `number` or `title`; none clears the milestone.\nNoli resolves `number` and `title` against the repository's milestones before\napproval and journals only the native ID.",
+          "properties": {
+            "action": {
+              "const": "milestone",
+              "type": "string"
+            },
+            "milestone": {
+              "description": "Native milestone ID, as in issue reads and the repository metadata picker.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "number": {
+              "description": "Per-project milestone number shown in its URL (GitLab `/-/milestones/<number>`,\nGitHub `/milestone/<number>`).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "description": "Exact milestone title.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "add_sub_issue",
+              "type": "string"
+            },
+            "child": {
+              "$ref": "#/$defs/ForgeResourceHandle"
+            }
+          },
+          "required": [
+            "action",
+            "child"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "state",
+              "type": "string"
+            },
+            "closed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "closed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "lifecycle",
+              "type": "string"
+            },
+            "operation": {
+              "$ref": "#/$defs/ForgeIssueLifecycleMutation"
+            }
+          },
+          "required": [
+            "action",
+            "operation"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeIssueTimeChange": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "estimate",
+              "type": "string"
+            },
+            "seconds": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "action",
+            "seconds"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "spend",
+              "type": "string"
+            },
+            "seconds": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "seconds"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "reset_estimate",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "confirmed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "reset_spent",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "confirmed"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeKind": {
+      "enum": [
+        "github",
+        "gitlab"
+      ],
+      "type": "string"
+    },
+    "ForgeLabelFields": {
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "description": "Six hexadecimal digits, optionally prefixed with '#'; GitLab also accepts CSS names.",
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "priority": {
+          "description": "GitLab project label priority. GitHub and group labels require None.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "color",
+        "description"
+      ],
+      "type": "object"
+    },
+    "ForgeLabelSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "archived": {
+          "description": "Captured when supplied by the deployment, to fence concurrent archival.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "fields": {
+          "$ref": "#/$defs/ForgeLabelFields"
+        },
+        "id": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/ForgeMetadataScope"
+        }
+      },
+      "required": [
+        "scope",
+        "id",
+        "fields"
+      ],
+      "type": "object"
+    },
+    "ForgeMergeAction": {
+      "additionalProperties": false,
+      "properties": {
+        "head_sha": {
+          "type": "string"
+        },
+        "method": {
+          "$ref": "#/$defs/ForgeMergeMethod"
+        },
+        "mode": {
+          "$ref": "#/$defs/ForgeMergeMode"
+        },
+        "target_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "head_sha",
+        "target_ref",
+        "method",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "ForgeMergeExpectation": {
+      "additionalProperties": false,
+      "description": "Trusted review metadata captured before approval and compared again before dispatch.\nThe journal's Head precondition uses `expected: Option<ForgeMergeExpectation>` only\nto represent old history honestly. An absent expectation cannot authorize a new send.",
+      "properties": {
+        "head_ref": {
+          "type": "string"
+        },
+        "head_repository": {
+          "$ref": "#/$defs/ForgeRepositoryRef"
+        },
+        "target_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "head_repository",
+        "head_ref",
+        "target_ref"
+      ],
+      "type": "object"
+    },
+    "ForgeMergeMethod": {
+      "enum": [
+        "merge",
+        "squash",
+        "rebase",
+        "fast_forward"
+      ],
+      "type": "string"
+    },
+    "ForgeMergeMode": {
+      "enum": [
+        "merge",
+        "enqueue"
+      ],
+      "type": "string"
+    },
+    "ForgeMergeRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "head_ref": {
+          "type": "string"
+        },
+        "head_repository_id": {
+          "type": "string"
+        },
+        "head_sha": {
+          "type": "string"
+        },
+        "target_ref": {
+          "type": "string"
+        },
+        "target_sha": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "head_sha",
+        "target_ref",
+        "target_sha",
+        "head_ref",
+        "head_repository_id"
+      ],
+      "type": "object"
+    },
+    "ForgeMergeSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/ForgeMergeAction"
+        },
+        "actor_id": {
+          "type": "string"
+        },
+        "approval_digest": {
+          "type": "string"
+        },
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/ForgeCiCheck"
+          },
+          "type": "array"
+        },
+        "ci_digest": {
+          "type": "string"
+        },
+        "protection_digest": {
+          "description": "Canonical native rules and approvals, not a timestamp or client assertion.",
+          "type": "string"
+        },
+        "required_approvals": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "requirements": {
+          "$ref": "#/$defs/ForgeCiRequirements"
+        },
+        "revision": {
+          "$ref": "#/$defs/ForgeMergeRevision"
+        },
+        "synthetic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForgeMergeSyntheticRevision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "revision",
+        "action",
+        "protection_digest",
+        "approval_digest",
+        "required_approvals",
+        "requirements",
+        "checks",
+        "ci_digest",
+        "actor_id"
+      ],
+      "type": "object"
+    },
+    "ForgeMergeSyntheticRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "head_sha": {
+          "type": "string"
+        },
+        "pipeline": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForgeResourceHandle"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "queue_entry_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha": {
+          "type": "string"
+        },
+        "target_sha": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha",
+        "head_sha",
+        "target_sha"
+      ],
+      "type": "object"
+    },
+    "ForgeMetadataMutation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "create_label",
+              "type": "string"
+            },
+            "fields": {
+              "$ref": "#/$defs/ForgeLabelFields"
+            },
+            "scope": {
+              "$ref": "#/$defs/ForgeMetadataScope"
+            }
+          },
+          "required": [
+            "action",
+            "scope",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "edit_label",
+              "type": "string"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeLabelSnapshot"
+            },
+            "fields": {
+              "$ref": "#/$defs/ForgeLabelFields"
+            }
+          },
+          "required": [
+            "action",
+            "expected",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_label",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeLabelSnapshot"
+            }
+          },
+          "required": [
+            "action",
+            "expected",
+            "confirmed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One copied source snapshot and one destination, never an unapproved bulk loop.",
+          "properties": {
+            "action": {
+              "const": "clone_label",
+              "type": "string"
+            },
+            "destination": {
+              "$ref": "#/$defs/ForgeMetadataScope"
+            },
+            "expected_destination": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeLabelSnapshot"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A forced overwrite needs the exact current destination, not a boolean."
+            },
+            "name": {
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/$defs/ForgeLabelSnapshot"
+            },
+            "source_repository": {
+              "$ref": "#/$defs/StableRepositoryId"
+            }
+          },
+          "required": [
+            "action",
+            "source_repository",
+            "source",
+            "destination",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "create_milestone",
+              "type": "string"
+            },
+            "fields": {
+              "$ref": "#/$defs/ForgeMilestoneFields"
+            },
+            "scope": {
+              "$ref": "#/$defs/ForgeMetadataScope"
+            }
+          },
+          "required": [
+            "action",
+            "scope",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "edit_milestone",
+              "type": "string"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeMilestoneSnapshot"
+            },
+            "fields": {
+              "$ref": "#/$defs/ForgeMilestoneFields"
+            }
+          },
+          "required": [
+            "action",
+            "expected",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_milestone",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeMilestoneSnapshot"
+            }
+          },
+          "required": [
+            "action",
+            "expected",
+            "confirmed"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeMetadataScope": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "scope": {
+              "const": "repository",
+              "type": "string"
+            }
+          },
+          "required": [
+            "scope"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Must be the selected GitLab project's native namespace or an observed ancestor.",
+          "properties": {
+            "group_id": {
+              "type": "string"
+            },
+            "scope": {
+              "const": "gitlab_group",
+              "type": "string"
+            }
+          },
+          "required": [
+            "scope",
+            "group_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeMilestoneFields": {
+      "additionalProperties": false,
+      "properties": {
+        "closed": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "due_date": {
+          "description": "ISO date for GitLab; ISO date or RFC3339 timestamp for GitHub.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "start_date": {
+          "description": "GitLab only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "description",
+        "closed"
+      ],
+      "type": "object"
+    },
+    "ForgeMilestoneSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "$ref": "#/$defs/ForgeMilestoneFields"
+        },
+        "id": {
+          "type": "string"
+        },
+        "number": {
+          "description": "GitHub number or GitLab iid. The global native ID remains authoritative.",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/ForgeMetadataScope"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "web_url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "id",
+        "number",
+        "fields",
+        "updated_at",
+        "web_url"
+      ],
+      "type": "object"
+    },
+    "ForgeMutationPrecondition": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "create",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "metadata",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "projects",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "review_creation",
+              "type": "string"
+            },
+            "selection": {
+              "$ref": "#/$defs/ForgeReviewSelection"
+            }
+          },
+          "required": [
+            "kind",
+            "selection"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "updated_at",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "expected": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeMergeExpectation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "const": "head",
+              "type": "string"
+            },
+            "sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sha"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "labels",
+              "type": "string"
+            },
+            "values": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "assignees",
+              "type": "string"
+            },
+            "values": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "kind",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "base_sha": {
+              "type": "string"
+            },
+            "head_sha": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "review",
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "head_sha",
+            "base_sha",
+            "updated_at"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "exact_merge",
+              "type": "string"
+            },
+            "snapshot": {
+              "$ref": "#/$defs/ForgeMergeSnapshot"
+            }
+          },
+          "required": [
+            "kind",
+            "snapshot"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "ci",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "variables",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "distribution",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "release_local",
+              "type": "string"
+            },
+            "signing_configuration_digest": {
+              "type": "string"
+            },
+            "workspace_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "workspace_path",
+            "signing_configuration_digest"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "repository_admin",
+              "type": "string"
+            },
+            "snapshot": {
+              "$ref": "#/$defs/ForgeRepositoryAdminSnapshot"
+            }
+          },
+          "required": [
+            "kind",
+            "snapshot"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeOriginId": {
+      "description": "Canonical credential-free web deployment base, independent of Git transport.",
+      "type": "string"
+    },
+    "ForgePackageKind": {
+      "enum": [
+        "generic",
+        "container",
+        "npm",
+        "maven",
+        "pypi",
+        "nuget",
+        "rubygems",
+        "cargo"
+      ],
+      "type": "string"
+    },
+    "ForgePackageManager": {
+      "enum": [
+        "docker",
+        "npm",
+        "cargo",
+        "pip",
+        "maven",
+        "nuget",
+        "generic"
+      ],
+      "type": "string"
+    },
+    "ForgeProjectField": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ForgeProjectFieldKind"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ForgeProjectFieldKind": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "options": {
+              "items": {
+                "$ref": "#/$defs/ForgeBoardOption"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "single_select",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "options"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "iterations": {
+              "items": {
+                "$ref": "#/$defs/ForgeBoardOption"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "iteration",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "iterations"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "date",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeProjectFieldValue": {
+      "additionalProperties": false,
+      "properties": {
+        "field_id": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/ForgeProjectValue"
+        }
+      },
+      "required": [
+        "field_id",
+        "value"
+      ],
+      "type": "object"
+    },
+    "ForgeProjectItemContent": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "body": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "draft",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "title",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "repository_id": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "task",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "repository_id",
+            "title"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "redacted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeProjectItemSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "archived": {
+          "type": "boolean"
+        },
+        "content": {
+          "$ref": "#/$defs/ForgeProjectItemContent"
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/ForgeProjectFieldValue"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "native_fields": {
+          "items": {
+            "$ref": "#/$defs/ForgeProjectNativeFieldValue"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "project_id",
+        "updated_at",
+        "archived",
+        "content",
+        "fields",
+        "native_fields"
+      ],
+      "type": "object"
+    },
+    "ForgeProjectLifecycleField": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "field": {
+              "$ref": "#/$defs/ForgeProjectField"
+            },
+            "type": {
+              "const": "custom",
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "field",
+            "updated_at"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data_type": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "native",
+              "type": "string"
+            },
+            "updated_at": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "data_type",
+            "updated_at"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeProjectMutation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "create",
+              "type": "string"
+            },
+            "owner": {
+              "$ref": "#/$defs/ForgeProjectOwner"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "owner",
+            "title"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "copy",
+              "type": "string"
+            },
+            "include_drafts": {
+              "type": "boolean"
+            },
+            "owner": {
+              "$ref": "#/$defs/ForgeProjectOwner"
+            },
+            "source": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            },
+            "source_fields": {
+              "items": {
+                "$ref": "#/$defs/ForgeProjectLifecycleField"
+              },
+              "type": "array"
+            },
+            "source_items": {
+              "items": {
+                "$ref": "#/$defs/ForgeProjectItemSnapshot"
+              },
+              "type": "array"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "source",
+            "source_fields",
+            "source_items",
+            "owner",
+            "title",
+            "include_drafts"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "edit",
+              "type": "string"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            },
+            "settings": {
+              "$ref": "#/$defs/ForgeProjectSettings"
+            }
+          },
+          "required": [
+            "action",
+            "expected",
+            "settings"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "template",
+              "type": "string"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            },
+            "template": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "expected",
+            "template"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete",
+              "type": "string"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            }
+          },
+          "required": [
+            "action",
+            "expected"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "field_create",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/ForgeProjectNewFieldKind"
+            },
+            "name": {
+              "type": "string"
+            },
+            "project": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            }
+          },
+          "required": [
+            "action",
+            "project",
+            "name",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "field_delete",
+              "type": "string"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeProjectLifecycleField"
+            },
+            "project": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            }
+          },
+          "required": [
+            "action",
+            "project",
+            "expected"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "item_add",
+              "type": "string"
+            },
+            "content_id": {
+              "type": "string"
+            },
+            "project": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            }
+          },
+          "required": [
+            "action",
+            "project",
+            "content_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "item_create",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "project": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "project",
+            "title",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "item_archive",
+              "type": "string"
+            },
+            "archived": {
+              "type": "boolean"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeProjectItemSnapshot"
+            },
+            "project": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            }
+          },
+          "required": [
+            "action",
+            "project",
+            "expected",
+            "archived"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "item_delete",
+              "type": "string"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeProjectItemSnapshot"
+            },
+            "project": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            }
+          },
+          "required": [
+            "action",
+            "project",
+            "expected"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "item_edit",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeProjectItemSnapshot"
+            },
+            "project": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "project",
+            "expected",
+            "title",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "item_field",
+              "type": "string"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeProjectItemSnapshot"
+            },
+            "field": {
+              "$ref": "#/$defs/ForgeProjectLifecycleField"
+            },
+            "project": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeProjectValue"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "project",
+            "expected",
+            "field"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "repository_link",
+              "type": "string"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            },
+            "linked": {
+              "type": "boolean"
+            },
+            "repository_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "expected",
+            "repository_id",
+            "linked"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "team_link",
+              "type": "string"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeProjectSnapshot"
+            },
+            "linked": {
+              "type": "boolean"
+            },
+            "team": {
+              "$ref": "#/$defs/ForgeProjectTeam"
+            }
+          },
+          "required": [
+            "action",
+            "expected",
+            "team",
+            "linked"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "board_create",
+              "type": "string"
+            },
+            "settings": {
+              "$ref": "#/$defs/ForgeIssueBoardSettings"
+            }
+          },
+          "required": [
+            "action",
+            "settings"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "board_edit",
+              "type": "string"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeIssueBoardSnapshot"
+            },
+            "settings": {
+              "$ref": "#/$defs/ForgeIssueBoardSettings"
+            }
+          },
+          "required": [
+            "action",
+            "expected",
+            "settings"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "board_delete",
+              "type": "string"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeIssueBoardSnapshot"
+            }
+          },
+          "required": [
+            "action",
+            "expected"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "list_create",
+              "type": "string"
+            },
+            "board": {
+              "$ref": "#/$defs/ForgeIssueBoardSnapshot"
+            },
+            "kind": {
+              "$ref": "#/$defs/ForgeIssueBoardListKind"
+            }
+          },
+          "required": [
+            "action",
+            "board",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "list_edit",
+              "type": "string"
+            },
+            "board": {
+              "$ref": "#/$defs/ForgeIssueBoardSnapshot"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeIssueBoardListSnapshot"
+            },
+            "settings": {
+              "$ref": "#/$defs/ForgeIssueBoardListSettings"
+            }
+          },
+          "required": [
+            "action",
+            "board",
+            "expected",
+            "settings"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "list_delete",
+              "type": "string"
+            },
+            "board": {
+              "$ref": "#/$defs/ForgeIssueBoardSnapshot"
+            },
+            "expected": {
+              "$ref": "#/$defs/ForgeIssueBoardListSnapshot"
+            }
+          },
+          "required": [
+            "action",
+            "board",
+            "expected"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeProjectNativeFieldKind": {
+      "enum": [
+        "labels",
+        "milestone",
+        "pull_requests",
+        "repository",
+        "reviewers",
+        "users"
+      ],
+      "type": "string"
+    },
+    "ForgeProjectNativeFieldNode": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "ForgeProjectNativeFieldValue": {
+      "additionalProperties": false,
+      "properties": {
+        "field_id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ForgeProjectNativeFieldKind"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/ForgeProjectNativeFieldNode"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "field_id",
+        "kind",
+        "nodes"
+      ],
+      "type": "object"
+    },
+    "ForgeProjectNewFieldKind": {
+      "oneOf": [
+        {
+          "enum": [
+            "text",
+            "number",
+            "date"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "single_select": {
+              "properties": {
+                "options": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "options"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "single_select"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeProjectOwner": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ForgeProjectOwnerKind"
+        },
+        "login": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "login",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ForgeProjectOwnerKind": {
+      "enum": [
+        "user",
+        "organization"
+      ],
+      "type": "string"
+    },
+    "ForgeProjectSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "closed": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "public": {
+          "type": "boolean"
+        },
+        "readme": {
+          "type": "string"
+        },
+        "template": {
+          "type": "boolean"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "description",
+        "readme",
+        "public",
+        "closed",
+        "template"
+      ],
+      "type": "object"
+    },
+    "ForgeProjectSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "can_update": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "number": {
+          "type": "string"
+        },
+        "owner": {
+          "$ref": "#/$defs/ForgeProjectOwner"
+        },
+        "repositories": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "settings": {
+          "$ref": "#/$defs/ForgeProjectSettings"
+        },
+        "teams": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "updated_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "number",
+        "owner",
+        "settings",
+        "updated_at",
+        "can_update",
+        "repositories",
+        "teams"
+      ],
+      "type": "object"
+    },
+    "ForgeProjectTeam": {
+      "additionalProperties": false,
+      "properties": {
+        "database_id": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "organization": {
+          "$ref": "#/$defs/ForgeProjectOwner"
+        },
+        "slug": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "database_id",
+        "organization",
+        "slug"
+      ],
+      "type": "object"
+    },
+    "ForgeProjectValue": {
+      "description": "Numbers retain the provider's decimal representation across Rust and JavaScript.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "single_select",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "iteration",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "number",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "text",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "date",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "value"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeReleaseAssetDigest": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "size",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "ForgeReleaseContent": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "draft": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForgeReleaseOptions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prerelease": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "body",
+        "draft",
+        "prerelease"
+      ],
+      "type": "object"
+    },
+    "ForgeReleaseLatest": {
+      "enum": [
+        "true",
+        "false"
+      ],
+      "type": "string"
+    },
+    "ForgeReleaseLinkType": {
+      "enum": [
+        "other",
+        "runbook",
+        "image",
+        "package"
+      ],
+      "type": "string"
+    },
+    "ForgeReleaseOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "discussion_category": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "make_latest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForgeReleaseLatest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "milestones": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "released_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ForgeReleaseWrite": {
+      "description": "Every variant needs a separate operation-bound approval. None qualifies for a reusable write grant.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "create",
+              "type": "string"
+            },
+            "content": {
+              "$ref": "#/$defs/ForgeReleaseContent"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "target_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "tag",
+            "target_sha",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "edit",
+              "type": "string"
+            },
+            "content": {
+              "$ref": "#/$defs/ForgeReleaseContent"
+            },
+            "expected_digest": {
+              "type": "string"
+            },
+            "release_id": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "target_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "release_id",
+            "tag",
+            "target_sha",
+            "expected_digest",
+            "content"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "publish",
+              "type": "string"
+            },
+            "assets": {
+              "items": {
+                "$ref": "#/$defs/ForgeReleaseAssetDigest"
+              },
+              "type": "array"
+            },
+            "expected_digest": {
+              "type": "string"
+            },
+            "release_id": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "target_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "release_id",
+            "tag",
+            "target_sha",
+            "expected_digest",
+            "assets"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "upload_asset",
+              "type": "string"
+            },
+            "asset": {
+              "$ref": "#/$defs/ForgeSelectedReleaseAsset"
+            },
+            "release_id": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "target_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "release_id",
+            "tag",
+            "target_sha",
+            "asset"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_asset",
+              "type": "string"
+            },
+            "asset_id": {
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "release_id": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "target_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "release_id",
+            "tag",
+            "target_sha",
+            "asset_id",
+            "name",
+            "sha256",
+            "confirmed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_release",
+              "type": "string"
+            },
+            "assets": {
+              "items": {
+                "$ref": "#/$defs/ForgeReleaseAssetDigest"
+              },
+              "type": "array"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "expected_digest": {
+              "type": "string"
+            },
+            "release_id": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "target_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "release_id",
+            "tag",
+            "target_sha",
+            "expected_digest",
+            "assets",
+            "confirmed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "server_unsigned_tag",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "target_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "name",
+            "target_sha"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_tag",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "object_sha": {
+              "type": "string"
+            },
+            "target_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "name",
+            "target_sha",
+            "object_sha",
+            "confirmed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "gitlab_release_link",
+              "type": "string"
+            },
+            "filename": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "package_name": {
+              "type": "string"
+            },
+            "package_version": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "target_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "tag",
+            "target_sha",
+            "name",
+            "package_name",
+            "package_version",
+            "filename",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "gitlab_package_upload",
+              "type": "string"
+            },
+            "asset": {
+              "$ref": "#/$defs/ForgeSelectedReleaseAsset"
+            },
+            "package_name": {
+              "type": "string"
+            },
+            "package_version": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "target_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "tag",
+            "target_sha",
+            "package_name",
+            "package_version",
+            "asset"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "gitlab_asset_link",
+              "type": "string"
+            },
+            "direct_asset_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "link_type": {
+              "$ref": "#/$defs/ForgeReleaseLinkType"
+            },
+            "name": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "target_sha": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "tag",
+            "target_sha",
+            "name",
+            "url",
+            "link_type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "local_tag",
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "signed": {
+              "type": "boolean"
+            },
+            "target_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "name",
+            "target_sha",
+            "message",
+            "signed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "push_tag",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "object_sha": {
+              "type": "string"
+            },
+            "remote": {
+              "type": "string"
+            },
+            "remote_url": {
+              "type": "string"
+            },
+            "target_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "name",
+            "target_sha",
+            "object_sha",
+            "remote",
+            "remote_url"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeRepositoryAdminSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "archived": {
+          "type": "boolean"
+        },
+        "default_branch": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "operation_state": {
+          "description": "Bounded provider state relevant to this operation, captured by the account owner.",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "repository": {
+          "$ref": "#/$defs/StableRepositoryId"
+        },
+        "visibility": {
+          "$ref": "#/$defs/ForgeRepositoryVisibility"
+        }
+      },
+      "required": [
+        "repository",
+        "path",
+        "description",
+        "visibility",
+        "default_branch",
+        "archived",
+        "operation_state"
+      ],
+      "type": "object"
+    },
+    "ForgeRepositoryAdminWrite": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "create",
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "from_selected_template": {
+              "default": false,
+              "description": "Generate from the selected repository's default branch rather than an empty repository.",
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "visibility": {
+              "$ref": "#/$defs/ForgeRepositoryVisibility"
+            }
+          },
+          "required": [
+            "action",
+            "namespace",
+            "name",
+            "description",
+            "visibility"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "fork",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "namespace": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "namespace",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "edit",
+              "type": "string"
+            },
+            "default_branch": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "visibility": {
+              "$ref": "#/$defs/ForgeRepositoryVisibility"
+            }
+          },
+          "required": [
+            "action",
+            "description",
+            "visibility",
+            "default_branch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "rename",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "archive",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "unarchive",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "transfer",
+              "type": "string"
+            },
+            "namespace": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "namespace"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitHub requires a branch. GitLab pull-mirror synchronization uses None for all configured refs.",
+          "properties": {
+            "action": {
+              "const": "sync",
+              "type": "string"
+            },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "mirror",
+              "type": "string"
+            },
+            "direction": {
+              "$ref": "#/$defs/ForgeRepositoryMirrorDirection"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "mirror_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "direction",
+            "url",
+            "enabled"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "membership",
+              "type": "string"
+            },
+            "role": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeRepositoryRole"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "user": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "user"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "autolink",
+              "type": "string"
+            },
+            "alphanumeric": {
+              "type": "boolean"
+            },
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "key_prefix": {
+              "type": "string"
+            },
+            "remove": {
+              "type": "boolean"
+            },
+            "url_template": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "key_prefix",
+            "url_template",
+            "alphanumeric",
+            "remove"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitLab's native equivalent of repository issue autolinks. The issues URL uses :id.",
+          "properties": {
+            "action": {
+              "const": "issue_tracker",
+              "type": "string"
+            },
+            "issues_url": {
+              "type": "string"
+            },
+            "new_issue_url": {
+              "type": "string"
+            },
+            "project_url": {
+              "type": "string"
+            },
+            "remove": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "project_url",
+            "issues_url",
+            "new_issue_url",
+            "remove"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Publishes one skill document to an explicit branch and path, never an endpoint.",
+          "properties": {
+            "action": {
+              "const": "catalog_publication",
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            },
+            "expected_head": {
+              "type": "string"
+            },
+            "git_ref": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "git_ref",
+            "expected_head",
+            "path",
+            "content",
+            "message"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeRepositoryMirrorDirection": {
+      "enum": [
+        "pull",
+        "push"
+      ],
+      "type": "string"
+    },
+    "ForgeRepositoryRef": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/StableRepositoryId"
+        },
+        "origin": {
+          "$ref": "#/$defs/ForgeOriginId"
+        }
+      },
+      "required": [
+        "origin",
+        "id"
+      ],
+      "type": "object"
+    },
+    "ForgeRepositoryRole": {
+      "enum": [
+        "guest",
+        "reporter",
+        "developer",
+        "maintainer",
+        "owner",
+        "read",
+        "triage",
+        "write",
+        "maintain",
+        "admin"
+      ],
+      "type": "string"
+    },
+    "ForgeRepositoryVisibility": {
+      "enum": [
+        "private",
+        "internal",
+        "public"
+      ],
+      "type": "string"
+    },
+    "ForgeResourceHandle": {
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/ForgeAccountId"
+        },
+        "kind": {
+          "$ref": "#/$defs/ForgeResourceKind"
+        },
+        "origin": {
+          "$ref": "#/$defs/ForgeOriginId"
+        },
+        "repository": {
+          "$ref": "#/$defs/StableRepositoryId"
+        },
+        "resource": {
+          "$ref": "#/$defs/ForgeResourceId"
+        },
+        "web_url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "origin",
+        "account",
+        "repository",
+        "kind",
+        "resource",
+        "web_url"
+      ],
+      "type": "object"
+    },
+    "ForgeResourceId": {
+      "description": "Numeric provider IDs and numbers are decimal strings, not JavaScript numbers.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "node_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "number": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "github",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "number": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "gitlab",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "node_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "github_node",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "node_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "discussion_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "gitlab_discussion",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "discussion_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "tag_name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "gitlab_release",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tag_name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitLab boards expose issues in lists, not a fabricated project-item ID.",
+          "properties": {
+            "board_id": {
+              "type": "string"
+            },
+            "issue_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "gitlab_board_item",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "board_id",
+            "issue_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Tags have a native ref name rather than a numeric resource ID.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "github_tag",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "gitlab_tag",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeResourceKind": {
+      "enum": [
+        "repository",
+        "issue",
+        "comment",
+        "review",
+        "review_thread",
+        "pipeline",
+        "job",
+        "release",
+        "tag",
+        "milestone",
+        "label",
+        "project_item",
+        "work_item"
+      ],
+      "type": "string"
+    },
+    "ForgeReviewAction": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "update",
+              "type": "string"
+            },
+            "base_ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "body": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "set_draft",
+              "type": "string"
+            },
+            "draft": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "draft"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "set_reviewers",
+              "type": "string"
+            },
+            "users": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "action",
+            "users"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "reply",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "thread": {
+              "$ref": "#/$defs/ForgeResourceHandle"
+            }
+          },
+          "required": [
+            "action",
+            "thread",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "set_resolved",
+              "type": "string"
+            },
+            "resolved": {
+              "type": "boolean"
+            },
+            "thread": {
+              "$ref": "#/$defs/ForgeResourceHandle"
+            }
+          },
+          "required": [
+            "action",
+            "thread",
+            "resolved"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "github_review",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "event": {
+              "$ref": "#/$defs/GithubReviewEvent"
+            }
+          },
+          "required": [
+            "action",
+            "event",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "gitlab_approval",
+              "type": "string"
+            },
+            "approve": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "approve"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "lifecycle",
+              "type": "string"
+            },
+            "change": {
+              "$ref": "#/$defs/ForgeReviewLifecycleAction"
+            }
+          },
+          "required": [
+            "action",
+            "change"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "comment",
+              "type": "string"
+            },
+            "change": {
+              "$ref": "#/$defs/ForgeReviewCommentAction"
+            }
+          },
+          "required": [
+            "action",
+            "change"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeReviewCommentAction": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "create",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "position": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeReviewCommentPosition"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "edit",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "comment": {
+              "$ref": "#/$defs/ForgeReviewCommentRef"
+            }
+          },
+          "required": [
+            "action",
+            "comment",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete",
+              "type": "string"
+            },
+            "comment": {
+              "$ref": "#/$defs/ForgeReviewCommentRef"
+            }
+          },
+          "required": [
+            "action",
+            "comment"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitHub pending reviews. GitLab drafts are individual native draft notes.",
+          "properties": {
+            "action": {
+              "const": "create_draft_review",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "edit_draft_review",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "review": {
+              "$ref": "#/$defs/ForgeReviewCommentRef"
+            }
+          },
+          "required": [
+            "action",
+            "review",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_draft_review",
+              "type": "string"
+            },
+            "review": {
+              "$ref": "#/$defs/ForgeReviewCommentRef"
+            }
+          },
+          "required": [
+            "action",
+            "review"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "publish_draft_review",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "event": {
+              "$ref": "#/$defs/GithubReviewEvent"
+            },
+            "review": {
+              "$ref": "#/$defs/ForgeReviewCommentRef"
+            }
+          },
+          "required": [
+            "action",
+            "review",
+            "event",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "create_draft_note",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "position": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeReviewCommentPosition"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "review": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeReviewCommentRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "edit_draft_note",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "note": {
+              "$ref": "#/$defs/ForgeReviewCommentRef"
+            }
+          },
+          "required": [
+            "action",
+            "note",
+            "body"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete_draft_note",
+              "type": "string"
+            },
+            "note": {
+              "$ref": "#/$defs/ForgeReviewCommentRef"
+            }
+          },
+          "required": [
+            "action",
+            "note"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitLab publishes a single native draft note.",
+          "properties": {
+            "action": {
+              "const": "publish_draft_note",
+              "type": "string"
+            },
+            "note": {
+              "$ref": "#/$defs/ForgeReviewCommentRef"
+            }
+          },
+          "required": [
+            "action",
+            "note"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitLab bulk publish requires the exact observed set, not a wildcard.",
+          "properties": {
+            "action": {
+              "const": "publish_drafts",
+              "type": "string"
+            },
+            "notes": {
+              "items": {
+                "$ref": "#/$defs/ForgeReviewCommentRef"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "action",
+            "notes"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeReviewCommentKind": {
+      "enum": [
+        "top_level",
+        "inline",
+        "draft_review",
+        "draft_note"
+      ],
+      "type": "string"
+    },
+    "ForgeReviewCommentPosition": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "commit_id": {
+              "type": "string"
+            },
+            "line": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "path": {
+              "type": "string"
+            },
+            "provider": {
+              "const": "github",
+              "type": "string"
+            },
+            "side": {
+              "$ref": "#/$defs/ForgeReviewCommentSide"
+            },
+            "start_line": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "start_side": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeReviewCommentSide"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "provider",
+            "commit_id",
+            "path",
+            "side",
+            "line"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "base_sha": {
+              "type": "string"
+            },
+            "head_sha": {
+              "type": "string"
+            },
+            "new_line": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "new_path": {
+              "type": "string"
+            },
+            "old_line": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "old_path": {
+              "type": "string"
+            },
+            "provider": {
+              "const": "gitlab",
+              "type": "string"
+            },
+            "start_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider",
+            "base_sha",
+            "start_sha",
+            "head_sha",
+            "old_path",
+            "new_path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeReviewCommentRef": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_body": {
+          "type": "string"
+        },
+        "expected_position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForgeReviewCommentPosition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expected_updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ForgeReviewCommentKind"
+        },
+        "review_id": {
+          "description": "Required for GitHub pending review notes. Never inferred from another review.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "expected_body"
+      ],
+      "type": "object"
+    },
+    "ForgeReviewCommentSide": {
+      "enum": [
+        "left",
+        "right"
+      ],
+      "type": "string"
+    },
+    "ForgeReviewLifecycleAction": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "set_state",
+              "type": "string"
+            },
+            "closed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "closed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitLab only. Requires project-owner or administrator permission.",
+          "properties": {
+            "action": {
+              "const": "delete",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Both providers support discussion locking. A lock reason is GitHub-only.",
+          "properties": {
+            "action": {
+              "const": "set_locked",
+              "type": "string"
+            },
+            "locked": {
+              "type": "boolean"
+            },
+            "reason": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeReviewLockReason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "locked"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitHub update-branch or GitLab rebase, pinned to the journal's head revision.",
+          "properties": {
+            "action": {
+              "const": "update_branch",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "github_revert",
+              "type": "string"
+            },
+            "body": {
+              "type": "string"
+            },
+            "draft": {
+              "type": "boolean"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "title",
+            "body",
+            "draft"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Revert the merged commit into an existing branch at the displayed target SHA.",
+          "properties": {
+            "action": {
+              "const": "gitlab_revert",
+              "type": "string"
+            },
+            "branch": {
+              "type": "string"
+            },
+            "expected_target_sha": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "branch",
+            "expected_target_sha"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "set_subscription",
+              "type": "string"
+            },
+            "subscribed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "action",
+            "subscribed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitLab only. Completing requires the exact pending todo selected by the user.",
+          "properties": {
+            "action": {
+              "const": "set_todo",
+              "type": "string"
+            },
+            "pending": {
+              "type": "boolean"
+            },
+            "todo_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action",
+            "pending"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Replaces the complete label set, including clearing it with an empty list.",
+          "properties": {
+            "action": {
+              "const": "set_labels",
+              "type": "string"
+            },
+            "labels": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "action",
+            "labels"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitHub logins or GitLab numeric user IDs. Replaces the complete assignee set.",
+          "properties": {
+            "action": {
+              "const": "set_assignees",
+              "type": "string"
+            },
+            "users": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "action",
+            "users"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GitHub milestone number or GitLab global milestone ID; None clears it.",
+          "properties": {
+            "action": {
+              "const": "set_milestone",
+              "type": "string"
+            },
+            "milestone": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "set_merge_options",
+              "type": "string"
+            },
+            "options": {
+              "$ref": "#/$defs/ForgeReviewMergeOptions"
+            }
+          },
+          "required": [
+            "action",
+            "options"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeReviewLockReason": {
+      "enum": [
+        "off_topic",
+        "too_heated",
+        "resolved",
+        "spam"
+      ],
+      "type": "string"
+    },
+    "ForgeReviewMergeAfter": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "clear",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "at",
+              "type": "string"
+            },
+            "timestamp": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "timestamp"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeReviewMergeOptions": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "maintainer_can_modify": {
+              "type": "boolean"
+            },
+            "provider": {
+              "const": "github",
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider",
+            "maintainer_can_modify"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "allow_collaboration": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "merge_after": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeReviewMergeAfter"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "provider": {
+              "const": "gitlab",
+              "type": "string"
+            },
+            "remove_source_branch": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "squash": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "provider"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeReviewSelection": {
+      "additionalProperties": false,
+      "description": "Locally observed remote selection, captured by Runtime before approval.",
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "head": {
+          "$ref": "#/$defs/RepositoryIdentity"
+        },
+        "project_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "publish_remote": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "$ref": "#/$defs/RepositoryIdentity"
+        },
+        "workspace_path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace_path",
+        "branch",
+        "target",
+        "head"
+      ],
+      "type": "object"
+    },
+    "ForgeSelectedReleaseAsset": {
+      "additionalProperties": false,
+      "description": "Captured asset content, not a path supplied by a model. Storage verifies the digest again before send.",
+      "properties": {
+        "content_type": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "selection_id": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "size": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "selection_id",
+        "name",
+        "size",
+        "sha256",
+        "content_type"
+      ],
+      "type": "object"
+    },
+    "ForgeVariableFlags": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "environment_scope": {
+          "type": "string"
+        },
+        "hidden": {
+          "type": "boolean"
+        },
+        "masked": {
+          "type": "boolean"
+        },
+        "protected": {
+          "type": "boolean"
+        },
+        "raw": {
+          "type": "boolean"
+        },
+        "selected_repository_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "visibility": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForgeVariableVisibility"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "protected",
+        "masked",
+        "hidden",
+        "raw",
+        "environment_scope"
+      ],
+      "type": "object"
+    },
+    "ForgeVariableKind": {
+      "enum": [
+        "variable",
+        "secret"
+      ],
+      "type": "string"
+    },
+    "ForgeVariableScope": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "gitlab_project",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "group_id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "gitlab_group",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "group_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "gitlab_instance",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "github_repository",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "environment": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "github_environment",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "environment"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "github_organization",
+              "type": "string"
+            },
+            "organization": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "organization"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeVariableTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ForgeVariableKind"
+        },
+        "scope": {
+          "$ref": "#/$defs/ForgeVariableScope"
+        }
+      },
+      "required": [
+        "scope",
+        "kind",
+        "key"
+      ],
+      "type": "object"
+    },
+    "ForgeVariableVisibility": {
+      "enum": [
+        "all",
+        "private",
+        "selected"
+      ],
+      "type": "string"
+    },
+    "ForgeVariableWrite": {
+      "description": "Each write requires its own human approval. Content stays in the server-held selection.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "create",
+              "type": "string"
+            },
+            "flags": {
+              "$ref": "#/$defs/ForgeVariableFlags"
+            },
+            "selection_id": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/ForgeVariableTarget"
+            }
+          },
+          "required": [
+            "action",
+            "target",
+            "flags",
+            "selection_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "update",
+              "type": "string"
+            },
+            "flags": {
+              "$ref": "#/$defs/ForgeVariableFlags"
+            },
+            "selection_id": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/ForgeVariableTarget"
+            }
+          },
+          "required": [
+            "action",
+            "target",
+            "flags",
+            "selection_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete",
+              "type": "string"
+            },
+            "flags": {
+              "$ref": "#/$defs/ForgeVariableFlags"
+            },
+            "target": {
+              "$ref": "#/$defs/ForgeVariableTarget"
+            }
+          },
+          "required": [
+            "action",
+            "target",
+            "flags"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeWorkItemFields": {
+      "additionalProperties": false,
+      "properties": {
+        "closed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "confidential": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "widgets": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ForgeWorkItemWidgetInput"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ForgeWorkItemHealth": {
+      "enum": [
+        "onTrack",
+        "needsAttention",
+        "atRisk"
+      ],
+      "type": "string"
+    },
+    "ForgeWorkItemMutation": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "create",
+              "type": "string"
+            },
+            "fields": {
+              "$ref": "#/$defs/ForgeWorkItemFields"
+            },
+            "scope": {
+              "$ref": "#/$defs/ForgeWorkItemScope"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "scope",
+            "type_id",
+            "title",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "update",
+              "type": "string"
+            },
+            "fields": {
+              "$ref": "#/$defs/ForgeWorkItemFields"
+            },
+            "scope": {
+              "$ref": "#/$defs/ForgeWorkItemScope"
+            }
+          },
+          "required": [
+            "action",
+            "scope",
+            "fields"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "delete",
+              "type": "string"
+            },
+            "confirmed": {
+              "type": "boolean"
+            },
+            "scope": {
+              "$ref": "#/$defs/ForgeWorkItemScope"
+            }
+          },
+          "required": [
+            "action",
+            "scope",
+            "confirmed"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeWorkItemScope": {
+      "description": "Stable namespace identity plus its observed path. The adapter revalidates both.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "full_path": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "project",
+              "type": "string"
+            },
+            "project_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "project_id",
+            "full_path"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "full_path": {
+              "type": "string"
+            },
+            "group_id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "group",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "group_id",
+            "full_path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeWorkItemWidgetInput": {
+      "description": "Missing widget means unchanged. Nullable widget values explicitly clear that field.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "widget": {
+              "const": "description",
+              "type": "string"
+            }
+          },
+          "required": [
+            "widget",
+            "description"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "ids": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "widget": {
+              "const": "assignees",
+              "type": "string"
+            }
+          },
+          "required": [
+            "widget",
+            "ids"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "add": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "remove": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "widget": {
+              "const": "labels",
+              "type": "string"
+            }
+          },
+          "required": [
+            "widget",
+            "add",
+            "remove"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "widget": {
+              "const": "milestone",
+              "type": "string"
+            }
+          },
+          "required": [
+            "widget"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "widget": {
+              "const": "iteration",
+              "type": "string"
+            }
+          },
+          "required": [
+            "widget"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "weight": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "widget": {
+              "const": "weight",
+              "type": "string"
+            }
+          },
+          "required": [
+            "widget"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "health_status": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeWorkItemHealth"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "widget": {
+              "const": "health_status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "widget"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "current_value": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "end_value": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "start_value": {
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "widget": {
+              "const": "progress",
+              "type": "string"
+            }
+          },
+          "required": [
+            "widget",
+            "current_value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "due_date": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "is_fixed": {
+              "type": "boolean"
+            },
+            "start_date": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "widget": {
+              "const": "start_and_due_date",
+              "type": "string"
+            }
+          },
+          "required": [
+            "widget",
+            "is_fixed"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "color": {
+              "type": "string"
+            },
+            "widget": {
+              "const": "color",
+              "type": "string"
+            }
+          },
+          "required": [
+            "widget",
+            "color"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "widget": {
+              "const": "status",
+              "type": "string"
+            }
+          },
+          "required": [
+            "widget",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Parent null detaches. Children are added with the native hierarchy widget.",
+          "properties": {
+            "children": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "parent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "widget": {
+              "const": "hierarchy",
+              "type": "string"
+            }
+          },
+          "required": [
+            "widget",
+            "children"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ForgeWriteToolPayload": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "issue",
+              "type": "string"
+            },
+            "mutation": {
+              "$ref": "#/$defs/ForgeIssueMutation"
+            },
+            "number": {
+              "description": "Issue number in this repository (the number in its URL), instead of `target`.\nNot for `create`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "mutation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "work_item",
+              "type": "string"
+            },
+            "mutation": {
+              "$ref": "#/$defs/ForgeWorkItemMutation"
+            }
+          },
+          "required": [
+            "kind",
+            "mutation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "board",
+              "type": "string"
+            },
+            "mutation": {
+              "$ref": "#/$defs/ForgeBoardMutation"
+            }
+          },
+          "required": [
+            "kind",
+            "mutation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "metadata",
+              "type": "string"
+            },
+            "mutation": {
+              "$ref": "#/$defs/ForgeMetadataMutation"
+            }
+          },
+          "required": [
+            "kind",
+            "mutation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "projects",
+              "type": "string"
+            },
+            "operation": {
+              "$ref": "#/$defs/ForgeProjectMutation"
+            }
+          },
+          "required": [
+            "kind",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "$ref": "#/$defs/ForgeReviewAction"
+            },
+            "kind": {
+              "const": "review",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Opens a pull/merge request in this thread's repository.",
+          "properties": {
+            "body": {
+              "type": "string"
+            },
+            "draft": {
+              "default": false,
+              "type": "boolean"
+            },
+            "head_repository": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StableRepositoryId"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Repository holding `source_branch`, for a fork. Defaults to this thread's repository."
+            },
+            "kind": {
+              "const": "create_review",
+              "type": "string"
+            },
+            "source_branch": {
+              "description": "Branch with the changes.",
+              "type": "string"
+            },
+            "target_branch": {
+              "description": "Branch to merge into.",
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "title",
+            "body",
+            "source_branch",
+            "target_branch"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Set exactly one of `number` or `action`.",
+          "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeMergeAction"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exact head and target you observed, with a review `target`."
+            },
+            "kind": {
+              "const": "merge",
+              "type": "string"
+            },
+            "method": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeMergeMethod"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `number`. Defaults to `merge`."
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ForgeMergeMode"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "With `number`. Defaults to `merge`."
+            },
+            "number": {
+              "description": "Pull/merge request number. Noli reads its current head and target branch.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "$ref": "#/$defs/ForgeCiAction"
+            },
+            "kind": {
+              "const": "ci",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "release",
+              "type": "string"
+            },
+            "operation": {
+              "$ref": "#/$defs/ForgeReleaseWrite"
+            }
+          },
+          "required": [
+            "kind",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "variables",
+              "type": "string"
+            },
+            "operation": {
+              "$ref": "#/$defs/ForgeVariableWrite"
+            }
+          },
+          "required": [
+            "kind",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Requires a separate human approval even when the thread uses Yolo.",
+          "properties": {
+            "kind": {
+              "const": "repository_admin",
+              "type": "string"
+            },
+            "operation": {
+              "$ref": "#/$defs/ForgeRepositoryAdminWrite"
+            }
+          },
+          "required": [
+            "kind",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "distribution",
+              "type": "string"
+            },
+            "operation": {
+              "$ref": "#/$defs/ForgeDistributionWrite"
+            }
+          },
+          "required": [
+            "kind",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "batch": {
+              "$ref": "#/$defs/ForgeDecomposition"
+            },
+            "kind": {
+              "const": "decompose",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "batch"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "GithubReviewEvent": {
+      "enum": [
+        "approve",
+        "request_changes",
+        "comment"
+      ],
+      "type": "string"
+    },
+    "RepositoryIdentity": {
+      "description": "Which hosted repository a checkout belongs to, derived from its remote.",
+      "properties": {
+        "forge": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForgeKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`None` when the host isn't recognised as a supported provider."
+        },
+        "host": {
+          "type": "string"
+        },
+        "key": {
+          "description": "Normalised `host/path`, lowercased, without scheme or `.git`.",
+          "type": "string"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForgeOriginId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Native deployment identity, independent of this historical locator."
+        },
+        "path": {
+          "description": "Path below the host, e.g. `ExampleOrg/project`.",
+          "type": "string"
+        },
+        "remote": {
+          "type": "string"
+        },
+        "stable": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableRepositoryId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stable provider identity after explicit native resolution."
+        },
+        "web_url": {
+          "default": null,
+          "description": "Canonical web repository endpoint, separate from SSH transport ports.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "host",
+        "path",
+        "remote",
+        "key"
+      ],
+      "type": "object"
+    },
+    "StableRepositoryId": {
+      "description": "Provider numeric IDs are strings to preserve their precision in JavaScript.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "node_id": {
+              "type": "string"
+            },
+            "provider": {
+              "const": "github",
+              "type": "string"
+            },
+            "repository_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider",
+            "repository_id",
+            "node_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "project_id": {
+              "type": "string"
+            },
+            "provider": {
+              "const": "gitlab",
+              "type": "string"
+            }
+          },
+          "required": [
+            "provider",
+            "project_id"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Versioned host-tool intent backed by native feature writers and the retained\nreview-creation journal. Generic merge and raw API intents are not exposed.\nThe owner resolves the simplified forms (by number or branch) to one exact\n`ForgeWriteProposal` before approval; the approval shows that resolved target.",
+  "properties": {
+    "payload": {
+      "$ref": "#/$defs/ForgeWriteToolPayload"
+    },
+    "precondition": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ForgeMutationPrecondition"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Exact precondition from a scoped read. Omit it for `create_review` and the `number`\nforms; Noli captures it before approval. Merges always use evidence Noli captures."
+    },
+    "target": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ForgeResourceHandle"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Exact handle from a scoped read. Omit it for `create_review` and for issue and merge\nwrites that name their target by `number`; Noli resolves those in this thread's repository."
+    }
+  },
+  "required": [
+    "payload"
+  ],
+  "title": "ForgeWriteToolProposal",
+  "type": "object"
+}
